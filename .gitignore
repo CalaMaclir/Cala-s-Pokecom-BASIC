@@ -1,0 +1,12 @@
+build/
+tmp/
+output/
+.vscode/
+.idea/
+*.uf2
+*.elf
+*.bin
+*.hex
+*.map
+.DS_Store
+Thumbs.db
