@@ -1,0 +1,122 @@
+name: build
+
+on:
+  push:
+    branches: [main, "release/**"]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pico2w:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ARM toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi
+
+      - name: Test status layout
+        run: |
+          g++ -std=c++17 -ffunction-sections -fdata-sections -Iinclude tests/status_layout_test.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/ymodem.cpp src/core/xmodem.cpp -Wl,--gc-sections -o /tmp/status-layout-test
+          /tmp/status-layout-test
+          g++ -std=c++17 -Itests/stubs -Iinclude tests/display_scroll_test.cpp -o /tmp/display-scroll-test
+          /tmp/display-scroll-test
+          g++ -std=c++17 -Iinclude tests/prompt_boundary_test.cpp src/core/line_editor.cpp -o /tmp/prompt-boundary-test
+          /tmp/prompt-boundary-test
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/xmodem_test.cpp src/core/xmodem.cpp src/core/safe_file.cpp src/core/transfer_file.cpp -o /tmp/xmodem-test
+          /tmp/xmodem-test
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/ymodem_test.cpp src/core/ymodem.cpp src/core/xmodem.cpp src/core/safe_file.cpp src/core/transfer_file.cpp -o /tmp/ymodem-test
+          /tmp/ymodem-test
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/file_transfer_menu_test.cpp -o /tmp/file-transfer-menu-test
+          /tmp/file-transfer-menu-test
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/usb_storage_menu_test.cpp -o /tmp/usb-storage-menu-test
+          /tmp/usb-storage-menu-test
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/http_file_server_core_test.cpp src/core/http_file_server_core.cpp src/core/safe_file.cpp -o /tmp/http-core-test
+          /tmp/http-core-test
+          g++ -std=c++17 -Wall -Wextra -Iinclude tests/safe_file_test.cpp src/core/safe_file.cpp -o /tmp/safe-file-test
+          /tmp/safe-file-test
+          g++ -std=c++17 -Wall -Wextra -Itests/serial_stubs -Iinclude tests/serial_route_test.cpp src/platform/picocalc/serial_transfer.cpp -o /tmp/serial-route-test
+          /tmp/serial-route-test
+
+      - name: Test RUN and direct workspace with sanitizers
+        run: |
+          g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -ffunction-sections -fdata-sections -Itests/runtime_stubs -Iinclude tests/runtime_workspace_test.cpp src/core/repl.cpp src/core/basic_compiler.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp -Wl,--gc-sections -o /tmp/runtime-test
+          /tmp/runtime-test examples/*.bas
+
+      - name: Test program storage transactions and fault recovery
+        run: |
+          g++ -std=c++17 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -Iinclude tests/program_storage_test.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/transfer_file.cpp src/core/basic_compiler.cpp src/core/il.cpp -Wl,--wrap=fwrite,--wrap=fclose,--wrap=rename,--wrap=ftell,--wrap=remove -o /tmp/program-storage-test
+          /tmp/program-storage-test examples/*.bas
+
+      - name: Fetch Pico SDK 2.3.1 for firmware
+        run: |
+          git clone --depth 1 --branch 2.3.1 https://github.com/raspberrypi/pico-sdk.git
+          git -C pico-sdk submodule update --init --recursive
+
+      - name: Configure
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: cmake -S . -B build -G Ninja -DPICO_BOARD=pico2_w -DRMB_BUILD_NUMBER=${{ github.run_number }}
+
+      - name: Test composite descriptors and MSC callbacks with sanitizers
+        run: |
+          g++ -std=c++17 -O1 -g -Wall -Wextra -fsanitize=address,undefined -fno-omit-frame-pointer -Itests/usb_stubs -Ipico-sdk/lib/tinyusb/src -Iinclude tests/usb_msc_test.cpp src/platform/picocalc/usb_device.cpp src/platform/picocalc/usb_msc.cpp src/platform/picocalc/usb_descriptors.cpp -o /tmp/usb-msc-test
+          ASAN_OPTIONS=detect_leaks=0 /tmp/usb-msc-test
+          g++ -std=c++17 -O1 -g -Wall -Wextra -pthread -fsanitize=address,undefined -fno-omit-frame-pointer -ffunction-sections -fdata-sections -Itests/storage_stubs -Iinclude tests/storage_ownership_test.cpp src/platform/picocalc/storage.cpp -Wl,--gc-sections -o /tmp/storage-ownership-test
+          ASAN_OPTIONS=detect_leaks=0 /tmp/storage-ownership-test
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Measure SRAM and stack usage
+        # The sizeof object is measured, never linked into the firmware.
+        if: success()
+        run: |
+          arm-none-eabi-g++ -std=c++17 -mcpu=cortex-m33 -mthumb -Iinclude -c tests/memory_sizes.cpp -o build/memory_sizes.o
+          python3 tools/memory_report.py build > build/memory-report.txt
+          cat build/memory-report.txt
+
+      - name: Prepare release assets
+        run: |
+          cp build/retrominibasic_picocalc.uf2 build/Cala-Pokecom-BASIC-v0.8-pico2w.uf2
+          cp docs/Cala-Pokecom-BASIC-v0.8-ja.pdf build/Cala-Pokecom-BASIC-v0.8-ja.pdf
+          cd examples
+          zip -9 ../build/Cala-Pokecom-BASIC-v0.8-examples.zip *.bas RMBASIC.CFG
+          cd ../build
+          sha256sum Cala-Pokecom-BASIC-v0.8-pico2w.uf2 Cala-Pokecom-BASIC-v0.8-ja.pdf Cala-Pokecom-BASIC-v0.8-examples.zip > SHA256SUMS.txt
+
+      - name: Upload build and release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cala-Pokecom-BASIC-v0.8-pico2w
+          path: |
+            build/retrominibasic_picocalc.uf2
+            build/retrominibasic_picocalc.elf
+            build/*.map
+            build/memory-report.txt
+            build/Cala-Pokecom-BASIC-v0.8-pico2w.uf2
+            build/Cala-Pokecom-BASIC-v0.8-ja.pdf
+            build/Cala-Pokecom-BASIC-v0.8-examples.zip
+            build/SHA256SUMS.txt
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Cala's Pokecom BASIC Version 0.8" \
+            --notes-file docs/release-notes-v0.8.0.md \
+            build/Cala-Pokecom-BASIC-v0.8-pico2w.uf2 \
+            build/Cala-Pokecom-BASIC-v0.8-ja.pdf \
+            build/Cala-Pokecom-BASIC-v0.8-examples.zip \
+            build/SHA256SUMS.txt
