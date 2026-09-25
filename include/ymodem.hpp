@@ -17,6 +17,7 @@ struct Header {
 struct Result {
     Error error = Error::None;
     std::uint32_t bytes = 0;
+    std::uint32_t files = 0;
     char filename[kFilenameSize] = {};
 };
 struct IO {

@@ -48,6 +48,9 @@ int function_id(const char* name) {
     if (std::strcmp(name, "CLAMP") == 0) return FnId::CLAMP;
     if (std::strcmp(name, "RNDI") == 0) return FnId::RNDI;
     if (std::strcmp(name, "TIMER") == 0) return FnId::TIMER;
+    if (std::strcmp(name, "INKEY") == 0) return FnId::INKEY;
+    if (std::strcmp(name, "I2CREAD") == 0) return FnId::I2CREAD;
+    if (std::strcmp(name, "PLAYING") == 0) return FnId::PLAYING;
 
     if (std::strcmp(name, "POINT") == 0) return FnId::GPOINT;
     return -1;
@@ -77,7 +80,8 @@ bool function_returns_string(int id) {
 }
 
 bool zero_arg_function(int id) {
-    return id == FnId::RND || id == FnId::PI || id == FnId::TIMER;
+    return id == FnId::RND || id == FnId::PI || id == FnId::TIMER ||
+           id == FnId::INKEY;
 }
 
 struct CompileControl {
@@ -1582,6 +1586,20 @@ struct Parser {
             return ExprType::String;
         }
 
+        if (p[0] == '&' && (p[1] == 'H' || p[1] == 'h')) {
+            char* end = nullptr;
+            const long value = std::strtol(p + 2, &end, 16);
+            if (end == p + 2 || value < 0 || value > 0x7fffffffL) {
+                set_error("BAD NUMBER");
+                return ExprType::Invalid;
+            }
+            p = end;
+            if (!emit(OpCode::PUSH_NUM, 0, 0, static_cast<BasicNumber>(value))) {
+                return ExprType::Invalid;
+            }
+            return ExprType::Number;
+        }
+
         if (std::isdigit(static_cast<unsigned char>(*p)) ||
             (*p == '.' && std::isdigit(static_cast<unsigned char>(p[1])))) {
             char* end = nullptr;
@@ -1847,6 +1865,44 @@ struct Parser {
         }
 
         return true;
+    }
+
+    bool compile_play() {
+        if (match_word("STOP"))
+            return emit(OpCode::CALLFN, FnId::PLAYSTOP, 0);
+        if (match_word("PAUSE"))
+            return emit(OpCode::CALLFN, FnId::PLAYPAUSE, 0);
+        if (match_word("RESUME"))
+            return emit(OpCode::CALLFN, FnId::PLAYRESUME, 0);
+        if (match_word("WAIT"))
+            return emit(OpCode::CALLFN, FnId::PLAYWAIT, 0);
+        return compile_call_statement(FnId::PLAY);
+    }
+
+    bool compile_gdef() {
+        if (match_word("CLEAR")) {
+            return emit(OpCode::CALLFN, FnId::GDEF, 0);
+        }
+
+        // Parse the left side without consuming the GDEF assignment '=' as a
+        // comparison operator. Expressions are still allowed on both sides.
+        if (parse_add_sub() != ExprType::String) {
+            set_error("GDEF CHARACTER MUST BE STRING");
+            return false;
+        }
+        if (!expect_char('=')) return false;
+        if (parse_expression() != ExprType::String) {
+            set_error("GDEF DATA MUST BE STRING");
+            return false;
+        }
+        return emit(OpCode::CALLFN, FnId::GDEF, 2);
+    }
+
+    bool compile_gpalette() {
+        if (match_word("RESET")) {
+            return emit(OpCode::CALLFN, FnId::GPALETTE, 0);
+        }
+        return compile_call_statement(FnId::GPALETTE);
     }
 
     bool compile_call_statement(int id) {
@@ -2257,9 +2313,26 @@ struct Parser {
         if (match_word("PAINT")) return compile_call_statement(FnId::GPAINT);
         if (match_word("FLUSH")) return compile_call_statement(FnId::GFLUSH);
         if (match_word("SLEEP")) return compile_call_statement(FnId::GSLEEP);
+        if (match_word("PAUSE")) return compile_call_statement(FnId::PAUSE);
+        if (match_word("BEEP")) return compile_call_statement(FnId::BEEP);
+        if (match_word("PLAY")) return compile_play();
+        if (match_word("WAVPLAY")) return compile_call_statement(FnId::WAVPLAY);
+        if (match_word("WAVSTOP")) return emit(OpCode::CALLFN, FnId::WAVSTOP, 0);
+        if (match_word("WAVPAUSE")) return emit(OpCode::CALLFN, FnId::WAVPAUSE, 0);
+        if (match_word("WAVRESUME")) return emit(OpCode::CALLFN, FnId::WAVRESUME, 0);
+        if (match_word("I2C")) {
+            if (!match_word("SCAN")) {
+                set_error("EXPECTED SCAN");
+                return false;
+            }
+            return emit(OpCode::CALLFN, FnId::I2CSCAN, 0);
+        }
+        if (match_word("I2CWRITE")) return compile_call_statement(FnId::I2CWRITE);
         if (match_word("LOCATE")) return compile_call_statement(FnId::LOCATE);
         if (match_word("GLOCATE")) return compile_call_statement(FnId::GLOCATE);
         if (match_word("GPRINT")) return compile_call_statement(FnId::GPRINT);
+        if (match_word("GDEF")) return compile_gdef();
+        if (match_word("GPALETTE")) return compile_gpalette();
         if (match_word("RANDOMIZE")) return compile_call_statement(FnId::RANDOMIZE);
         if (match_word("SAVEIMAGE")) return compile_call_statement(FnId::GSAVE);
 
@@ -2318,14 +2391,13 @@ CompileResult BasicCompiler::compile(
 }
 
 CompileResult BasicCompiler::compile_direct(const char* line, CompiledProgram& output) {
-    // Match ProgramStore::set_line's existing 191-character truncation policy.
-    // Console input may include up to 223 characters; source limits stay unchanged.
+    // Direct mode keeps the RAM-compatible 191-character boundary.
     char input[kMaxProgramLineLength] = {};
-    if (!line) {
+    if (!line || std::strlen(line) >= sizeof(input)) {
         output.reset();
         return fail_result(0, "DIRECT LINE TOO LONG");
     }
-    std::strncpy(input, line, sizeof(input) - 1);
+    std::strcpy(input, line);
     return compile_source(nullptr, input, output);
 }
 
@@ -2344,10 +2416,14 @@ CompileResult BasicCompiler::compile_source(
     CompileControl control;
 
     for (std::size_t i = 0; i < count; ++i) {
-        ProgramLine line;
-        if (source && !source->read_line(i, line)) return fail_result(0, source->error());
-        const auto number = source ? line.number : 10;
-        const char* text = source ? line.text : direct_line;
+        std::int32_t stored_number = 0;
+        const char* stored_text = nullptr;
+        std::size_t stored_length = 0;
+        if (source && !source->read_line_text(
+                i, stored_number, stored_text, stored_length))
+            return fail_result(0, source->error());
+        const auto number = source ? stored_number : 10;
+        const char* text = source ? stored_text : direct_line;
 
         output.line_at(output.line_count).line = number;
         output.line_at(output.line_count).pc =

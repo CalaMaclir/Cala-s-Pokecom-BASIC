@@ -1,4 +1,5 @@
 #include "pico/unique_id.h"
+#include "pico/usb_reset.h"
 #include "tusb.h"
 
 #include <cstddef>
@@ -9,12 +10,21 @@ namespace {
 // Allocate a production identity before distributing a finished USB product.
 constexpr uint16_t kVid = 0xcafe;
 constexpr uint16_t kPid = 0x4003;
-constexpr uint16_t kConfigLength = TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN;
+constexpr uint16_t kConfigLength =
+    TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN +
+    TUD_RPI_RESET_DESC_LEN;
 static_assert(CFG_TUD_CDC == 1 && CFG_TUD_MSC == 1, "CDC + MSC configuration required");
 static_assert(CFG_TUD_MSC_EP_BUFSIZE == 512, "Stage 1 needs only a single sector buffer");
 
+static_assert(
+    PICO_USB_RESET_MS_OS_20_DESCRIPTOR_ITF == 3,
+    "Reset interface number must match the USB descriptor"
+);
+
 const tusb_desc_device_t device = {
-    sizeof(tusb_desc_device_t), TUSB_DESC_DEVICE, 0x0200,
+    // Windows driverless access to the reset vendor interface uses the SDK's
+    // Microsoft OS 2.0 descriptor, which requires USB 2.1 here.
+    sizeof(tusb_desc_device_t), TUSB_DESC_DEVICE, 0x0210,
     TUSB_CLASS_MISC, MISC_SUBCLASS_COMMON, MISC_PROTOCOL_IAD,
     CFG_TUD_ENDPOINT0_SIZE, kVid, kPid, 0x0080,
     1, 2, 3, 1
@@ -23,9 +33,10 @@ const tusb_desc_device_t device = {
 // USB full-speed packets are 64 bytes; the MSC software workspace is 512.
 // Keep the SDK CDC endpoints unchanged. MSC owns a separate endpoint pair.
 const uint8_t configuration[] = {
-    TUD_CONFIG_DESCRIPTOR(1, 3, 0, kConfigLength, 0, 250),
+    TUD_CONFIG_DESCRIPTOR(1, 4, 0, kConfigLength, 0, 250),
     TUD_CDC_DESCRIPTOR(0, 4, 0x81, 8, 0x02, 0x82, 64),
     TUD_MSC_DESCRIPTOR(2, 5, 0x03, 0x83, 64),
+    TUD_RPI_RESET_DESCRIPTOR(3, 6),
 };
 static_assert(sizeof(configuration) == kConfigLength, "Descriptor length mismatch");
 
@@ -59,6 +70,7 @@ const uint16_t* tud_descriptor_string_cb(uint8_t index, uint16_t) {
         break;
     case 4: text = "CPB Console"; break;
     case 5: text = "CPB SD Card"; break;
+    case 6: text = "CPB Firmware Update"; break;
     default: return nullptr;
     }
     size_t length = 0;

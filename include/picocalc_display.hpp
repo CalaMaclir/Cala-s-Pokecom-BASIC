@@ -43,6 +43,15 @@ void graphics_box(int x1, int y1, int x2, int y2, bool filled);
 bool graphics_paint(int x, int y);
 void graphics_flush();
 bool graphics_point_nonblack(int x, int y);
+void graphics_draw_builtin8(int x, int y, char character, std::uint32_t color);
+void graphics_draw_glyph8(
+    int x,
+    int y,
+    const std::uint8_t pixels[64],
+    const std::uint32_t palette[256],
+    bool indexed,
+    std::uint32_t mono_color
+);
 
 // Read one row of the currently visible LCD viewport as B,G,R bytes.
 // x1/x2 are inclusive physical screen coordinates.

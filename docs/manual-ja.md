@@ -1,685 +1,853 @@
-# Cala's Pokecom BASIC Version 0.8 日本語マニュアル
+# Cala's Pokecom BASIC Version 0.85 日本語マニュアル
 
 対象機種：ClockworkPi PicoCalc + Raspberry Pi Pico 2 W（RP2350）  
+略称：CPB
 Copyright (C) 2026 Cala Maclir
 
-> 本書はファームウェアVersion 0.8を対象とします。
+> 本書はVersion 0.85を初めて使う利用者向けの正式ユーザーマニュアルです。過去Versionのmanualを読む必要はありません。
+
+## 目次
+
+1. はじめに
+2. ファームウェアの導入と更新
+3. 画面・keyboard・hotkey
+4. BASICの基本操作
+5. Program StorageとStorage Continuity
+6. SD cardとfile
+7. Control Center
+8. USB Storage
+9. Bluetooth Classic SPP
+10. XMODEM／YMODEM
+11. Wi-Fi／NTP／File Server
+12. External RTC／I2C
+13. Graphics
+14. PCG
+15. Audio
+16. 設定file
+17. Troubleshooting
+18. Version historyとverification
 
 ## 1. はじめに
 
-Cala's Pokecom BASICは、ClockworkPi PicoCalcとRaspberry Pi Pico 2 Wの組み合わせだけで、プログラムの作成、保存、実行、グラフィック表示、通信を行えるBASIC環境です。RetroMiniBASICの言語処理系を基盤に、PicoCalcのLCD、STM32キーボード／システムコントローラー、SDカード、電源管理と、Pico 2 WのWi-Fi機能およびシリアル通信を統合しています。Wi-FiはPicoCalc本体ではなく、Pico 2 W内蔵のCYW43439（Pico SDKのCYW43ドライバ）が提供します。
+Cala's Pokecom BASICは、ClockworkPi PicoCalcとRaspberry Pi Pico 2 Wだけでprogramの作成、実行、保存、graphics、music、file transferを行えるstandalone BASIC環境です。
 
-Version 0.8では、Pico 2 WのネイティブUSBをUSB CDC + Mass Storage Class（MSC）の複合デバイスとして動作させ、PicoCalcのSDカードをWindowsから利用できるようにしました。SDカードの所有権をCPBとUSBホストの間で排他的に切り替え、Safe Eject後の通常返却、緊急用のForce Disconnect、SD-backed ProgramStoreの再検証を行います。Version 0.75までのProgram Storage、YMODEM／XMODEM、Wi-Fi File Server、3行ステータスなども引き続き利用できます。
+### 1.1 対応hardware
 
-![起動後のBASIC画面](images/manual-v08/BOOT.png)
+- ClockworkPi PicoCalc
+- Raspberry Pi Pico 2 W（RP2350）
+- FAT32形式のSD card（推奨）
+- Wi-Fi使用時は2.4 GHz WLAN
 
-### 起動時の初期状態
+現時点ではPico 2 W専用です。Pico、Pico W、Pico 2（非W）対応を示すものではありません。
+
+### 1.2 Version 0.85の主な機能
+
+- RAM 256×191／SD 1024×2047のProgram Storage
+- dirty editing sessionの自動復元
+- Graphics、PAINT、8×8 mono／indexed-color PCG
+- 最大3 voice MML、BEEP、PCM WAV
+- Bluetooth Classic SPP Consoleとfile transfer
+- XMODEM send／receive、YMODEM single send・batch receive
+- USB CDC + MSC + firmware reset interface
+- Wi-Fi、NTP、browser File Server
+- External PCF8563 RTCとI2C
+- Firmware → Enter BOOTSEL／Reboot、Windows `flash-cpb.cmd`
+- Key Click、F1～F10、Alt+S screenshot
+
+### 1.3 起動時の状態
 
 - CPU：FULL 150 MHz
 - Wi-Fi：OFF
+- Bluetooth：OFF
 - Wi-Fi File Server：OFF
-- USB Mass Storage：OFF
-- Program Storage Mode：保存された設定（初期値AUTO）
-- SDカードのルートディレクトリに`AUTORUN.BAS`がある場合だけ自動実行
+- USB Storage：OFF
+- Program Storage：保存設定（初期AUTO）
+- `AUTORUN.BAS`がある場合は自動実行
+- Startup WAVがONなら、ProgramStore／AUTORUN.BAS処理後、最初のREADY prompt前に`AUTORUN.WAV`をbackground再生
 
-Wi-FiとFile Serverは安全のため自動起動しません。CPUプロファイルを変更しても、再起動時にはFULL 150 MHzへ戻ります。
+dirty sessionを復元した起動では未保存編集を優先し、`AUTORUN.BAS`を実行しません。`[RESTORED EDITING SESSION]`はdirty sessionを実際に復元したときだけ表示します。fresh UNTITLEDとclean named sessionでは表示しません。
 
-## 2. ファームウェアの導入
+## 2. ファームウェアの導入と更新
 
-1. 公開用GitHubリポジトリのReleasesから`Cala-Pokecom-BASIC-v0.8-pico2w.uf2`をダウンロードします。
-2. Pico 2 WをPicoCalcから取り外し、Pico 2 W基板上のBOOTSELボタンを押したまま、Pico 2 W側のUSB端子（Micro-USB）でPCへ接続します。
-3. BOOTSELで表示されるUSB mass-storage driveへUF2をコピーします。
-4. Pico 2 WをPicoCalcへ戻します。
-5. FAT32形式のSDカードを挿入してPicoCalcを起動します。
+### 2.1 配布物
 
-ClockworkPi公式のSDカード作成手順は、主パーティションをFAT32で作成します。本ファームウェアもFAT32を標準手順として推奨し、pico-vfs／FatFsでマウントします。マウントに失敗しても自動フォーマットしません。
-
-起動画面には製品名、Version 0.8、Build番号、プログラム容量、SD状態が表示されます。ローカルビルドではBuild番号の代わりに`local`と表示されます。
-
-![起動画面](images/manual-v08/BOOT.png)
-
-## 3. 画面構成
-
-通常のBASIC画面は、上部の3行ステータス、中央のコンソール、最下段のFキー行で構成されます。ステータス3行とFキー行はスクロールしません。
-
-### 3.1 ステータス表示
-
-| 行 | 表示内容 | 例 |
-|---|---|---|
-| 1 | バージョン、ファイル名、編集済み、SD、バッテリー | `CPB v0.8 PICOCALC_MAND* SD:OK BAT:87%+` |
-| 2 | 日付、時刻、Wi-Fi、Caps Lock | `2026-09-21 15:44:32 WiFi:+ CAPS:A` |
-| 3 | CPU、クロック、コンソール、RUN時間 | `CPU:ECO 75MHz CON:BOTH RUN:4.709s` |
-
-記号の意味：
-
-- ファイル名末尾の`*`：読み込み後に編集されています。
-- バッテリー末尾の`+`：充電中です。
-- `WiFi:-`：Wi-Fi OFF
-- `WiFi:*`：Wi-Fi ON、未接続
-- `WiFi:+`：接続済み
-- `CAPS:A`：Caps Lock ON
-- `CAPS:a`：通常入力
-
-3行の背景色は選択したステータステーマで統一されます。`SCREEN`や`CLS`を使うグラフィックプログラムの終了後、BASICプロンプトに戻るとステータスとFキー行が復元されます。
-
-### 3.2 Fキー行
-
-最下段にはF1～F5へ割り当てたファイル名が表示されます。Shiftを押している間は同じ5か所がF6～F10の表示へ切り替わります。登録内容はControl Centerの`Quick Load Keys`で変更できます。
-
-各表示枠では`.BAS`を省略した短い登録名を表示します。実際のLOAD／RUN対象は登録されたファイルです。
-
-### 3.3 RUN終了表示
-
-プログラム実行後には、実行時間を表示してBASICプロンプトへ戻ります。画面下端でスクロールが起きた場合も、実行時間表示とプロンプトが連続して表示されます。
+GitHub Actions artifactは`CPokecombasic-pico2w`です。標準firmwareは次です。
 
 ```text
-[RUN] 0m 0.112s
-BASIC>
+build/CPokecombasic.uf2
+```
+
+ELFを配布する場合の名称は`CPokecombasic.elf`です。内部targetの`retrominibasic_picocalc`はuser向けfirmware名ではありません。
+
+### 2.2 初回導入
+
+1. Pico 2 WをPicoCalcから外します。
+2. Pico 2 W上のBOOTSELを押したまま、Pico 2 W側Micro-USBでPCへ接続します。
+3. RPI-RP2 driveへ`CPokecombasic.uf2`をcopyします。
+4. Pico 2 WをPicoCalcへ戻します。
+5. FAT32のSD cardを装着して起動します。
+
+PicoCalc本体USB Type-CとPico 2 W側Micro-USBの役割を混同しないでください。
+
+| Port | 主な用途 |
+|---|---|
+| Pico 2 W Micro-USB | BOOTSEL、USB CDC、USB Storage、picotool update |
+| PicoCalc USB Type-C | 電源／充電、CH340C経由UART0 |
+
+### 2.3 Control Centerから更新準備
+
+`Control Center → Firmware`に次があります。
+
+- Enter BOOTSEL：確認後にRP2350 ROM USB bootloaderへ移行
+- Reboot：確認後に通常再起動
+
+USB Storage中はFirmware操作できません。host側で安全にEjectし、SD ownershipをCPBへ戻してください。
+
+### 2.4 Windows `flash-cpb.cmd`
+
+必要条件：
+
+- `picotool.exe`がPATH上にある
+- Pico 2 W側Micro-USBで接続
+- USB Storageがactiveでない
+- 標準配置では`flash-cpb.cmd`と`build\CPokecombasic.uf2`が同じartifact内にある
+
+`flash-cpb.cmd`を実行すると、running CPBを`picotool -f`でBOOTSELへ移行し、UF2を書き込み・verifyします。UF2を引数指定またはdrag & dropすることもできます。
+
+reset vendor interfaceを持たない古いfirmwareからVersion 0.85へ移行するときだけ、物理BOOTSEL操作が一度必要です。
+
+## 3. 画面・keyboard・hotkey
+
+### 3.1 通常画面
+
+上3行はstatus、中央はconsole、最下段はfunction-key footerです。statusとfooterは通常のconsole scroll領域から分離されています。
+
+| 行 | 表示例 |
+|---|---|
+| 1 | `CPB v0.85 NAME* SD:OK BAT:87%+` |
+| 2 | `2026-09-25 17:30:00 WiFi:+ CAPS:A` |
+| 3 | `CPU:ECO 75MHz CON:BOTH RUN:4.709s` |
+
+`*`は編集済み、batteryの`+`は充電中です。WiFiは`-` OFF、`*` ON未接続、`+`接続済みです。
+
+### 3.2 Function Keys
+
+- F1～F5：通常
+- Shiftを押している間：F6～F10
+- assignment：Control Center → Quick Load Keys
+- action：LOADまたはLOADしてRUN
+- footer：現在のF1～F5／F6～F10を表示
+
+### 3.3 Hotkeys
+
+| 操作 | 機能 |
+|---|---|
+| HOME（Shift+Tab） | Control Center |
+| Alt+S | screenshot |
+| Power key／Alt+P | STANDBY（keyboard firmware互換fallbackを含む） |
+| Alt+B | PicoCalc keyboard MCUのbattery表示用予約 |
+| Alt+Space | keyboard MCUのkeyboard backlight cycle用予約 |
+
+Alt+Space、Alt+BはCPB commandではありません。未実装の候補hotkeyをmanualへ追加しないでください。
+
+### 3.4 Screenshot
+
+Alt+SはLCD全体を24-bit BMPとしてSD cardへ保存します。filenameは`SCREEN0001.BMP`から空き番号を選び、既存fileを上書きしません。
+
+REPL command：
+
+```text
+SCREENSHOT
+SCREENSHOT "NAME"
+```
+
+BASIC statement：
+
+```basic
+SAVEIMAGE "NAME.BMP"
+SAVE IMAGE "NAME.BMP"
+SAVE IMAGE "NAME.BMP",X1,Y1,X2,Y2
 ```
 
 ## 4. BASICの基本操作
 
-### 4.1 プログラムの入力
+### 4.1 Program lineとDirect mode
 
-行番号を付けて入力するとプログラムへ登録されます。同じ行番号を入力すると置換され、行番号だけを入力すると削除されます。
+行番号付き入力はprogramへ登録します。同じ行番号は置換、行番号だけなら削除です。
 
 ```basic
 10 PRINT "HELLO, PICOCALC!"
 20 FOR I=1 TO 10
 30 PRINT I
 40 NEXT I
-50 END
 ```
 
-`RUN`で実行、`LIST`で表示、`NEW`で消去します。
-
-### 4.2 直接モード
-
-行番号のないBASIC文はすぐに実行されます。
+行番号なしは即時実行するDirect modeです。
 
 ```text
 BASIC> PRINT 2+3*4
 14
-BASIC> A=10
-BASIC> PRINT A
-10
 ```
 
-`CLEAR`は直接モードの変数を消去します。`NEW`はプログラムと直接モードの変数を消去します。
+### 4.2 REPL command
 
-### 4.3 REPLコマンド一覧
-
-| コマンド | 内容 |
+| Command | 機能 |
 |---|---|
-| `LIST` | 登録プログラムを表示 |
-| `RUN` | プログラムを実行 |
-| `PROFILE [ON/TIME/OFF/SHOW/RESET]` | RUN時間プロファイルを制御 |
-| `NEW` | プログラムと直接モード変数を消去 |
-| `CLEAR` | 直接モード変数を消去 |
-| `CLS` | 画面を消去 |
-| `FILES` / `DIR` | SDカードのルートディレクトリにあるファイル一覧 |
-| `LOAD "NAME"` | BASICファイルを読み込み |
-| `SAVE "NAME"` | BASICファイルを保存 |
-| `SD [STATUS/REMOUNT]` | SD状態を表示／再マウント |
-| `SCREENSHOT [name]` | 画面をBMP保存 |
-| `XRECV "name"` | XMODEM-CRCで受信 |
-| `XSEND "name"` | XMODEM-CRCで送信 |
-| `YRECV` | YMODEMで受信。名前はBlock 0から取得 |
-| `YSEND "name"` | YMODEMで送信 |
-| `DATE [YYYY-MM-DD]` | 日付を表示／設定 |
-| `TIME [HH:MM:SS]` | 時刻を表示／設定 |
-| `DATETIME [YYYYMMDDHHMMSS]` | 日時を表示／設定 |
-| `SERIAL [ON/OFF/ONLY]` | シリアルコンソールを設定 |
-| `CONSOLE [LCD/BOTH/SERIAL]` | コンソール経路を設定 |
-| `STANDBY` | RAMを保持したまま待機 |
-| `MENU` | Control Centerを開く |
-| `HELP` | コマンド概要を表示 |
+| `LIST` | program表示 |
+| `RUN` | program実行 |
+| `NEW` | programとdirect scalarをclearしcurrent filename解除 |
+| `CLEAR` | direct scalarをclear |
+| `LOAD "NAME"` | BASIC sourceをload |
+| `SAVE` | current filenameへtransactional save |
+| `SAVE "NAME"` | Save Asしてcurrent filename更新 |
+| `FILES`／`DIR` | SD root一覧 |
+| `SD`／`SD STATUS`／`SD REMOUNT` | SD状態／remount |
+| `SCREENSHOT ["name"]` | BMP保存 |
+| `XRECV "name"`／`XSEND "name"` | XMODEM |
+| `YRECV`／`YSEND "name"` | YMODEM |
+| `DATE`／`TIME`／`DATETIME` | clock表示・設定 |
+| `SERIAL`／`CONSOLE` | USB CDC／UART console設定 |
+| `PROFILE ...` | execution profile |
+| `STANDBY` | RAM保持待機 |
+| `MENU` | Control Center |
+| `HELP` | command概要 |
 
-`.BAS`を省略した`LOAD`／`SAVE`では拡張子が自動付加されます。
+`.BAS`を省略したLOAD／SAVEは拡張子を補います。引数なしSAVEは、最後に成功したLOADまたはSave Asのfileへ保存します。NEW後は`?FILENAME REQUIRED`となり、以前のfileを誤って上書きしません。
 
-### 4.4 BASIC言語リファレンス
+### 4.3 言語要素
 
-- 単精度浮動小数点の数値変数、文字列変数、数値配列、文字列配列
-- `LET`と省略形の代入
-- `IF / THEN / ELSE`
-- `FOR / NEXT / STEP`
-- `WHILE / WEND`
-- `DO / LOOP UNTIL`
-- `GOTO`、`GOSUB / RETURN`
-- `ON GOTO / ON GOSUB`
-- `PRINT`、`INPUT`、`END`、`STOP`
-- 四則演算、比較、論理演算、`MOD`、`^`
-- コメント：`REM`またはアポストロフィ
-- グラフィック：`SCREEN`、`CLS`、`COLOR`、`COLORHSV`、`PSET`、`LINE`、`CIRCLE`、`BOX`、`PAINT`、`FLUSH`、`SLEEP`、`LOCATE`、`GLOCATE`、`GPRINT`、`SAVEIMAGE`
+- 数値／文字列variable、1D／2D array
+- `LET`、`PRINT`、`INPUT`
+- `IF THEN ELSE`
+- `FOR NEXT STEP`
+- `WHILE WEND`
+- `DO LOOP UNTIL`
+- `GOTO`、`GOSUB RETURN`
+- `ON expression GOTO ...`、`ON expression GOSUB ...`
+- `END`、`STOP`
+- `REM`またはapostrophe comment
+- arithmetic、comparison、logical、`MOD`、`^`
 
-実装済み関数：
+主なfunction：
 
-`ABS`、`INT`、`VAL`、`STR$`、`LEN`、`CHR$`、`ASC`、`LEFT$`、`RIGHT$`、`MID$`、`INSTR`、`STRING$`、`SPC`、`TAB`、`SIN`、`COS`、`TAN`、`SQR`、`ATN`、`LOG`、`EXP`、`PI`、`RAD`、`DEG`、`SGN`、`MIN`、`MAX`、`CLAMP`、`RND`、`RNDI`、`TIMER`、`POINT`。
+`ABS`、`INT`、`VAL`、`STR$`、`LEN`、`CHR$`、`ASC`、`LEFT$`、`RIGHT$`、`MID$`、`INSTR`、`STRING$`、`SPC`、`TAB`、`SIN`、`COS`、`TAN`、`SQR`、`ATN`、`LOG`、`EXP`、`PI`、`RAD`、`DEG`、`SGN`、`MIN`、`MAX`、`CLAMP`、`RND`、`RNDI`、`TIMER`、`POINT`、`INKEY`、`I2CREAD`、`PLAYING`。
 
-配列は1次元または2次元で、添字0を含みます。`DIM A(10)`は`A(0)`から`A(10)`までです。1回の実行で使用できる数値配列は合計4,096セル、文字列配列は合計512セルです。文字列配列の1要素は最大127文字です。直接モードの配列はコマンドごとにリセットされます。
+### 4.4 Hexadecimal literal
 
-### 4.5 ソースとコンパイラーの制限
+`&Hxxxx`をnumber literalとして使用できます。
 
-| 項目 | Version 0.8の上限 |
-|---|---:|
-| 1行の文字列 | 最大191文字 |
-| INTERNAL RAMのプログラム | 最大256行 |
-| SD CARD／AUTOでSD使用時 | 最大1,024行 |
-| 数値配列 | 合計4,096セル |
-| 文字列配列 | 合計512セル |
-| 文字列配列の1要素 | 最大127文字 |
-
-SDカード側の行上限はProgram Storeの上限です。プログラム内容によっては、中間言語、文字列リテラル、変数など別の実行資源が先に上限へ達する場合があります。
-
-## 5. SDカードとファイル
-
-FAT32形式のSDカードを推奨します。BASICファイルはSDカードのルートディレクトリへ置きます。マウントに失敗してもカードを自動フォーマットしません。
-
-```text
-BASIC> DIR
-BASIC> LOAD "HELLO.BAS"
-BASIC> RUN
+```basic
+10 A=&HFF
+20 PRINT A
+30 GPALETTE 2,&H00FF00
+40 PRINT I2CREAD(&H51,&H02)
 ```
 
-![FILESコマンドの一覧](images/manual-v075/SCREEN0002.png)
+### 4.5 PAUSE、INKEY、BREAK、SLEEP
 
-### 5.1 Filesメニュー
+- `PAUSE`：画面を変えず通常keyを待つ
+- `INKEY`：入力なし0、通常keyは数値code
+- BREAK：programを停止し、background audioも停止
+- `SLEEP milliseconds`：10 ms以下のchunkで待ち、BREAKとbackground serviceを継続
 
-Control Centerの`Files`ではBASICファイルを一覧表示できます。
+END／STOPによる通常終了とordinary runtime errorはbackground audioを自動停止しません。必要なら`PLAY STOP`または`WAVSTOP`を使います。
+
+### 4.6 Runtime resource
+
+| 項目 | 上限 |
+|---|---:|
+| 数値array | 合計4,096 cells |
+| 文字列array | 合計512 cells |
+| 文字列arrayの1 element | 127 characters |
+| MML 1 voice string | 384 characters |
+
+Direct modeのarrayはcommandごとにresetされます。
+
+## 5. Program StorageとStorage Continuity
+
+### 5.1 Backend capacity
+
+| Backend | 最大行数 | 1行本文 |
+|---|---:|---:|
+| INTERNAL RAM | 256 | 191 characters |
+| SD CARD | 1,024 | 2,047 characters |
+| AUTO | active backendに従う | active backendに従う |
+
+本文長にはline numberとその後のspaceを含めません。
+
+- RAM 191：valid
+- RAM 192以上：reject
+- SD 2047：valid
+- SD 2048以上：reject
+- silent truncation：なし
+
+### 5.2 SD long line
+
+SD backendは191文字を超えるsource lineを`LOAD`、`LIST`、`RUN`、`SAVE`、session restoreできます。ただしPicoCalc keyboardのinteractive line editorとDirect modeは191文字のままです。
+
+長い行はPCで編集し、次の方法でSDへ移します。
+
+- USB Storage
+- Wi-Fi File Server
+- XMODEM／YMODEM
+- その他のbinary-safe file transfer
+
+191文字超過lineを含むSD programをINTERNAL RAMへ切り替えると`LINE TOO LONG FOR RAM`で安全に拒否し、SD sourceを破壊しません。256行超過では`PROGRAM TOO LARGE FOR RAM MODE`です。
+
+### 5.3 Editing session
+
+SD Program Storageはcurrent editing source、filename、dirty stateをsessionとして保持します。power cycle後にverified dirty sessionがあれば復元します。
+
+技術file：
+
+- `RMBASIC.SES`：session descriptor
+- `RMBASIC.BAK`：設定backup
+- temporary program file：transactional編集／保存用
+
+通常利用では内部fileを操作しないでください。saveはtemporary fileを正常に閉じて検証した後だけfinal filenameへ置き換えます。power lossやcrash後はvalid candidateをscanします。
+
+### 5.4 USB Storage return
+
+USB Storage中はhostがSD cardを所有し、CPB firmwareはFatFsへアクセスしません。CPBへreturnした後は、USB公開前のoffset／hashを信用せずProgramStore indexを再構築します。
+
+## 6. SD cardとfile
+
+SD cardはFAT32を推奨します。mount failure時に自動formatしません。BASIC sourceと一般fileはroot directoryへ置きます。
+
+Files menu：
 
 - Enter：LOAD
-- `R`：LOADしてRUN
-- F1～F10：選択中のファイルをクイックキーへ登録
-- Esc：戻る
+- R：LOAD and RUN
+- F1～F10：quick key assignment
+- Esc：back
 
-![Filesメニュー](images/manual-v075/SCREEN0007.png)
-
-### 5.2 設定ファイル
-
-`/RMBASIC.CFG`には表示、コンソール、Wi-Fi、NTP、Fキーなどの設定が保存されます。更新時には`RMBASIC.BAK`を利用して、書き込み途中の障害から復旧できるようにしています。
-
-### 5.3 SD Cardメニュー
-
-カード検出、マウント状態、直近のSDエラーを確認できます。カード交換後は`Remount SD card`、設定を読み直す場合は`Reload RMBASIC.CFG`を選びます。
-
-![SD Cardメニュー](images/manual-v075/SCREEN0012.png)
-
-### 5.4 Program Storage
-
-Version 0.8でも、BASICソースの格納先をProgram Storeとして抽象化しています。Control Centerの`Program Storage`でMode、Active backend、SD状態、プログラム名、行数、サイズを確認できます。
-
-| モード | 説明 |
-|---|---|
-| AUTO | SDカードが利用可能ならSD CARD、利用できなければINTERNAL RAM |
-| SD CARD | ソース本文をSDカード上の作業ファイルへ保持し、RAMには行indexを保持 |
-| INTERNAL RAM | SDカードなしでも動作するRAM格納。最大256行 |
-
-AUTOでSDカードを利用できる場合はSD CARDと同じ最大1,024行です。AUTOがRAM fallback中にSDカードを挿入しても、編集中のプログラムを自動移動しません。Storage Modeから明示的に切り替えます。
-
-RAMからSD CARDへ切り替えるとき、変更済みプログラムがあればSave／Discard／Cancelを選びます。SD CARDからRAMへの切替では256行に収まるかを検査し、超える場合は`PROGRAM TOO LARGE FOR RAM MODE`として元のSD Program Storeを維持します。
-
-SD-backed編集では、元ファイルを直接ランダム書き換えしません。SDカード上の作業ファイルと行indexを一組として管理し、編集やLOADは新しい状態の検証後に切り替えます。`NEW`は現在の編集内容を空にしますが、SAVEするまで元のBASファイルを削除しません。
-
-SD CARD使用中にカードが取り外された場合は、自動的にRAMへ移行せず、`PROGRAM STORAGE SUSPENDED`として停止します。カードを再挿入し`Resume SD Storage`を選ぶか、明示的にRAMへ切り替えます。
-
-現在Program Storeが使用中のファイルは、Wi-Fi File Server、XRECV、YRECVによる上書きや削除から保護されます。
-
-### 5.5 400行プログラムの確認
-
-`CPB_LARGE_400.BAS`（400 BASIC行、約6 KiB）は、AUTO + SD backendでLOAD、LIST、編集、RUN、SAVE、再LOADを実機確認済みです。FULL 150 MHzでの参考RUN時間は`[RUN] 0m 1.728s`でした。これは特定のテストプログラムと実機条件による参考値であり、すべての400行プログラムの実行時間を示すものではありません。
-
-同プログラムを開いたままINTERNAL RAMへ切り替える操作は、RAMの256行上限を超えるため安全に拒否され、SDカード側のプログラムは維持されます。
-
-## 6. USB CDC + Mass Storage
-
-Version 0.8では、Pico 2 W側のMicro-USB端子から、USB CDCシリアルコンソールとUSB Mass Storage Class（MSC）を同時に提供します。Windowsでは同じUSB接続からCOMポートとSDカードのディスクを利用できます。
-
-| 接続 | 用途 |
-|---|---|
-| Pico 2 W側 Micro-USB | USB CDCコンソール、UF2書き込み、USB Mass Storage |
-| PicoCalc本体 USB Type-C | 電源・充電、CH340C経由のUARTシリアルコンソール |
-
-USBの構成は次のとおりです。
-
-```text
-Pico 2 W native USB
-+-- CDC : BASIC serial console
-+-- MSC : SD card block device
-```
-
-MSCはWindows 11との実機試験で、SDカードの認識、読み取り、新規作成、上書き、削除を確認済みです。USB CDCのBASICコンソールも同時に利用できます。
-
-### 6.1 USB Storageを開始する
-
-1. Pico 2 W側のMicro-USB端子をWindows PCへ接続します。
-2. Control Centerから`USB Storage`を開きます。
-3. SDカードを使用中のBASIC処理がないことを確認します。
-4. `Enable USB Storage`を選びます。
-5. WindowsにSDカードのディスクが表示されたら、PC側でファイルを操作します。
-
-停止中の画面では、SDカードの所有者はCPBです。
-
-![USB Storage停止中](images/manual-v08/USB-STORAGE-OFF.png)
-
-```text
-USB Storage
-
-USB CDC       CONNECTED
-Mass Storage  OFF
-SD Card       CPB
-
-> Enable USB Storage
-  Back
-```
-
-MSC動作中は、次の操作が表示されます。`Back`はメニュー末尾の1項目だけです。
-
-```text
-USB Storage
-
-USB CDC       CONNECTED
-Mass Storage  ACTIVE
-SD Card       USB HOST
-
-> Return SD to CPB
-  Force Disconnect
-  Back
-```
-
-### 6.2 Safe Ejectと通常返却
-
-通常はWindows側でSDカードのディスクを安全に取り出してから、`Return SD to CPB`を選びます。ホストのEjectを確認できない場合は、SDカードの所有権を強制的に戻さず、次のメッセージを表示します。
-
-```text
-PLEASE EJECT USB DISK ON HOST FIRST
-```
-
-安全な返却では、MSCのメディア公開とraw I/Oを停止し、SDカードを同期してからFatFsを再マウントします。その後、SD-backed ProgramStoreのindexを無効化して再検証し、所有者をCPBへ戻します。
-
-### 6.3 Force Disconnect
-
-`Force Disconnect`は、Windows側で安全な取り出しができない場合だけ使用する緊急操作です。未送信の書き込みキャッシュが残っていると、ファイルシステムやファイルを破損する可能性があります。
-
-確認画面の初期選択は必ず`Cancel`です。
-
-```text
-Force USB Storage Disconnect?
-
-The host may have pending writes.
-Filesystem data may be lost.
-
-> Cancel
-  Force Disconnect
-```
-
-この操作はMSCメディアだけを切断します。USBデバイス全体を切断・再列挙せず、USB CDCのBASICコンソールは維持します。開始後は新しいREAD10／WRITE10を拒否し、実行中のraw SD操作が終わってから同期、FatFs再マウント、ProgramStore再検証を行います。
-
-### 6.4 MSC動作中の制限
-
-MSC動作中、SDカードの所有者はUSBホストです。CPB側からSDカードへ同時アクセスしないよう、次の操作を制限します。
-
-- `DIR`／`FILES`、`LOAD`、`SAVE`
-- XMODEM／YMODEMのSDカード転送
-- Wi-Fi File Server
-- スクリーンショット保存
-- SD-backed ProgramStoreの編集、LIST、RUN
-- `STANDBY`
-
-必要に応じて`SD CARD BUSY (USB STORAGE)`または同等のエラーを表示します。ProgramStoreは古いSD indexを信用せず一時停止し、SDカード返却後に再検証します。USBホストとCPBが同時にSDカードへアクセスする状態は作りません。
+current ProgramStoreが使用中のsourceは、File Server、XRECV、YRECVによるoverwrite／deleteから保護されます。
 
 ## 7. Control Center
 
-空の`BASIC>`プロンプトでHOME（Shift+Tab）を押します。上下キーで選択、Enterで決定、EscまたはHOMEで戻ります。
-
-![Control Center](images/manual-v08/CONTROL-CENTER.png)
-
-Version 0.8のメニュー：
+空の`BASIC>` promptでHOME（Shift+Tab）を押します。
 
 1. Files
-2. Quick Load Keys
-3. Display
-4. Console
-5. Date / Time
-6. Wireless LAN
-7. Wi-Fi File Server
-8. File Transfer
-9. SD Card
-10. Power / CPU
-11. System Information
-12. Program Storage
+2. Save Program
+3. Save Program As...
+4. Quick Load Keys
+5. Display
+6. Console
+7. Date / Time
+8. Audio
+9. Wireless LAN
+10. Bluetooth
+11. Wi-Fi File Server
+12. File Transfer
 13. USB Storage
-14. Exit
+14. SD Card
+15. Firmware
+16. Power / CPU
+17. System Information
+18. Program Storage
+19. Exit
 
-### 7.1 Quick Load Keys
+### 7.1 Display／Console
 
-F1～F10へファイルを登録し、`LOAD`または`RUN`を選べます。`RUN`はファイルを読み込んで実行します。
+Displayではstatus、LCD backlight、status theme、console foreground／backgroundを設定します。
 
-![Quick Load Keys](images/manual-v075/SCREEN0008.png)
+Console mode：
 
-### 7.2 Display
+- LCD ONLY
+- LCD + SERIAL
+- SERIAL ONLY
 
-ステータス表示、LCDバックライト、ステータステーマ、コンソールテーマを変更できます。名前付きテーマのほか、Advanced console RGBで色を細かく設定できます。
+USB CDCとUART0はserial inputとして扱います。Bluetooth Consoleは別のON／OFFです。
 
-![Displayメニュー](images/manual-v075/SCREEN0009.png)
+### 7.2 Audio
 
-### 7.3 Console
+- Volume：0～100、10刻みcycle
+- Startup WAV：ON／OFF
+- Key Click：OFF／SOFT／CLASSIC／SHARP
 
-| モード | 表示・入出力 |
-|---|---|
-| LCD ONLY | PicoCalc本体のみ |
-| LCD + SERIAL | LCDとシリアルの両方 |
-| SERIAL ONLY | シリアル中心。物理HOMEは有効 |
+Key Click defaultはCLASSICです。物理PicoCalc keyのREPL／Control Center操作だけが鳴ります。program実行中のINKEY／PAUSE／BREAK、USB serial、Bluetooth remote consoleは鳴りません。
 
-![Consoleメニュー](images/manual-v075/SCREEN0010.png)
+### 7.3 Power／CPU
 
-### 7.4 Date / Time
-
-標準PicoCalcにはRTCが搭載されていません。Cala's Pokecom BASICは、オプションの外付けPCF8563 RTCを検出した場合に利用できます。RTCがなくてもソフトウェア時計を使用でき、Pico 2 WのWi-Fi接続中はNTP同期も利用できます。日時の一括設定は14桁です。
-
-```text
-YYYYMMDDHHMMSS
-```
-
-例：`20260919212400`
-
-![Date / Timeメニュー](images/manual-v075/SCREEN0011.png)
-
-### 7.5 Power / CPU
-
-| プロファイル | クロック |
+| Profile | Clock |
 |---|---:|
 | FULL | 150 MHz |
 | NORMAL | 100 MHz |
 | ECO | 75 MHz |
 
-変更は現在のセッションだけに適用され、再起動するとFULLへ戻ります。`STANDBY NOW`はRAMと実行状態を保持したまま、LCDとバックライトを消して待機します。復帰は任意のキーです。
+50 MHzは対応値ではありません。CPU profileはsession-onlyで、再起動時に150 MHzへ戻ります。
 
-`PICOCALC_MAND.BAS`の参考RUN時間は、FULL 150 MHzで2.482秒、NORMAL 100 MHzで3.598秒、ECO 75 MHzで4.709秒です。SD状態やBuild、プログラム内容により変動します。
+## 8. USB Storage
 
-![Power / CPUメニュー](images/manual-v075/SCREEN0013.png)
+Pico 2 W側Micro-USBからPicoCalcのSD cardをUSB Mass StorageとしてPCへ公開します。
 
-### 7.6 System Information
+### 8.1 開始
 
-Version、Build、CPU、稼働時間、プログラム名、行数、コンソール、SD、バッテリー、Wi-Fi、日時、直近のRUN時間を確認できます。
+1. Pico 2 W側Micro-USBをPCへ接続
+2. Control Center → USB Storage
+3. Enable USB Storage
+4. PC側でfile操作
 
-![System Information](images/manual-v08/SYSTEM-INFORMATION.png)
+この間、SD ownerはUSB HOSTです。CPB側のDIR、LOAD、SAVE、SD-backed LIST／RUN／編集、transfer、screenshot、File Server、STANDBYは制限されます。
 
-### 7.7 File Transfer
+### 8.2 終了
 
-YMODEM／XMODEMをBASICコマンドと同じ転送処理で実行します。YMODEMを通常利用向け、XMODEMを互換・非常用として表示します。4つのメニュー項目は、Tera Termとの実機通信で確認済みです。
+通常手順：
 
-![File Transferメニュー](images/manual-v075/FILE-TRANSFER.png)
+1. PC側でUSB diskを安全にEject
+2. PicoCalcでReturn SD to CPB
+3. remountとProgramStore index rebuild完了を待つ
 
-- `Receive via YMODEM`：ファイル名とサイズをBlock 0から取得
-- `Send via YMODEM`：SDの一般ファイル一覧から送信対象を選択
-- `Receive via XMODEM`：先に保存ファイル名を入力
-- `Send via XMODEM`：SDの一般ファイル一覧から送信対象を選択
+Force Disconnectはhostのpending writeでdataを失う可能性がある緊急手段です。確認初期値はCancelです。Firmware update前は必ずownershipをCPBへ戻します。
 
-送信一覧にはBASだけでなくBMPなども表示します。Program Storeの内部作業ファイルやstaging fileは表示しません。転送開始前はEscで戻れます。転送中にTera TermからCANを受けた場合、またはタイムアウト・エラーになった場合も、結果を表示してControl Centerへ復帰します。
+## 9. Bluetooth Classic SPP
 
-## 8. Wi-Fi
+### 9.1 方式
 
-Control Centerの`Wireless LAN`から明示的に有効化します。
+- Classic Bluetooth SPP／RFCOMM
+- device name：`CPB-PicoCalc`
+- 同時client：1
+- BLEではない
+- Bluetoothは起動時OFF
 
-Wi-FiはPico 2 W内蔵のCYW43439が提供します。PicoCalc本体だけにWi-Fi機能が搭載されているわけではありません。
+Control Center → Bluetooth：
 
-1. Wi-FiをONにします。
-2. 周辺SSIDをスキャンします。
-3. SSIDを選び、必要ならパスワードを入力します。
-4. 接続してIPv4アドレスを確認します。
-5. 必要に応じてNTP同期、タイムゾーン、NTPサーバーを設定します。
+- Enable／Disable Bluetooth
+- Console ON／OFF
+- Test Terminal
+- status、device、RX／TX overflow、last status
 
-起動時のWi-Fiは常にOFFです。保存済みSSIDがあっても勝手に接続しません。現在、Wi-FiパスワードはSDカードのルートディレクトリにある`RMBASIC.CFG`へ平文で保存されます。
+File TransferはControl Centerの独立menuです。
 
-## 9. Wi-Fi File Server
+### 9.2 Bluetooth Console
 
-ブラウザからSDカードのルートディレクトリを管理するHTTPファイルサーバーです。専用PCアプリは不要で、PCやスマートフォンのChrome／Edgeなどから利用できます。
+Console ONにするとPC terminalからBASIC REPLを操作できます。LCDと既存USB CDC／UART0 ConsoleModeは維持されます。1行の入力は最初に入力したsourceが所有します。
 
-### 9.1 起動
+Test TerminalはSPP connection、echo、test messageの確認用です。Console／Test Terminal／TransferはRXを同時使用しません。
 
-1. `Wireless LAN`でWi-FiをONにして接続します。
-2. Control Centerの`Wi-Fi File Server`を開きます。
-3. `Start File Server`を選びます。
-4. 表示された`http://IP/?k=TOKEN`をブラウザで開きます。
+### 9.3 ConsoleとFile Transferの違い
 
-未接続時は勝手にWi-FiをONにせず、接続が必要であることを表示します。
+Bluetooth file transferにConsole ONは不要です。必要なのは：
 
-![File Server停止中](images/manual-v075/SCREEN0005.png)
+- Bluetooth ON
+- SPP link connected
+- Test Terminal／別transferがRXを所有していない
 
-起動後はWi-Fi、HTTP、IP、Port、トークン付きURLを確認できます。
+transfer中はbinary 0x00～0xffをCR/LF conversion、ANSI decode、echo、NUL filter、Ctrl+C conversionなしで扱います。
 
-![File Server動作中](images/manual-v075/SCREEN0006.png)
+## 10. XMODEM／YMODEM
 
-### 9.2 ブラウザ操作
+### 10.1 Transport selector
 
-- Refresh：一覧を再取得
-- Choose Files／Upload：PCからSDカードへ転送
-- Download：SDカードからPCへ転送
-- Delete：確認後に削除
+Control Center → File Transferの先頭で選択します。
 
-Upload／Downloadはファイル全体をRAMへ読み込まず、小さな固定バッファでストリーミングします。BAS、BMP、TXT、CFG、その他のバイナリを変換せず転送します。
+- AUTO
+- USB CDC
+- UART0
+- Bluetooth SPP
 
-Uploadは「元のファイル名 + `.TMP`」の一時ファイルへ受信し、Content-Length分を正常に書き終えてファイルを閉じた後だけ最終名へ置き換えます。通信切断やSDエラーが起きた場合、不完全な一時ファイルを削除し、既存の正常ファイルを保護します。
+LEFT／RIGHTまたはENTERでcycleします。selectionはmenuを閉じるまでで、`RMBASIC.CFG`へ保存しません。
 
-### 9.3 セキュリティと停止
+AUTO resolution：
 
-File Serverを開始するたびに新しい短期トークンが生成されます。トークンはSDカードへ保存されず、停止または再起動で無効になります。API操作にも同じトークンが必要です。
+1. commandをUSBから入力した場合はUSB CDC
+2. UARTから入力した場合はUART0
+3. Bluetooth Consoleから入力した場合はBluetooth SPP
+4. PicoCalc本体から開始した場合はconnected USB CDC、なければUART0
 
-次の場合はサーバーが停止します。
+Bluetoothが接続されただけで、local AUTO transferがBluetoothへ切り替わることはありません。explicit routeは失敗時に別routeへfallbackしません。
 
-- `Stop File Server`を選択
-- Wi-FiをOFF
-- Wi-Fi接続が失われた
-- STANDBYへ移行
-- 再起動
+### 10.2 XMODEM
 
-同時に1クライアント／1ファイル操作を基本とします。HTTP転送中はSDカードを専有し、競合するSDカード操作は`BUSY`として扱われる場合があります。
+対応：
 
-## 10. YMODEM
-
-YMODEMは、Tera Termを使うシリアル転送の推奨方式です。PC → PicoCalcとPicoCalc → PCの両方向で、Tera Termとの実機転送を確認済みです。CRC-16/XMODEMを使用し、Block 0でファイル名と10進ASCIIの正確なファイルサイズを伝えます。データ送信には基本1,024-byteのSTXブロックを使い、受信側は128-byte SOHと1,024-byte STXの両方を扱います。
-
-YMODEMの最後のブロックにパディングがあっても、Block 0のサイズまでしか保存しないため、BAS・BMPなどを元と同じバイト数で転送できます。実機確認では、ファイル名、正確なファイルサイズ、BASICテキストの往復、およびパディングが保存ファイルへ残らないことを確認しています。
-
-Version 0.8のYMODEMは1ファイル転送に対応します。複数ファイルをまとめて送るbatch転送には対応していません。
-
-### 10.1 PCから受信
-
-1. Tera Termで、Cala's Pokecom BASICの`BASIC>`が表示されるCOMポートを開きます。
-2. PicoCalcで`YRECV`を実行するか、Control Centerで`Receive via YMODEM`を選びます。
-3. Tera Termで`File → Transfer → YMODEM → Send`を選びます。
-4. ファイルを選択します。PicoCalc側でファイル名とサイズを確認します。
-5. `TRANSFER COMPLETE`と受信バイト数を確認します。
+- receive／send
+- USB CDC／UART0／Bluetooth SPP
+- single-file
+- CRC-16/XMODEM
+- 128-byte block
 
 ```text
-BASIC> YRECV
-YMODEM RECEIVE
-WAITING FOR SENDER...
-FILE: CPB_LARGE_400.BAS
-SIZE: 6255 BYTES
-RECEIVED 6255 BYTES
-TRANSFER COMPLETE
+XRECV "TEST.BAS"
+XSEND "TEST.BAS"
 ```
 
-受信は一時ファイルへ行い、通知されたサイズを完全に受け取り、ファイルを正常に閉じた後だけ最終名へ置き換えます。不正なファイル名、Program Storeが使用中のファイル、内部作業ファイルは拒否します。
+XMODEM headerにはfilenameとexact sizeがありません。sendした最終blockの`0x1a` paddingがPC側file末尾に残る場合があります。exact-sizeが必要ならYMODEMを使います。
 
-### 10.2 PCへ送信
+### 10.3 YMODEM
 
-1. Tera Termで、Cala's Pokecom BASICの`BASIC>`が表示されるCOMポートを開きます。
-2. Tera Termで`File → Transfer → YMODEM → Receive`を選び、待受状態にします。
-3. PicoCalcで`YSEND "name"`を実行するか、Control Centerで`Send via YMODEM`からファイルを選びます。
-4. 完了後、PC側とSDカード側のファイルサイズを比較します。必要ならSHA-256で完全一致を確認します。
+対応：
+
+- receive：single-file、multi-file batch
+- send：single-file
+- 128-byte SOH／1,024-byte STX
+- header filename／decimal file size
+- exact-size commit
+- final empty Block 0
 
 ```text
-BASIC> YSEND "CPB_LARGE_400.BAS"
-YMODEM SEND: CPB_LARGE_400.BAS
-SIZE: 6255 BYTES
-WAITING FOR RECEIVER...
-SENT 6255 BYTES
-TRANSFER COMPLETE
+YRECV
+YSEND "TEST.BAS"
 ```
 
-YMODEMのプロトコル処理、Block 0、正確なサイズ復元、エラー処理はhost testに加え、Tera Termとの実機往復転送でも確認済みです。
+PC→PicoCalc receiveではBlock 0のsizeだけを保存し、末尾paddingを保存しません。batchでは各fileを個別transactionとしてcommitし、後続fileのcancel／error時も完了済みfileは保持します。不完全なcurrent fileは残しません。
 
-## 11. XMODEM-CRC
+### 10.4 Bluetooth final implementation
 
-Wi-Fiを使用できない場合の互換・fallback用ファイル転送です。PC → PicoCalcとPicoCalc → PCの両方向で、Tera Termとの実機転送を確認済みです。128-byte SOHブロック、CRC-16/XMODEM、ACK／NAK／CAN／EOTを使用します。XMODEMはプロトコル内でファイル名と正確なファイルサイズを伝えません。
+開発者向け参考値：
 
-### 11.1 PCから受信
+- RX ring：8192 bytes
+- TX ring：2048 bytes
+- transfer prefetch：2048 bytes
+- bulk RX、overflow即時検出
+- short protocol-control TX drain
+- post-transfer RX quarantine
+- duplicate Block 0 recovery
+- pre-data timeout ACK + C recovery
+- partial packet timeout NAK／retry
 
-1. Tera Termで、Cala's Pokecom BASICの`BASIC>`が表示されるCOMポートを開きます。
-2. PicoCalcで次を実行します。
+診断中の`[YDBG]`は最終版から削除済みです。
 
-```text
-BASIC> XRECV "TEST.BAS"
-XMODEM RECEIVE: TEST.BAS
-WAITING FOR SENDER...
-```
+## 11. Wi-Fi／NTP／File Server
 
-3. Tera Termで`File → Transfer → XMODEM → Send`を選びます。
-4. `TEST.BAS`を選びます。
-5. PicoCalcで`TRANSFER COMPLETE`と受信バイト数を確認します。
-6. `DIR`、`LOAD "TEST.BAS"`、`LIST`で確認します。
+### 11.1 Wi-FiとNTP
 
-受信は一時ファイルへ保存し、正常完了後だけ最終ファイルへ置き換えます。XMODEMの最終ブロックにある標準的な`0x1A`パディングは、BASICテキストとして扱う場合に支障がないよう処理されます。
+Wireless LANから明示的にONにします。保存済みSSIDがあっても起動時に自動接続しません。
 
-### 11.2 PCへ送信
+- SSID scan／connect
+- IPv4表示
+- NTP sync
+- timezone：-720～+840 minutes
+- NTP server設定
+- auto RTC update設定
 
-1. Tera Termで、Cala's Pokecom BASICの`BASIC>`が表示されるCOMポートを開きます。
-2. PicoCalcで次を実行します。
+Wi-Fi passwordは`RMBASIC.CFG`へ平文保存されます。
 
-```text
-BASIC> XSEND "TEST.BAS"
-XMODEM SEND: TEST.BAS
-WAITING FOR RECEIVER...
-```
+### 11.2 Wi-Fi File Server
 
-3. Tera Termで`File → Transfer → XMODEM → Receive`を選びます。
-4. 保存先を指定し、完了を待ちます。
-5. PC側のファイルを元ファイルと比較します。
+browserだけでSD rootのlist、upload、download、deleteを行えます。
 
-XMODEMはファイルサイズを通知できないため、PicoCalcからPCへ送る最終128-byteブロックは`0x1A`で埋められ、PC側ファイル末尾に残る場合があります。PicoCalcでBASを受信するときは末尾の標準的な`0x1A`を処理しますが、バイナリ完全一致が必要な通常転送にはYMODEMまたはWi-Fi File Serverを使用してください。
+1. Wi-FiをON／connect
+2. Wi-Fi File Server → Start
+3. 画面のtoken付きURLをbrowserで開く
 
-USB CDCを転送経路として選択した状態でUSB接続がない場合は、`USB NOT CONNECTED (OPEN USB COM PORT)`と表示されます。転送中は通常のコンソール入力・echo・BREAK判定を止め、選択したシリアル経路をXMODEMが専有します。
+session tokenはstartごとに変わり、SDへ保存しません。uploadはtemporary fileへstreamし、Content-Length分を正常に書き終えた場合だけreplaceします。同時1 client／1 operationを基本とします。
 
-## 12. スクリーンショット
+`LOADURL`と`RUNURL`は未実装です。
 
-Alt+Sは現在のLCD全体を24-bit BMPとしてSDカードへ保存します。`SCREEN0001.BMP`から連番で空いている名前を選ぶため、既存画像は上書きしません。Control Centerやグラフィック実行中でも利用できます。
+## 12. External RTC／I2C
 
-```text
-BASIC> SCREENSHOT
-SAVED SCREEN.BMP
+### 12.1 RTC
 
-BASIC> SCREENSHOT "MANDEL"
-SAVED MANDEL.BMP
-```
+標準PicoCalcにはRTCがありません。optional PCF8563をExternal I2Cへ接続できます。
 
-BASICプログラムでは`SAVEIMAGE`または`SAVE IMAGE`を使えます。
+Control Center → Date / Time → RTC settings：
 
-## 13. グラフィック
+- Source：AUTO／EXTERNAL／INTERNAL／OFF
+- Type：PCF8563
+- target address：0x08～0x77
+- Probe RTC
+- Set date & time
+- External SDA：GP4
+- External SCL：GP5
+- speed：100 kHz
 
-物理画面は320×320です。`SCREEN w,h`を使うと、指定した仮想座標を縦横比を保って中央へ割り当てます。
-
-主な命令：`CLS`、`COLOR`、`COLORHSV`、`PSET`、`LINE`、`CIRCLE`、`BOX`、`PAINT`、`POINT`、`FLUSH`、`SLEEP`、`SCREEN`、`SAVEIMAGE`。
+### 12.2 I2C syntax
 
 ```basic
-10 CLS
-20 COLOR 255,255,255
-30 LINE 0,0,319,319
-40 CIRCLE 160,160,80
-50 FLUSH
+I2C SCAN
+A=I2CREAD(address,register)
+I2CWRITE address,register,value
 ```
 
-### 実行例
+- 7-bit address：0x08～0x77
+- register：0～255
+- write value：0～255
 
-テキスト版Mandelbrot：
+例：
 
-![MANDEL_TEXT.BAS](images/manual-v075/SCREEN0015.png)
-
-グラフィック版Mandelbrot：
-
-![MANDEL_GRAPHICS.BAS](images/manual-v075/SCREEN0016.png)
-
-PicoCalc向けMandelbrot：
-
-![PICOCALC_MAND.BAS](images/manual-v075/SCREEN0017.png)
-
-Julia集合の実行例：
-
-![JULIA_GRAPHICS.BASの実行例](images/manual-v075/SCREEN0018.png)
-
-3DHATの実行例：
-
-![3DHATの実行例](images/manual-v075/SCREEN0001.png)
-
-## 14. シリアルコンソール
-
-Cala's Pokecom BASICは、Pico 2 WのネイティブUSB CDCとUART0を別々のシリアル経路として利用できます。USB CDCはPico 2 W基板上のUSB端子（Micro-USB）でPCへ接続します。UART0は115200 8N1で、PicoCalc本体のUSB Type-Cを使用する場合は、PicoCalc mainboardのCH340Cとシリアル切替回路を介します。出力をLCDとシリアルへ同時表示でき、PicoCalcキーボードまたはシリアル端末から入力できます。
-
-```text
-SERIAL
-SERIAL ON
-SERIAL OFF
-SERIAL ONLY
-CONSOLE LCD
-CONSOLE BOTH
-CONSOLE SERIAL
+```basic
+10 I2C SCAN
+20 S=I2CREAD(&H51,&H02)
+30 PRINT S
+40 I2CWRITE &H20,&H01,&HFF
 ```
 
-XMODEM／YMODEMでは、Tera TermでCala's Pokecom BASICの`BASIC>`が見えているCOMポートを使用します。Pico 2 W側USBのUSB CDCと、PicoCalc本体USB Type-CからCH340Cを介するUART0を同一経路として扱わないでください。ファームウェアはUSB CDC接続を検出した場合はUSBを優先し、それ以外はUART0を使用します。転送中は通常のREPL入力、echo、BREAK判定を停止し、転送処理が選択した経路を専有します。
+## 13. Graphics
 
-## 15. STANDBY
+物理LCDは320×320です。`SCREEN w,h`はvirtual coordinateを縦横比維持で中央mappingします。`SCREEN`引数なしは640×480 virtual screenです。virtual coordinateと物理pixelを混同しないでください。
 
-`STANDBY`または`Power / CPU → STANDBY NOW`で待機します。File Serverを停止し、LCDとバックライトを消灯します。RAM、読み込んだBASICプログラム、VM状態は保持されます。任意のキーで復帰します。USB StorageがACTIVEの場合は、先にWindowsで安全な取り出しを行い、`Return SD to CPB`でSDカードを返却してください。
+| Syntax | 機能 |
+|---|---|
+| `SCREEN [w,h]` | virtual screen |
+| `CLS` | black clear |
+| `COLOR palette` | built-in color index |
+| `COLOR r,g,b` | RGB 0～255 |
+| `COLORHSV h,s,v` | h degree、s/v 0～1 |
+| `PSET x,y[,color]` | pixel |
+| `LINE x1,y1,x2,y2[,color]` | line |
+| `LINE x,y[,color]` | current pointからline |
+| `CIRCLE x,y,r[,color]` | circle |
+| `BOX x1,y1,x2,y2[,filled[,color]]` | rectangle |
+| `PAINT x,y[,color]` | flood fill |
+| `POINT(x,y)` | non-blackならtrue |
+| `FLUSH` | display flush |
+| `GLOCATE x,y` | graphics text cursor |
+| `GPRINT expr[,expr...]` | graphics text |
+| `SAVEIMAGE ...`／`SAVE IMAGE ...` | BMP保存 |
 
-## 16. トラブルシューティング
+例：
 
-### SD NOT AVAILABLE
+```basic
+10 SCREEN 320,320
+20 CLS
+30 COLOR 255,255,255
+40 LINE 0,0,319,319
+50 CIRCLE 160,160,80
+60 FLUSH
+70 PAUSE
+```
 
-- SDカードがFAT32形式か確認します。
-- カードを挿し直し、`SD REMOUNT`を実行します。
-- Control CenterのSD Card画面で`Last status`を確認します。
+## 14. PCG
 
-### USB NOT CONNECTED
+### 14.1 Character range
 
-Tera TermでCala's Pokecom BASICの`BASIC>`が表示されるCOMポートを開いてからXMODEM／YMODEMを開始します。USB CDCを使う場合はPico 2 W側USB、UART0を使う場合はPicoCalc本体USB Type-CのCH340C経路です。別の端末ソフトが同じCOMポートを使用している場合は閉じます。
+`GDEF`対象はprintable ASCII 0x20～0x7eです。1 character単位で8×8 pixelを定義します。
 
-### Return SD to CPBが拒否される
+### 14.2 Mono PCG
 
-Windows側でUSBディスクを安全に取り出してから、もう一度`Return SD to CPB`を選びます。通常返却が拒否された状態でSDカードを抜いたり、電源を切ったりしないでください。
+16 hex digits＝8 rows × 1 byteです。bit 7がleft pixelです。set bitはcurrent COLOR、clear bitはbackgroundを描きます。
 
-### USB Storageを安全に終了できない
+```basic
+10 GDEF "A"="183C66667E666600"
+20 COLOR 255,255,0
+30 GLOCATE 40,40
+40 GPRINT "A"
+```
 
-可能な限りWindows側のファイル操作を停止し、Safe Ejectを再試行してください。どうしても取り出せない場合だけ`Force Disconnect`を使用します。未送信の書き込みが失われ、ファイルシステムが破損する可能性があります。確認画面の初期選択は`Cancel`です。
+`GDEF "A"=""`はAだけをbuilt-inへ戻し、`GDEF CLEAR`は全定義をclearします。
 
-### YMODEM／XMODEMがTIMEOUTになる
+### 14.3 Indexed-color PCG
 
-- 先にTera TermでCala's Pokecom BASICの`BASIC>`が表示されるCOMポートを開きます。
-- PicoCalcとTera Termで同じプロトコルを選びます。
-- 受信側を待受状態にしてから送信を開始します。
-- Cancel後は転送画面を閉じ、BASICプロンプトまたはControl Centerへ戻ったことを確認します。
+128 hex digits＝64 pixels × 1 palette-index byteです。
 
-### XMODEM転送後の末尾に`^Z`／`0x1A`が付く
+```basic
+10 GPALETTE RESET
+20 GPALETTE 8,18,38,84
+30 GPALETTE 9,&H1ED6FF
+40 GDEF "A"="..."
+```
 
-XMODEMは正確な元ファイルサイズを伝えないため、最終128-byteブロックのパディングがPC側ファイルへ残る場合があります。これはXMODEMの仕様上の制約です。正確なファイルサイズを維持する場合は、YMODEMまたはWi-Fi File Serverを使用してください。
+`GPALETTE index,r,g,b`または`GPALETTE index,rgb24`でindex 1～255を設定します。index 0はtransparentで、設定対象ではありません。`GPALETTE RESET`はdefault paletteへ戻します。
 
-### File Serverを開始できない
+### 14.4 16×16 composite character
 
-- Wi-FiがONか確認します。
-- SSIDへ接続し、IPアドレスが割り当てられているか確認します。
-- 別のファイル操作中でないか確認します。
+8×8が小さい場合は4 characterを2×2配置します。
 
-### ブラウザから開けない
+```basic
+100 GLOCATE X,Y:GPRINT "AB"
+110 GLOCATE X,Y+8:GPRINT "CD"
+```
 
-- PicoCalcと端末が同じLANにいるか確認します。
-- 画面に表示されたトークンを含むURLをそのまま入力します。
-- File ServerがRUNNINGか確認します。
-- STOP後や再起動後の古いURLは使えません。
+3 frame animationは`AB/CD`、`EF/GH`、`IJ/KL`のように定義し、frameごとに描画します。
 
-### 転送中断後のファイル
+```basic
+200 M=F MOD 3
+210 ON M+1 GOSUB 8100,8200,8300
+220 FLUSH:SLEEP 40
+8100 GLOCATE X,Y:GPRINT "AB":GLOCATE X,Y+8:GPRINT "CD":RETURN
+8200 GLOCATE X,Y:GPRINT "EF":GLOCATE X,Y+8:GPRINT "GH":RETURN
+8300 GLOCATE X,Y:GPRINT "IJ":GLOCATE X,Y+8:GPRINT "KL":RETURN
+```
 
-Upload、XRECV、YRECVは一時ファイルを利用します。中断時は旧ファイルを維持し、不完全な一時ファイルを削除します。異常終了後は`DIR`で確認してください。
+完全な例は`examples/CPB_V085_LONG_LINE_MEGADEMO.BAS`です。
+
+## 15. Audio
+
+### 15.1 BEEP
+
+```basic
+BEEP frequency_hz,duration_ms
+```
+
+- frequency：20～20,000 Hz
+- duration：1～60,000 ms
+
+### 15.2 PLAY／MML
+
+```basic
+PLAY voice1$[,voice2$[,voice3$]]
+PLAY PAUSE
+PLAY RESUME
+PLAY WAIT
+PLAY STOP
+N=PLAYING()
+```
+
+最大3 voiceです。PLAYはbackgroundで開始し、graphics等と同時進行します。
+
+MML：
+
+| Token | Range／meaning |
+|---|---|
+| `Tn` | tempo 32～400 |
+| `On` | octave 0～8 |
+| `Ln` | default length 1,2,4,8,16,32 |
+| `Vn` | level 0～15 |
+| `C D E F G A B` | note |
+| `R` | rest |
+| `#`／`+` | sharp |
+| `-` | flat |
+| `<`／`>` | octave down／up |
+| note後のnumber | length |
+| `.` | dotted |
+
+例：
+
+```basic
+10 PLAY "T120O5L8V12 CDEFGAB>C","T120O4L4V8 CEGC","T120O3L2V8 C<G>C"
+20 REM GRAPHICS CONTINUES HERE
+30 PLAY WAIT
+```
+
+### 15.3 WAV
+
+```basic
+WAVPLAY "DEMO.WAV"
+WAVPAUSE
+WAVRESUME
+WAVSTOP
+```
+
+対応format：
+
+- RIFF/WAVE PCM（format 1）
+- monoまたはstereo
+- 8 bitまたは16 bit
+- 11,025／22,050／44,100 Hz
+- block alignmentがformatと一致
+
+WAVもbackground playbackです。CPU負荷と大量LCD transferにはhardware上限がありますが、Version 0.85はVM background service、6 DMA buffers、PAINT cooperationで途切れを改善しています。
+
+### 15.4 終了条件
+
+- BREAK：BASIC executionとbackground audioを停止
+- END／STOP：program終了、audioは継続
+- ordinary runtime error：audioは継続
+- `PLAY STOP`／`WAVSTOP`：明示停止
+
+## 16. 設定file
+
+`RMBASIC.CFG`の現行設定：
+
+| Section | Key | 値 |
+|---|---|---|
+| ui | `program_storage` | AUTO／SD／RAM |
+| ui | `status` | on／off |
+| ui | `backlight` | 16～255 |
+| ui | `theme` | 0～2 |
+| ui | `console_fg`／`console_bg` | RRGGBB |
+| ui | `console` | lcd／both／serial |
+| rtc | `rtc_source` | AUTO／EXTERNAL／INTERNAL／OFF |
+| rtc | `rtc_address` | 0x08～0x77 |
+| audio | `audio_volume` | 0～100 |
+| audio | `key_click` | OFF／SOFT／CLASSIC／SHARP |
+| audio | `startup_wav` | on／off |
+| wifi | `wifi_enabled` | 読み込み時もsession startはOFF |
+| wifi | `wifi_ssid`／`wifi_password` | credential |
+| wifi | `wifi_auto_rtc` | on／off |
+| wifi | `wifi_timezone_minutes` | -720～840 |
+| wifi | `wifi_ntp_server` | hostname |
+| fkeys | `F1`～`F10` | filename,LOAD／RUN |
+
+CPU clockとBluetooth ON/OFFは永続化しません。設定save前のvalid fileは`RMBASIC.BAK`へ保護されます。
+
+## 17. Troubleshooting
+
+### 17.1 SD NOT AVAILABLE
+
+- FAT32か確認
+- cardを挿し直す
+- SD Card → Remount
+- Last statusを確認
+- USB HOST ownershipでないか確認
+
+### 17.2 SD LINE TOO LONG
+
+SD source bodyが2,048文字以上です。line numberとspaceを除いたbodyを2,047文字以内へ修正してください。切り詰めは行いません。
+
+### 17.3 LINE TOO LONG FOR RAM
+
+SD sourceに192文字以上のbodyがあります。SD sourceは保持されています。SD CARDのまま使用するか、long lineを191文字以内へ分割してください。
+
+### 17.4 USB Storageを戻せない
+
+hostでdiskを安全にEjectしてからReturn SD to CPBを再試行します。Force Disconnectは最後の手段です。
+
+### 17.5 Bluetooth file transferが開始しない
+
+- Bluetooth ON
+- PCとのSPP接続済み
+- Test Terminalを閉じる
+- File TransferでBluetooth SPPをexplicit選択
+- Bluetooth Console ONは不要
+- PC terminal側で同じprotocol方向を選択
+
+### 17.6 YMODEM TIMEOUT／PROTOCOL ERROR
+
+- sender／receiverの開始順を確認
+- XMODEMとYMODEMを混同しない
+- transport selectorを確認
+- Bluetooth diagnosticsのRX Overflowを確認
+- error後は350 ms以上linkをquietにして再試行
+
+### 17.7 XMODEM末尾の`^Z`
+
+XMODEMはexact sizeを通知しません。PC側にpaddingが残る場合があります。YMODEMを使用してください。
+
+### 17.8 WAVが再生できない
+
+PCM format、channel、bit depth、sample rateを対応範囲へ変換します。圧縮WAV、24 bit、48 kHz等は対応しません。
+
+## 18. Version historyとverification
+
+### 18.1 History
+
+- v0.8：初公開
+- v0.81：PAUSE／INKEY／runtime input／BREAK／current-file SAVE
+- v0.82：External RTC／I2C／PCG／`&H`
+- v0.83：BEEP／3 voice MML／WAV
+- v0.84：Storage Continuity
+- v0.85：Bluetooth SPP、Bluetooth Console、Bluetooth XMODEM／YMODEM、YMODEM batch receive、Firmware controls、`flash-cpb.cmd`、audio/display refinement、Key Click、SD 2047-character line、`CPokecombasic` artifact naming
+
+### 18.2 Version 0.85実機確認
+
+Bluetooth SPP PC→PicoCalc YMODEM：
+
+- 1-byte single file：PASS
+- 4040-byte single file：PASS
+- 2-file batch：PASS
+- 5-file batch：PASS
+- RX overflow delta：0
+- `TRANSFER COMPLETE`
+
+Firmware：
+
+- Enter BOOTSEL：PASS
+- Reboot：PASS
+- `flash-cpb.cmd`：PASS
+
+Main GitHub Actions #389：SUCCESS。
+
+### 18.3 Examples
+
+- `CPB_V085_LONG_LINE_MEGADEMO.BAS`：exact 2047 body、3 voice、graphics、indexed PCG、16×16 composite、animation
+- `CPB_BACH_MEGADEMO.BAS`：music／graphics／PCG
+- `Lissajous_Gallery.BAS`：graphics
+- `mandel_graphics.bas`／`julia_graphics.bas`：fractal
+- `3dhat.bas`：3D
+- `mandel_text.bas`：benchmark
 
 ---
 
-RetroMiniBASICおよびCala's Pokecom BASICは、いずれもCala Maclirが制作しました。
+Cala's Pokecom BASICの製品名はCPBです。RetroMiniBASICという名称はrepository／内部target／歴史的説明にのみ残ります。

@@ -1,6 +1,7 @@
 #include "usb_device.hpp"
 #include "usb_msc.hpp"
 #include "storage.hpp"
+#include "pico/usb_reset.h"
 #include "tusb.h"
 
 #include <array>
@@ -74,7 +75,7 @@ std::string descriptor_string(uint8_t index) {
 
 void descriptors() {
     const auto* d = reinterpret_cast<const tusb_desc_device_t*>(tud_descriptor_device_cb());
-    assert(d->bLength == 18 && d->bcdUSB == 0x0200);
+    assert(d->bLength == 18 && d->bcdUSB == 0x0210);
     assert(d->bDeviceClass == TUSB_CLASS_MISC && d->bDeviceSubClass == MISC_SUBCLASS_COMMON);
     assert(d->bDeviceProtocol == MISC_PROTOCOL_IAD && d->bNumConfigurations == 1);
     assert(d->idVendor == 0xcafe && d->idProduct == 0x4003);
@@ -82,13 +83,16 @@ void descriptors() {
     assert(descriptor_string(d->iProduct) == "Cala's Pokecom BASIC");
     assert(descriptor_string(d->iSerialNumber) == "0123456789ABCDEF");
     assert(tud_descriptor_string_cb(0, 0)[1] == 0x0409);
-    assert(!tud_descriptor_string_cb(6, 0));
+    assert(descriptor_string(6) == "CPB Firmware Update");
+    assert(!tud_descriptor_string_cb(7, 0));
     assert(!tud_descriptor_string_cb(255, 0));
     const uint8_t* c = tud_descriptor_configuration_cb(0);
     assert(c && !tud_descriptor_configuration_cb(1));
     const unsigned total = c[2] | (c[3] << 8);
-    assert(total == TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN);
-    assert(c[4] == 3);
+    assert(total ==
+           TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN +
+           TUD_RPI_RESET_DESC_LEN);
+    assert(c[4] == 4);
     bool seen[256] = {};
     unsigned interfaces = 0, endpoints = 0, iad = 0;
     uint8_t current_interface = 255;
@@ -101,7 +105,12 @@ void descriptors() {
         } else if (type == TUSB_DESC_INTERFACE) {
             current_interface = c[at + 2];
             assert(current_interface == interfaces++);
-            const uint8_t expected[] = {TUSB_CLASS_CDC, TUSB_CLASS_CDC_DATA, TUSB_CLASS_MSC};
+            const uint8_t expected[] = {
+                TUSB_CLASS_CDC,
+                TUSB_CLASS_CDC_DATA,
+                TUSB_CLASS_MSC,
+                TUSB_CLASS_VENDOR_SPECIFIC
+            };
             assert(c[at + 5] == expected[current_interface]);
             assert(!descriptor_string(c[at + 8]).empty());
         } else if (type == TUSB_DESC_ENDPOINT) {
@@ -112,11 +121,14 @@ void descriptors() {
             const unsigned packet = c[at + 4] | (c[at + 5] << 8);
             if (current_interface == 0) assert(ep == 0x81 && packet == 8);
             else if (current_interface == 1) assert((ep == 0x02 || ep == 0x82) && packet == 64);
-            else assert((ep == 0x03 || ep == 0x83) && packet == 64);
+            else if (current_interface == 2)
+                assert((ep == 0x03 || ep == 0x83) && packet == 64);
+            else
+                assert(false && "reset interface must not have endpoints");
         }
         at += len;
     }
-    assert(interfaces == 3 && endpoints == 5 && iad == 1);
+    assert(interfaces == 4 && endpoints == 5 && iad == 1);
 }
 }
 
@@ -133,7 +145,11 @@ void pico_get_unique_board_id_string(char* buffer, size_t length) {
 int main() {
     descriptors();
     const uint8_t* fixed_config = tud_descriptor_configuration_cb(0);
-    std::array<uint8_t, TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN> saved_config;
+    std::array<
+        uint8_t,
+        TUD_CONFIG_DESC_LEN + TUD_CDC_DESC_LEN + TUD_MSC_DESC_LEN +
+            TUD_RPI_RESET_DESC_LEN
+    > saved_config;
     std::memcpy(saved_config.data(), fixed_config, saved_config.size());
     assert(!rmb::usb_device::usb_connected());
     for (unsigned session = 0; session < 100; ++session) {

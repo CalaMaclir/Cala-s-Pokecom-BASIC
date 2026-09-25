@@ -1,5 +1,6 @@
 #include "network.hpp"
 #include "file_server.hpp"
+#include "wireless.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -188,8 +189,8 @@ void unix_to_datetime(
 bool init() {
     if (wifi_initialized) return true;
 
-    if (cyw43_arch_init() != 0) {
-        set_error("CYW43 INIT FAILED");
+    if (!wireless::init()) {
+        set_error(wireless::last_error());
         return false;
     }
 

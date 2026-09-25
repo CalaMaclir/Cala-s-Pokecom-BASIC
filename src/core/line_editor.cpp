@@ -31,7 +31,7 @@ bool lcd_console_enabled() {
 }
 
 bool serial_console_enabled() {
-    return platform::get_console_mode() != platform::ConsoleMode::Lcd;
+    return platform::terminal_console_enabled();
 }
 
 void serial_position(std::size_t index) {
@@ -137,7 +137,10 @@ int LineEditor::last_special_key() {
     return special_key;
 }
 
+class CommandInputLease { public: CommandInputLease(){platform::begin_command_input();} ~CommandInputLease(){platform::end_command_input();} };
+
 std::size_t LineEditor::read(char* buffer, std::size_t capacity) {
+    CommandInputLease input_lease;
     special_key = 0;
 
     if (!buffer || capacity == 0) {

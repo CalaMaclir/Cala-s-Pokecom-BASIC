@@ -34,6 +34,7 @@ struct VmProfileReport {
 
 struct VmResult {
     bool ok = false;
+    bool interrupted = false;
     std::int32_t pc = 0;
     char message[96] = {};
 };

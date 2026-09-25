@@ -127,7 +127,7 @@ class ManualDoc(BaseDocTemplate):
         canvas.rect(0, A4[1] - 12 * mm, A4[0], 12 * mm, fill=1, stroke=0)
         canvas.setFillColor(colors.white)
         canvas.setFont("Helvetica-Bold", 8)
-        canvas.drawString(16 * mm, A4[1] - 7.5 * mm, "Cala's Pokecom BASIC Version 0.8")
+        canvas.drawString(16 * mm, A4[1] - 7.5 * mm, "Cala's Pokecom BASIC Version 0.81")
         canvas.setFillColor(colors.HexColor("#60717D"))
         canvas.setFont("Helvetica", 8)
         canvas.drawRightString(A4[0] - 16 * mm, 10 * mm, f"{doc.page}")
@@ -221,7 +221,7 @@ def parse_markdown(source: Path, styles: dict):
 
 
 if __name__ == "__main__":
-    output = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "output/pdf/Cala-Pokecom-BASIC-v0.8-ja.pdf"
+    output = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "output/pdf/Cala-Pokecom-BASIC-v0.81-ja.pdf"
     output.parent.mkdir(parents=True, exist_ok=True)
     styles = make_styles()
     doc_width = A4[0] - 32 * mm
@@ -232,7 +232,7 @@ if __name__ == "__main__":
         str(output), pagesize=A4,
         leftMargin=16 * mm, rightMargin=16 * mm,
         topMargin=18 * mm, bottomMargin=18 * mm,
-        title="Cala's Pokecom BASIC Version 0.8 日本語マニュアル",
+        title="Cala's Pokecom BASIC Version 0.81 日本語マニュアル",
         author="Cala Maclir",
         subject="ClockworkPi PicoCalc user manual",
     )

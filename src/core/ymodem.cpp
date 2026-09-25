@@ -8,18 +8,21 @@ namespace rmb::ymodem {
 namespace {
 constexpr std::uint8_t SOH=1, STX=2, EOT=4, ACK=6, NAK=21, CAN=24;
 constexpr unsigned retries=10, startup_retries=30;
+constexpr unsigned eot_grace_ms=250;
 bool control(IO& io,std::uint8_t value){return io.write(io.context,&value,1);}
 Error input_error(int c){return c==xmodem::cancelled||c==CAN?Error::Cancelled:
     c==xmodem::disconnected?Error::Disconnected:Error::Timeout;}
-int drain(IO& io){for(unsigned i=0;i<2048;++i){int c=io.read(io.context,100);if(c<0)return c;}return xmodem::timeout;}
-Result result(Error error,std::uint32_t bytes,const char* name=nullptr){
-    Result out;out.error=error;out.bytes=bytes;
+Result result(Error error,std::uint32_t bytes,const char* name=nullptr,
+              std::uint32_t files=0){
+    Result out;out.error=error;out.bytes=bytes;out.files=files;
     if(name)std::snprintf(out.filename,sizeof(out.filename),"%s",name);
     return out;
 }
-Result fail(IO& io,Error error,std::uint32_t bytes,const char* name=nullptr){
-    const std::uint8_t cancel[]={CAN,CAN,CAN};io.write(io.context,cancel,sizeof(cancel));
-    return result(error,bytes,name);
+Result fail(IO& io,Error error,std::uint32_t bytes,const char* name=nullptr,
+            std::uint32_t files=0){
+    const std::uint8_t cancel[]={CAN,CAN,CAN};
+    io.write(io.context,cancel,sizeof(cancel));
+    return result(error,bytes,name,files);
 }
 struct Packet {std::uint8_t sequence=0;std::size_t size=0;std::uint8_t data[kDataSize]={};};
 Error read_packet(IO& io,int marker,Packet& packet){
@@ -82,76 +85,233 @@ bool decode_header(const std::uint8_t payload[kHeaderSize],Header& header){
 }
 
 Result receive(IO& io){
-    Packet packet;Header header;unsigned waiting=0;
+    Packet packet;
+    Header header;
+    std::uint32_t total_bytes=0;
+    std::uint32_t files=0;
+    char last_filename[kFilenameSize]={};
+    int pending=xmodem::timeout;
+
     if(!control(io,'C'))return result(Error::Disconnected,0);
+
     while(true){
-        int marker=io.read(io.context,2000);
-        if(marker==CAN||marker==xmodem::cancelled||marker==xmodem::disconnected)
-            return fail(io,input_error(marker),0);
-        if((marker=='\r'||marker=='\n')&&waiting++<startup_retries)continue;
-        if(marker<0){if(++waiting>=startup_retries)return fail(io,Error::Timeout,0);control(io,'C');continue;}
-        Error error=read_packet(io,marker,packet);
-        if(error==Error::Timeout)drain(io);
-        if(error!=Error::None||marker!=SOH||packet.sequence!=0||
-           !decode_header(packet.data,header)){
-            if(++waiting>=retries)return fail(io,error==Error::None?Error::Protocol:error,0);
-            control(io,'C');continue;
+        unsigned waiting=0;
+        Error header_error=Error::Timeout;
+        const unsigned header_limit=files?retries:startup_retries;
+
+        while(true){
+            int marker=pending!=xmodem::timeout
+                ?pending:io.read(io.context,2000);
+            pending=xmodem::timeout;
+
+            if(marker==CAN||marker==xmodem::cancelled||
+               marker==xmodem::disconnected)
+                return fail(io,input_error(marker),total_bytes,
+                            last_filename,files);
+
+            // A delayed second EOT may cross the grace window. Re-state
+            // ACK+C and continue waiting for the next Block 0.
+            if(marker==EOT&&files){
+                if(!control(io,ACK)||!control(io,'C'))
+                    return result(Error::Disconnected,total_bytes,
+                                  last_filename,files);
+                continue;
+            }
+
+            if((marker=='\r'||marker=='\n')&&waiting++<header_limit)
+                continue;
+
+            if(marker<0){
+                if(++waiting>=header_limit)
+                    return fail(io,header_error,total_bytes,
+                                last_filename,files);
+                if(!control(io,'C'))
+                    return result(Error::Disconnected,total_bytes,
+                                  last_filename,files);
+                continue;
+            }
+
+            Error error=(marker==SOH||marker==STX)
+                ?read_packet(io,marker,packet):Error::Protocol;
+            if(error==Error::None&&packet.sequence==0&&
+               decode_header(packet.data,header))
+                break;
+
+            const Error observed=error==Error::None
+                ?Error::Protocol:error;
+            if(observed!=Error::Timeout)header_error=observed;
+            if(++waiting>=header_limit)
+                return fail(io,header_error,total_bytes,
+                            last_filename,files);
+
+            // A synchronous sender may already be retransmitting Block 0;
+            // never drain and discard a possible SOH/STX boundary.
+            if(!control(io,'C'))
+                return result(Error::Disconnected,total_bytes,
+                              last_filename,files);
         }
-        break;
-    }
-    if(header.empty){control(io,ACK);return result(Error::None,0);}
-    if(!io.begin_receive(io.context,header.filename,header.size))
-        return fail(io,Error::Write,0,header.filename);
-    if(!control(io,ACK)||!control(io,'C'))return result(Error::Disconnected,0,header.filename);
-    std::uint8_t expected=1;std::uint32_t bytes=0;unsigned errors=0;
-    while(true){
-        int marker=io.read(io.context,3000);
-        if(marker==CAN||marker==xmodem::cancelled||marker==xmodem::disconnected)
-            return fail(io,input_error(marker),bytes,header.filename);
-        if(marker==EOT){
-            if(bytes!=header.size)return fail(io,Error::Protocol,bytes,header.filename);
-            if(!control(io,NAK))return result(Error::Disconnected,bytes,header.filename);
-            int second=io.read(io.context,3000);
-            if(second==CAN||second==xmodem::cancelled||second==xmodem::disconnected)
-                return fail(io,input_error(second),bytes,header.filename);
-            if(second!=EOT)return fail(io,second<0?Error::Timeout:Error::Protocol,bytes,header.filename);
-            if(!io.finish(io.context))return fail(io,Error::Write,bytes,header.filename);
-            if(!control(io,ACK)||!control(io,'C'))return result(Error::Disconnected,bytes,header.filename);
-            for(unsigned attempt=0;attempt<retries;++attempt){
-                int end=io.read(io.context,3000);
-                if(end==CAN||end==xmodem::cancelled||end==xmodem::disconnected)
-                    return fail(io,input_error(end),bytes,header.filename);
-                Error error=read_packet(io,end,packet);Header empty;
-                if(error==Error::Timeout)drain(io);
-                if(error==Error::None&&end==SOH&&packet.sequence==0&&
-                   decode_header(packet.data,empty)&&empty.empty){
-                    control(io,ACK);return result(Error::None,bytes,header.filename);
+
+        if(header.empty){
+            if(!control(io,ACK))
+                return result(Error::Disconnected,total_bytes,
+                              last_filename,files);
+            return result(Error::None,total_bytes,last_filename,files);
+        }
+
+        if(!io.begin_receive(io.context,header.filename,header.size))
+            return fail(io,Error::Write,total_bytes,
+                        header.filename,files);
+        if(!control(io,ACK)||!control(io,'C'))
+            return result(Error::Disconnected,total_bytes,
+                          header.filename,files);
+
+        std::uint8_t expected=1;
+        std::uint32_t file_bytes=0;
+        unsigned errors=0;
+        bool file_complete=false;
+
+        while(!file_complete){
+            int marker=io.read(io.context,3000);
+            if(marker==CAN||marker==xmodem::cancelled||
+               marker==xmodem::disconnected)
+                return fail(io,input_error(marker),
+                            total_bytes+file_bytes,
+                            header.filename,files);
+
+            if(marker==EOT){
+                if(file_bytes!=header.size)
+                    return fail(io,Error::Protocol,
+                                total_bytes+file_bytes,
+                                header.filename,files);
+
+                // Traditional YMODEM uses NAK/EOT/ACK+C. Tera Term may use
+                // one EOT and wait for ACK+C. A SOH/STX seen during this
+                // short grace period is the next Block 0 and is preserved.
+                if(!control(io,NAK))
+                    return result(Error::Disconnected,
+                                  total_bytes+file_bytes,
+                                  header.filename,files);
+                int terminal=io.read(io.context,eot_grace_ms);
+                if(terminal==CAN||terminal==xmodem::cancelled||
+                   terminal==xmodem::disconnected)
+                    return fail(io,input_error(terminal),
+                                total_bytes+file_bytes,
+                                header.filename,files);
+                if(terminal==SOH||terminal==STX)
+                    pending=terminal;
+                else if(terminal!=EOT&&terminal!=xmodem::timeout)
+                    return fail(io,terminal<0
+                                    ?input_error(terminal)
+                                    :Error::Protocol,
+                                total_bytes+file_bytes,
+                                header.filename,files);
+
+                if(total_bytes>UINT32_MAX-file_bytes)
+                    return fail(io,Error::Protocol,total_bytes,
+                                header.filename,files);
+                if(!io.finish(io.context))
+                    return fail(io,Error::Write,
+                                total_bytes+file_bytes,
+                                header.filename,files);
+
+                total_bytes+=file_bytes;
+                ++files;
+                std::snprintf(last_filename,sizeof(last_filename),
+                              "%s",header.filename);
+
+                if(!control(io,ACK)||!control(io,'C'))
+                    return result(Error::Disconnected,total_bytes,
+                                  last_filename,files);
+                file_complete=true;
+                continue;
+            }
+
+            Error error=marker<0?input_error(marker):
+                ((marker==SOH||marker==STX)
+                    ?read_packet(io,marker,packet):Error::Protocol);
+            if(error==Error::None){
+                // If the sender did not observe the ACK+C transition after
+                // Block 0, it may retransmit the same header before Data #1.
+                // This is not a duplicate data block: re-ACK the header and
+                // re-state CRC mode so the peer can enter the data phase.
+                if(packet.sequence==0&&expected==1&&file_bytes==0){
+                    Header repeated;
+                    if(decode_header(packet.data,repeated)&&
+                       !repeated.empty&&
+                       repeated.size==header.size&&
+                       std::strcmp(repeated.filename,header.filename)==0){
+                        errors=0;
+                        if(!control(io,ACK)||!control(io,'C'))
+                            return result(Error::Disconnected,
+                                          total_bytes+file_bytes,
+                                          header.filename,files);
+                        continue;
+                    }
+                    return fail(io,Error::Protocol,
+                                total_bytes+file_bytes,
+                                header.filename,files);
                 }
-                if(!control(io,'C'))return result(Error::Disconnected,bytes,header.filename);
+                if(packet.sequence==expected){
+                    if(file_bytes>=header.size)
+                        return fail(io,Error::Protocol,
+                                    total_bytes+file_bytes,
+                                    header.filename,files);
+                    std::size_t write=packet.size;
+                    if(write>header.size-file_bytes)
+                        write=header.size-file_bytes;
+                    if(!io.sink(io.context,packet.data,write))
+                        return fail(io,Error::Write,
+                                    total_bytes+file_bytes,
+                                    header.filename,files);
+                    file_bytes+=static_cast<std::uint32_t>(write);
+                    ++expected;
+                    errors=0;
+                    if(!control(io,ACK))
+                        return result(Error::Disconnected,
+                                      total_bytes+file_bytes,
+                                      header.filename,files);
+                    continue;
+                }
+                if(packet.sequence==
+                   static_cast<std::uint8_t>(expected-1)){
+                    if(!control(io,ACK))
+                        return result(Error::Disconnected,
+                                      total_bytes+file_bytes,
+                                      header.filename,files);
+                    if(++errors>=retries)
+                        return fail(io,Error::Protocol,
+                                    total_bytes+file_bytes,
+                                    header.filename,files);
+                    continue;
+                }
+                return fail(io,Error::Protocol,
+                            total_bytes+file_bytes,
+                            header.filename,files);
             }
-            return fail(io,Error::Protocol,bytes,header.filename);
-        }
-        Error error=marker<0?input_error(marker):read_packet(io,marker,packet);
-        if(error==Error::Timeout&&marker>=0)drain(io);
-        if(error==Error::None&&(marker==SOH||marker==STX)){
-            if(packet.sequence==expected){
-                if(bytes>=header.size)return fail(io,Error::Protocol,bytes,header.filename);
-                std::size_t write=packet.size;
-                if(write>header.size-bytes)write=header.size-bytes;
-                if(!io.sink(io.context,packet.data,write))return fail(io,Error::Write,bytes,header.filename);
-                bytes+=write;++expected;errors=0;
-                if(!control(io,ACK))return result(Error::Disconnected,bytes,header.filename);
+            if(++errors>=retries)
+                return fail(io,error,total_bytes+file_bytes,
+                            header.filename,files);
+
+            // Before Data #1 has started, a timeout most likely means the
+            // sender missed the Block-0 ACK/C transition and is still waiting
+            // for CRC-mode confirmation. Re-state that transition instead of
+            // sending NAK, which asks for a data-block retransmission that the
+            // sender has not started yet. Keep the normal NAK retry policy once
+            // any data has been accepted, and keep the retry bound unchanged.
+            if(marker<0&&error==Error::Timeout&&
+               expected==1&&file_bytes==0){
+                if(!control(io,ACK)||!control(io,'C'))
+                    return result(Error::Disconnected,
+                                  total_bytes+file_bytes,
+                                  header.filename,files);
                 continue;
             }
-            if(packet.sequence==static_cast<std::uint8_t>(expected-1)){
-                if(!control(io,ACK))return result(Error::Disconnected,bytes,header.filename);
-                if(++errors>=retries)return fail(io,Error::Protocol,bytes,header.filename);
-                continue;
-            }
-            return fail(io,Error::Protocol,bytes,header.filename);
+
+            if(!control(io,NAK))
+                return result(Error::Disconnected,
+                              total_bytes+file_bytes,
+                              header.filename,files);
         }
-        if(++errors>=retries)return fail(io,error,bytes,header.filename);
-        if(!control(io,NAK))return result(Error::Disconnected,bytes,header.filename);
     }
 }
 
@@ -190,7 +350,7 @@ Result send(IO& io,const char* filename,std::uint32_t size){
     if(!acknowledged)return fail(io,Error::Timeout,bytes,filename);
     request=io.read(io.context,3000);if(request!='C')return fail(io,request<0?input_error(request):Error::Protocol,bytes,filename);
     std::memset(header,0,sizeof(header));error=transmit(io,SOH,0,header,sizeof(header));
-    return error==Error::None?result(Error::None,bytes,filename):fail(io,error,bytes,filename);
+    return error==Error::None?result(Error::None,bytes,filename,1):fail(io,error,bytes,filename);
 }
 const char* error_text(Error error){
     switch(error){

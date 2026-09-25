@@ -203,7 +203,7 @@ bool shift_held() {
 }
 
 
-bool read_rtc(RtcDateTime& value) {
+bool read_rtc(RtcDateTime& value, unsigned char address) {
     if (!initialized) {
         rtc_error = RtcError::NotInitialized;
         return false;
@@ -217,7 +217,7 @@ bool read_rtc(RtcDateTime& value) {
     uint8_t reg = 0x02;
     const int wr = i2c_write_timeout_us(
         bus,
-        rtc_address,
+        address,
         &reg,
         1,
         false,
@@ -234,7 +234,7 @@ bool read_rtc(RtcDateTime& value) {
     uint8_t data[7] = {};
     const int rd = i2c_read_timeout_us(
         bus,
-        rtc_address,
+        address,
         data,
         sizeof(data),
         false,
@@ -268,7 +268,7 @@ bool read_rtc(RtcDateTime& value) {
     return true;
 }
 
-bool write_rtc(const RtcDateTime& value) {
+bool write_rtc(const RtcDateTime& value, unsigned char address) {
     if (!initialized) {
         rtc_error = RtcError::NotInitialized;
         return false;
@@ -299,7 +299,7 @@ bool write_rtc(const RtcDateTime& value) {
     constexpr uint32_t rtc_timeout_us = 20000;
     const int written = i2c_write_timeout_us(
         bus,
-        rtc_address,
+        address,
         data,
         sizeof(data),
         false,
@@ -314,7 +314,7 @@ bool write_rtc(const RtcDateTime& value) {
     sleep_ms(20);
 
     RtcDateTime verify;
-    if (!read_rtc(verify)) {
+    if (!read_rtc(verify, address)) {
         rtc_error = RtcError::ReadbackFailed;
         return false;
     }

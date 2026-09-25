@@ -47,6 +47,8 @@ bool load_program(const char* name, ProgramStore& program);
 bool save_program(const char* name, ProgramStore& program);
 bool program_exists(const char* name);
 bool list_program_files();
+// DIR view: all visible regular root files (not ProgramStore work/staging files).
+bool list_root_files();
 std::size_t collect_program_files(
     char* output,
     std::size_t max_files,

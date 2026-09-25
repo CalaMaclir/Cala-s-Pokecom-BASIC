@@ -1,4 +1,5 @@
 #include "repl.hpp"
+#include "session_notice.hpp"
 
 #include <cctype>
 #include <cstdint>
@@ -7,12 +8,14 @@
 #include <cstring>
 
 #include "basic_compiler.hpp"
+#include "bluetooth_serial.hpp"
 #include "console_layout.hpp"
 #include "line_editor.hpp"
 #include "network.hpp"
 #include "file_server.hpp"
 #include "platform.hpp"
 #include "storage.hpp"
+#include "storage_recovery.hpp"
 #include "vm.hpp"
 #include "serial_transfer.hpp"
 #include "transfer_file.hpp"
@@ -23,7 +26,7 @@
 #include "ymodem.hpp"
 
 #ifndef RMB_VERSION
-#define RMB_VERSION "0.8"
+#define RMB_VERSION "0.81"
 #endif
 
 #ifndef RMB_BUILD_NUMBER
@@ -37,6 +40,25 @@ namespace {
 // Only the foreground REPL starts BASIC. Service/status/screenshot callbacks
 // do not compile or run BASIC. Guard that invariant against future reentrancy,
 // and reset the shared workspace on every exit (including errors and BREAK).
+void handle_runtime_result(const VmResult& result) {
+    if (result.interrupted) platform::audio_stop();
+}
+
+class SerialTransferLease {
+public:
+    SerialTransferLease() = default;
+    ~SerialTransferLease() { close(); }
+    void close() {
+        if (!active_) return;
+        platform::end_serial_transfer();
+        active_ = false;
+    }
+    SerialTransferLease(const SerialTransferLease&) = delete;
+    SerialTransferLease& operator=(const SerialTransferLease&) = delete;
+private:
+    bool active_ = true;
+};
+
 class CompileWorkspaceLease {
 public:
     CompileWorkspaceLease(CompiledProgram& compiled, bool& busy)
@@ -426,6 +448,27 @@ void Repl::set_current_filename(const char* filename, bool dirty) {
     program_.set_dirty(dirty);
 }
 
+bool Repl::has_current_filename() const {
+    const char* filename = program_.filename();
+    return filename && *filename && !ci_equal(filename, "UNTITLED");
+}
+
+bool Repl::save_program_as(const char* filename) {
+    if (!filename || !*filename) return false;
+    if (!storage::save_program(filename, program_)) return false;
+    // ProgramStore owns filename normalization. Keep the status display and
+    // the next argument-free SAVE tied to that same canonical name.
+    set_current_filename(program_.filename(), false);
+    return true;
+}
+
+bool Repl::save_current_program() {
+    if (!has_current_filename()) return false;
+    char filename[kFilenameSize] = {};
+    std::snprintf(filename, sizeof(filename), "%s", program_.filename());
+    return save_program_as(filename);
+}
+
 void Repl::load_settings() {
     settings_ = Settings{};
 
@@ -545,6 +588,26 @@ void Repl::load_settings() {
             continue;
         }
 
+        if (ci_equal(line, "rtc_source")) { if(ci_equal(eq,"EXTERNAL"))platform::set_rtc_source(platform::RtcSource::External);else if(ci_equal(eq,"INTERNAL"))platform::set_rtc_source(platform::RtcSource::Internal);else if(ci_equal(eq,"OFF"))platform::set_rtc_source(platform::RtcSource::Off);else platform::set_rtc_source(platform::RtcSource::Auto);continue; }
+        if (ci_equal(line, "rtc_address")) { char* end=nullptr;long v=std::strtol(eq,&end,0);if(end!=eq)platform::set_rtc_address(static_cast<std::uint8_t>(v));continue; }
+        if (ci_equal(line, "audio_volume")) {
+            int value = std::atoi(eq);
+            if (value < 0) value = 0;
+            if (value > 100) value = 100;
+            settings_.audio_volume = static_cast<std::uint8_t>(value);
+            continue;
+        }
+        if (ci_equal(line, "key_click")) {
+            settings_.key_click = audio::key_click_from_setting(eq);
+            continue;
+        }
+        if (ci_equal(line, "startup_wav")) {
+            settings_.startup_wav =
+                ci_equal(eq, "on") || ci_equal(eq, "yes") ||
+                ci_equal(eq, "true") || std::strcmp(eq, "1") == 0;
+            continue;
+        }
+
         if (ci_equal(line, "wifi_enabled")) {
             // Wi-Fi is intentionally session-only. Always start disconnected
             // after boot even if an older configuration persisted "on".
@@ -641,6 +704,13 @@ void Repl::save_settings() {
         "console_fg=%06lX\n"
         "console_bg=%06lX\n"
         "console=%s\n"
+        "\n[rtc]\n"
+        "rtc_source=%s\n"
+        "rtc_address=0x%02X\n"
+        "\n[audio]\n"
+        "audio_volume=%u\n"
+        "key_click=%s\n"
+        "startup_wav=%s\n"
         "\n[wifi]\n"
         "wifi_enabled=%s\n"
         "wifi_ssid=%s\n"
@@ -657,6 +727,11 @@ void Repl::save_settings() {
         static_cast<unsigned long>(settings_.console_foreground),
         static_cast<unsigned long>(settings_.console_background),
         console_name(settings_.console_mode),
+        platform::rtc_source_name(),
+        static_cast<unsigned>(platform::rtc_address()),
+        static_cast<unsigned>(settings_.audio_volume),
+        audio::key_click_name(settings_.key_click),
+        settings_.startup_wav ? "on" : "off",
         "off",
         settings_.wifi_ssid,
         settings_.wifi_password,
@@ -722,6 +797,8 @@ void Repl::apply_settings() {
         settings_.console_background
     );
     platform::set_console_mode(settings_.console_mode);
+    platform::audio_set_volume(settings_.audio_volume);
+    platform::audio_set_key_click(settings_.key_click);
 }
 
 void Repl::render_status() {
@@ -1003,8 +1080,7 @@ void Repl::print_banner() {
     std::snprintf(
         capacity_line,
         sizeof(capacity_line),
-        " Program capacity: RAM 256 / SD 1024 lines; %lu chars\r\n",
-        static_cast<unsigned long>(kMaxProgramLineLength - 1)
+        " Program: RAM 256x191 / SD 1024x2047\r\n"
     );
     platform::put_string(capacity_line);
 
@@ -1046,16 +1122,16 @@ void Repl::list_program() {
 
     char number[24] = {};
     for (std::size_t i = 0; i < program_.size(); ++i) {
-        ProgramLine line;
-        if (!program_.read_line(i,line)) { print_program_error(); return; }
+        std::int32_t line_number=0;
+        const char* text=nullptr;
+        std::size_t length=0;
+        if(!program_.read_line_text(i,line_number,text,length)) {
+            print_program_error();return;
+        }
         std::snprintf(
-            number,
-            sizeof(number),
-            "%ld ",
-            static_cast<long>(line.number)
-        );
+            number,sizeof(number),"%ld ",static_cast<long>(line_number));
         platform::put_string(number);
-        platform::put_string(line.text);
+        platform::put_string(text);
         platform::put_string("\r\n");
     }
 }
@@ -1071,10 +1147,10 @@ bool Repl::load_named_program(
         return false;
     }
 
-    set_current_filename(filename, false);
+    set_current_filename(program_.filename(), false);
 
     platform::put_string("LOADED ");
-    platform::put_string(filename);
+    platform::put_string(program_.filename());
     platform::put_string("\r\n");
 
     if (run_after_load) {
@@ -1231,9 +1307,12 @@ void Repl::process_line(char* line) {
         return;
     }
 
-    if (command_equals(input, "FILES") ||
-        command_equals(input, "DIR")) {
+    if (command_equals(input, "FILES")) {
         if (!storage::list_program_files()) print_storage_error();
+        return;
+    }
+    if (command_equals(input, "DIR")) {
+        if (!storage::list_root_files()) print_storage_error();
         return;
     }
 
@@ -1266,19 +1345,27 @@ void Repl::process_line(char* line) {
 
     if (char* arg = command_argument(input, "SAVE")) {
         char filename[80] = {};
-        if (!parse_filename_argument(arg, filename, sizeof(filename))) {
+        const bool has_argument = *skip_spaces(arg) != '\0';
+        if (has_argument &&
+            !parse_filename_argument(arg, filename, sizeof(filename))) {
+            platform::put_string("?FILENAME REQUIRED\r\n");
+            return;
+        }
+        if (!has_argument && !has_current_filename()) {
             platform::put_string("?FILENAME REQUIRED\r\n");
             return;
         }
 
-        if (!storage::save_program(filename, program_)) {
+        const bool saved = has_argument
+            ? save_program_as(filename)
+            : save_current_program();
+        if (!saved) {
             print_storage_error();
             return;
         }
 
-        set_current_filename(filename, false);
         platform::put_string("SAVED ");
-        platform::put_string(filename);
+        platform::put_string(program_.filename());
         platform::put_string("\r\n");
         return;
     }
@@ -1392,8 +1479,11 @@ void Repl::process_line(char* line) {
         platform::put_string("ALT+SPACE - keyboard backlight cycle\r\n");
         platform::put_string("POWER or ALT+P - standby / any key wake\r\n");
         platform::put_string("LIST / NEW / RUN / CLS / MENU / STANDBY\r\n");
-        platform::put_string("FILES (or DIR) - list .BAS files\r\n");
-        platform::put_string("LOAD HELLO / SAVE TEST\r\n");
+        platform::put_string("PAUSE - wait for a key / INKEY - poll key code\r\n");
+        platform::put_string("FILES - list BASIC programs\r\n");
+        platform::put_string("DIR   - list SD card files\r\n");
+        platform::put_string("LOAD HELLO / SAVE - save current program\r\n");
+        platform::put_string("SAVE TEST - save as TEST.BAS\r\n");
         platform::put_string("XRECV \"FILE\" / XSEND \"FILE\" - XMODEM CRC\r\n");
         platform::put_string("YRECV / YSEND \"FILE\" - YMODEM exact size\r\n");
         platform::put_string("SD [STATUS|REMOUNT]\r\n");
@@ -1403,6 +1493,8 @@ void Repl::process_line(char* line) {
         platform::put_string("SCREENSHOT [name] - save LCD as BMP\r\n");
         platform::put_string("SERIAL [ON|OFF|ONLY]\r\n");
         platform::put_string("CONSOLE LCD|BOTH|SERIAL\r\n");
+        platform::put_string("Bluetooth Console: Control Center -> Bluetooth -> Console ON\r\n");
+        platform::put_string("Bluetooth X/YMODEM: enter XRECV/XSEND/YRECV/YSEND over SPP\r\n");
         platform::put_string("CLEAR - clear direct-mode variables\r\n");
         return;
     }
@@ -1430,6 +1522,7 @@ void Repl::run_direct_line(const char* line) {
     }
 
     const VmResult vr = vm_.run_direct(compiled_);
+    handle_runtime_result(vr);
     if (!vr.ok) {
         ensure_body_cursor();
         platform::put_char('?');
@@ -1490,6 +1583,7 @@ void Repl::run_program() {
 
     const std::uint32_t run_start_ms = platform::monotonic_millis();
     const VmResult vr = vm_.run(compiled_);
+    handle_runtime_result(vr);
     const std::uint32_t run_end_ms = platform::monotonic_millis();
     const std::uint32_t elapsed_ms = run_end_ms - run_start_ms;
     last_run_ms_ = elapsed_ms;
@@ -2208,6 +2302,100 @@ void Repl::menu_display() {
     }
 }
 
+void Repl::menu_firmware() {
+    static const char* items[] = {
+        "Enter BOOTSEL",
+        "Reboot",
+        "Back"
+    };
+
+    int selected = 0;
+    while (true) {
+        draw_menu_header(
+            "FIRMWARE",
+            "UP/DOWN SELECT  ENTER ACTION  ESC BACK"
+        );
+
+        const int first_row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+
+        for (int i = 0; i < 3; ++i) {
+            draw_menu_option(first_row + i, items[i], selected == i);
+        }
+
+        draw_menu_message(
+            first_row + 5,
+            "BOOTSEL: enter RP2350 USB firmware update mode."
+        );
+        draw_menu_message(
+            first_row + 6,
+            "Reboot: restart Cala's Pokecom BASIC from flash."
+        );
+
+        const int key = platform::get_char();
+        if (key == kKeyUp && selected > 0) {
+            --selected;
+            continue;
+        }
+        if (key == kKeyDown && selected < 2) {
+            ++selected;
+            continue;
+        }
+        if (key == kKeyEscape || key == 0x1b ||
+            (key_is_enter(key) && selected == 2)) {
+            return;
+        }
+        if (!key_is_enter(key)) continue;
+
+        const storage::Owner owner = storage::owner();
+        if (owner == storage::Owner::UsbHost ||
+            owner == storage::Owner::Transition) {
+            draw_menu_header("FIRMWARE", "PRESS ANY KEY");
+            draw_menu_message(
+                first_row + 2,
+                "RETURN / EJECT USB STORAGE BEFORE FIRMWARE ACTION"
+            );
+            platform::get_char();
+            draw_menu_header(nullptr, nullptr);
+            continue;
+        }
+
+        const bool bootsel = selected == 0;
+        draw_menu_header(
+            bootsel ? "ENTER BOOTSEL?" : "REBOOT CPB?",
+            "ENTER CONFIRM  ESC CANCEL"
+        );
+        draw_menu_message(
+            first_row + 1,
+            bootsel
+                ? "CPB will stop and reconnect as the RP2350 boot device."
+                : "CPB will restart immediately from flash."
+        );
+        draw_menu_message(
+            first_row + 2,
+            "Unsaved runtime state will be lost."
+        );
+
+        const int confirm = platform::get_char();
+        if (!key_is_enter(confirm)) {
+            draw_menu_header(nullptr, nullptr);
+            continue;
+        }
+
+        draw_menu_header(
+            "FIRMWARE",
+            bootsel ? "ENTERING BOOTSEL..." : "REBOOTING..."
+        );
+        platform::sleep_millis(120);
+
+        if (bootsel) {
+            platform::enter_bootsel();
+        } else {
+            platform::reboot_system();
+        }
+    }
+}
+
 void Repl::menu_power() {
     static const std::uint16_t profiles[] = {150, 100, 75};
     static const char* names[] = {
@@ -2874,127 +3062,125 @@ void Repl::menu_file_server() {
 }
 
 void Repl::menu_datetime() {
+ int selected=0; while(true){platform::DateTime dt;platform::get_datetime(dt);draw_menu_header("RTC SETTINGS","UP/DOWN SELECT  ENTER CHANGE  ESC BACK");const int first=(settings_.status_enabled?console_layout::status_rows:0)+3;char row[80]={};std::snprintf(row,sizeof(row),"Source        %s",platform::rtc_source_name());draw_menu_option(first,row,selected==0);draw_menu_message(first+1,"Type          PCF8563");std::snprintf(row,sizeof(row),"Address       0x%02X (target)",static_cast<unsigned>(platform::rtc_address()));draw_menu_option(first+2,row,selected==1);draw_menu_message(first+4,"External SDA  GP4");draw_menu_message(first+5,"External SCL  GP5");draw_menu_message(first+6,"I2C Speed     100 kHz");draw_menu_option(first+8,"Probe RTC",selected==2);draw_menu_option(first+9,"Set date & time",selected==3);draw_menu_option(first+10,"Back",selected==4);const int key=platform::get_char();if(key==kKeyUp&&selected>0){--selected;continue;}if(key==kKeyDown&&selected<4){++selected;continue;}if(key==kKeyEscape||key==0x1b||(key_is_enter(key)&&selected==4))return;if(!key_is_enter(key))continue;if(selected==0){const int current=platform::rtc_source()==platform::RtcSource::Auto?0:platform::rtc_source()==platform::RtcSource::External?1:platform::rtc_source()==platform::RtcSource::Internal?2:3;platform::set_rtc_source(static_cast<platform::RtcSource>((current+1)%4));save_settings();}else if(selected==1){char input[16]={};if(prompt_text("RTC target address (08-77 hex): ",input,sizeof(input))){char* end=nullptr;const long address=std::strtol(input,&end,16);if(!platform::set_rtc_address(static_cast<std::uint8_t>(address)))platform::put_string("BAD I2C ADDRESS\r\n");else save_settings();}}else if(selected==2){const bool found=platform::probe_rtc();draw_menu_header("RTC PROBE","PRESS ANY KEY");if(found){std::snprintf(row,sizeof(row),"PCF8563 FOUND %s 0x%02X",platform::rtc_location(),static_cast<unsigned>(platform::rtc_address()));draw_menu_message(first+4,row);}else draw_menu_message(first+4,"RTC NOT FOUND");platform::get_char();}else {char input[48]={};if(prompt_text("SET YYYYMMDDHHMMSS: ",input,sizeof(input))){platform::DateTime value;if(parse_datetime_value(input,value)&&platform::set_datetime(value))platform::put_string("CLOCK UPDATED\r\n");else platform::put_string("INVALID DATE/TIME\r\n");}}}
+}
+void Repl::menu_audio() {
+    int selected = 0;
     while (true) {
-        platform::DateTime dt;
-        const bool rtc_ok = platform::get_datetime(dt);
-
         draw_menu_header(
-            "DATE / TIME",
-            "ENTER SET  ESC BACK"
+            "AUDIO SETTINGS",
+            "UP/DOWN SELECT  ENTER CHANGE  ESC BACK"
         );
-
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        const int first_row = top + 3;
-
-        char row[96] = {};
-        if (rtc_ok) {
-            std::snprintf(
-                row,
-                sizeof(row),
-                "Clock      : %04d-%02d-%02d %02d:%02d:%02d",
-                dt.year,
-                dt.month,
-                dt.day,
-                dt.hour,
-                dt.minute,
-                dt.second
-            );
-        } else {
-            std::snprintf(
-                row,
-                sizeof(row),
-                "Clock      : NOT INITIALIZED"
-            );
-        }
-        draw_menu_message(first_row, row);
-
+        const int first =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        char row[64] = {};
         std::snprintf(
-            row,
-            sizeof(row),
-            "External RTC: %s",
-            platform::hardware_rtc_available()
-                ? "PCF8563 detected"
-                : "not fitted / not detected"
+            row, sizeof(row), "Volume       %u%%",
+            static_cast<unsigned>(settings_.audio_volume)
         );
-        draw_menu_message(first_row + 1, row);
-
-        draw_menu_message(
-            first_row + 3,
-            "Format: YYYYMMDDHHMMSS"
+        draw_menu_option(first, row, selected == 0);
+        std::snprintf(
+            row, sizeof(row), "Startup WAV  %s",
+            settings_.startup_wav ? "ON" : "OFF"
         );
-        draw_menu_option(
-            first_row + 5,
-            "Set date & time",
-            true
-        );
-        draw_menu_message(
-            first_row + 7,
-            "Example: 20260919212400"
-        );
+        draw_menu_option(first + 1, row, selected == 1);
+        std::snprintf(row, sizeof(row), "Key Click    %s",
+                      audio::key_click_name(settings_.key_click));
+        draw_menu_option(first + 2, row, selected == 2);
+        draw_menu_option(first + 4, "Back", selected == 3);
 
         const int key = platform::get_char();
-        if (key == kKeyEscape || key == 0x1b) {
+        if (key == kKeyUp && selected > 0) {
+            --selected;
+        } else if (key == kKeyDown && selected < 3) {
+            ++selected;
+        } else if (key == kKeyEscape || key == 0x1b ||
+                   (key_is_enter(key) && selected == 3)) {
             return;
-        }
-
-        if (!key_is_enter(key)) {
-            continue;
-        }
-
-        char input[48] = {};
-        bool ok = false;
-
-        if (prompt_text(
-                "SET YYYYMMDDHHMMSS: ",
-                input,
-                sizeof(input))) {
-            platform::DateTime value;
-            if (!parse_datetime_value(input, value)) {
-                draw_menu_header("DATE / TIME", "PRESS ANY KEY");
-                draw_menu_message(
-                    (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                    "INVALID INPUT - USE YYYYMMDDHHMMSS"
+        } else if (key_is_enter(key) && selected == 0) {
+            settings_.audio_volume =
+                static_cast<std::uint8_t>(
+                    settings_.audio_volume >= 100
+                        ? 0 : settings_.audio_volume + 10
                 );
-                platform::get_char();
-                continue;
-            }
-
-            ok = platform::set_datetime(value);
+            platform::audio_set_volume(settings_.audio_volume);
+            save_settings();
+        } else if (key_is_enter(key) && selected == 1) {
+            settings_.startup_wav = !settings_.startup_wav;
+            save_settings();
+        } else if (key_is_enter(key) && selected == 2) {
+            settings_.key_click = static_cast<audio::KeyClickMode>(
+                (static_cast<unsigned>(settings_.key_click) + 1u) % 4u);
+            platform::audio_set_key_click(settings_.key_click);
+            save_settings();
         }
-
-        draw_menu_header("DATE / TIME", "PRESS ANY KEY");
-        draw_menu_message(
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-            ok ? "CLOCK UPDATED" : "CLOCK UPDATE FAILED"
-        );
-        draw_menu_message(
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 6,
-            platform::hardware_rtc_available()
-                ? "External RTC is also available"
-                : "Software clock active"
-        );
-
-        platform::DateTime verify;
-        if (platform::get_datetime(verify)) {
-            char verify_row[96] = {};
-            std::snprintf(
-                verify_row,
-                sizeof(verify_row),
-                "%04d-%02d-%02d %02d:%02d:%02d",
-                verify.year,
-                verify.month,
-                verify.day,
-                verify.hour,
-                verify.minute,
-                verify.second
-            );
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 8,
-                verify_row
-            );
-        }
-        platform::get_char();
     }
+}
+
+bool Repl::recover_after_sd_remount() {
+    const bool remounted = storage::remount();
+    if (!storage_recovery::reload_after_remount(remounted)) return false;
+
+    // A successful remount follows the normal boot recovery order.
+    load_settings();
+    apply_settings();
+    apply_network_settings();
+
+    const auto action = storage_recovery::program_action(
+        true, settings_.storage_mode, program_.backend_type(), program_.is_dirty());
+
+    if (action == storage_recovery::ProgramAction::UseInternalRam) {
+        if (!program_.switch_mode(ProgramStorageMode::InternalRam, false))
+            return false;
+    } else if (action == storage_recovery::ProgramAction::AskDirtyRam) {
+        int selected = 0; // Keep is deliberately the safe default.
+        while (true) {
+            draw_menu_header(
+                "SD SESSION FOUND",
+                "UP/DOWN SELECT  ENTER  ESC CANCEL"
+            );
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            draw_menu_message(top, "Current RAM program is modified.");
+            draw_menu_option(top + 3, "Keep current program", selected == 0);
+            draw_menu_option(top + 4, "Restore SD session", selected == 1);
+            draw_menu_option(top + 5, "Cancel", selected == 2);
+            const int key = platform::get_char();
+            if (key == kKeyUp && selected > 0) --selected;
+            else if (key == kKeyDown && selected < 2) ++selected;
+            else if (key == kKeyEscape || key == 0x1b) return true;
+            else if (key_is_enter(key)) {
+                if (selected == 2) return true;
+                if (selected == 0) {
+                    if (!program_.switch_mode(settings_.storage_mode, false))
+                        return false;
+                } else if (!program_.recover_session(
+                               settings_.storage_mode, true)) {
+                    return false;
+                }
+                break;
+            }
+        }
+    } else if (action == storage_recovery::ProgramAction::RecoverSession) {
+        if (!program_.recover_session(settings_.storage_mode, true)) {
+            // No valid session is normal on a fresh card. Preserve the current
+            // clean program while creating a new transactional SD workspace.
+            if (program_.backend_type() == ProgramBackend::Ram) {
+                if (!program_.switch_mode(settings_.storage_mode, false))
+                    return false;
+            } else if (!program_.resume()) {
+                return false;
+            }
+        }
+    }
+
+    set_current_filename(
+        *program_.filename() ? program_.filename() : "UNTITLED",
+        program_.is_dirty()
+    );
+    render_status();
+    render_function_keys();
+    return true;
 }
 
 void Repl::menu_sd() {
@@ -3049,10 +3235,13 @@ void Repl::menu_sd() {
             if (selected == 0) {
                 storage::init();
             } else if (selected == 1) {
-                storage::remount();
+                recover_after_sd_remount();
             } else {
                 load_settings();
                 apply_settings();
+                apply_network_settings();
+                render_status();
+                render_function_keys();
             }
         }
     }
@@ -3127,7 +3316,10 @@ void Repl::menu_system_info() {
             text,
             sizeof(text),
             "Line capacity   %lu chars",
-            static_cast<unsigned long>(kMaxProgramLineLength - 1)
+            static_cast<unsigned long>(
+                program_.backend_type()==ProgramBackend::Sd
+                    ?kMaxSdProgramLineLength-1
+                    :kMaxProgramLineLength-1)
         );
         draw_menu_message(row++, text);
 
@@ -3218,8 +3410,9 @@ void Repl::menu_program_storage() {
     auto save_as = [&]() {
         char name[80] = {};
         if(!prompt_text("SAVE AS (BAS filename)",name,sizeof(name))) return false;
-        if(!storage::save_program(name,program_)) {message(storage::last_error());return false;}
-        set_current_filename(program_.filename(),false);return true;
+        if(storage::program_exists(name) && !confirm_program_overwrite(name)) return false;
+        if(!save_program_as(name)) {message(storage::last_error());return false;}
+        return true;
     };
     auto discard_confirm = [&]() {
         draw_menu_header("DISCARD CURRENT PROGRAM?", "D DISCARD   ESC CANCEL");
@@ -3291,8 +3484,116 @@ void Repl::menu_program_storage() {
     }
 }
 
+bool Repl::confirm_program_overwrite(const char* filename) {
+    int selected = 0; // Cancel is intentionally the safe default.
+    while (true) {
+        draw_menu_header(
+            "PROGRAM FILE ALREADY EXISTS",
+            "UP/DOWN SELECT   ENTER OK   ESC CANCEL"
+        );
+        const int top =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        char text[96] = {};
+        std::snprintf(text, sizeof(text), "%.70s", filename ? filename : "");
+        draw_menu_message(top, text);
+        draw_menu_option(top + 2, "Cancel", selected == 0);
+        draw_menu_option(top + 3, "Overwrite", selected == 1);
+
+        const int key = platform::get_char();
+        if (key == kKeyUp || key == kKeyDown) {
+            selected = 1 - selected;
+        } else if (key_is_enter(key)) {
+            return selected == 1;
+        } else if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
+            return false;
+        }
+    }
+}
+
+void Repl::menu_save_program(bool save_as) {
+    auto wait_message = [&](const char* title, const char* text) {
+        draw_menu_header(title, "ENTER / ESC BACK");
+        draw_menu_message(
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 4,
+            text
+        );
+        while (true) {
+            const int key = platform::get_char();
+            if (key_is_enter(key) || key == kKeyEscape ||
+                key == 0x1b || key == kKeyHome) return;
+        }
+    };
+
+    if (!save_as && has_current_filename()) {
+        if (!save_current_program()) {
+            wait_message("SAVE PROGRAM", storage::last_error());
+            return;
+        }
+        char text[96] = {};
+        std::snprintf(text, sizeof(text), "SAVED %.70s", program_.filename());
+        wait_message("SAVE PROGRAM", text);
+        return;
+    }
+
+    char filename[kFilenameSize] = {};
+    if (!prompt_text(
+            "SAVE PROGRAM AS\r\nFilename: ",
+            filename,
+            sizeof(filename))) return;
+
+    if (storage::program_exists(filename) &&
+        !confirm_program_overwrite(filename)) return;
+
+    if (!save_program_as(filename)) {
+        wait_message("SAVE PROGRAM AS", storage::last_error());
+        return;
+    }
+
+    char text[96] = {};
+    std::snprintf(text, sizeof(text), "SAVED %.70s", program_.filename());
+    wait_message("SAVE PROGRAM AS", text);
+}
+
 void Repl::service_background() {
+    platform::audio_service();
     network::file_server_poll();
+    bluetooth_serial::service();
+
+    const bool console_link=bluetooth_serial::console_enabled()&&bluetooth_serial::connected()&&!bluetooth_serial::test_terminal_active();
+    if(console_link&&!bluetooth_console_link_active_)bluetooth_serial::write_console_text("\r\nREADY\r\nBASIC> \x1b[s");
+    bluetooth_console_link_active_=console_link;
+
+    // Stage 1 terminal behavior is deliberately outside the transport core.
+    if (bluetooth_test_active_) {
+        if (!bluetooth_serial::connected()) {
+            bluetooth_test_banner_sent_ = false;
+        } else {
+            static constexpr char banner[] =
+                "CPB Bluetooth SPP Stage 1\r\n";
+            if (!bluetooth_test_banner_sent_ &&
+                bluetooth_serial::write_text(banner)) {
+                bluetooth_test_banner_sent_ = true;
+            }
+            for (int drained = 0; drained < 64; ++drained) {
+                const int value = bluetooth_serial::read_test();
+                if (value < 0) break;
+                ++bluetooth_test_rx_count_;
+                if (value >= 32 && value <= 126) {
+                    std::snprintf(bluetooth_test_last_rx_, sizeof(bluetooth_test_last_rx_),
+                                  "'%c' 0x%02X", value, static_cast<unsigned>(value));
+                } else {
+                    std::snprintf(bluetooth_test_last_rx_, sizeof(bluetooth_test_last_rx_),
+                                  "0x%02X", static_cast<unsigned>(value));
+                }
+                if (bluetooth_test_echo_) {
+                    const std::uint8_t byte = static_cast<std::uint8_t>(value);
+                    bluetooth_serial::write(&byte, 1);
+                }
+            }
+            bluetooth_serial::service();
+        }
+    }
+
     storage::poll();
 
     switch (storage::take_usb_event()) {
@@ -3523,6 +3824,7 @@ void Repl::menu_usb_storage() {
             if (cancelled) break;
 
             network::file_server_stop();
+            platform::audio_stop();
             bool suspended = false;
             if (program_.backend_type() == ProgramBackend::Sd) {
                 if (!program_.suspend_for_usb()) {
@@ -3548,6 +3850,90 @@ void Repl::menu_usb_storage() {
     }
 }
 
+
+void Repl::menu_bluetooth_test() {
+    if (!bluetooth_serial::enabled()) {
+        draw_menu_header("BLUETOOTH TEST TERMINAL", "PRESS ANY KEY");
+        const int row = (settings_.status_enabled ? console_layout::status_rows : 0) + 8;
+        draw_menu_message(row, "ENABLE BLUETOOTH FIRST");
+        platform::get_char();
+        return;
+    }
+
+    bluetooth_serial::set_test_terminal_active(true);
+    bluetooth_test_active_ = true;
+    bluetooth_test_echo_ = true;
+    bluetooth_test_banner_sent_ = false;
+    bluetooth_test_rx_count_ = 0;
+    std::snprintf(bluetooth_test_last_rx_, sizeof(bluetooth_test_last_rx_), "-");
+
+    int selected = 0;
+    while (true) {
+        service_background();
+        draw_menu_header("BLUETOOTH SPP TEST TERMINAL",
+                         "UP/DOWN SELECT  ENTER  ESC BACK");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        char row[96] = {};
+        std::snprintf(row, sizeof(row), "Status      %s", bluetooth_serial::status());
+        draw_menu_message(first, row);
+        std::snprintf(row, sizeof(row), "RX/Q/S  %lu / %lu / %lu",
+                      static_cast<unsigned long>(bluetooth_test_rx_count_),
+                      static_cast<unsigned long>(bluetooth_serial::tx_queued_bytes()),
+                      static_cast<unsigned long>(bluetooth_serial::tx_sent_bytes()));
+        draw_menu_message(first + 1, row);
+        std::snprintf(row, sizeof(row), "Last RX     %s", bluetooth_test_last_rx_);
+        draw_menu_message(first + 2, row);
+        draw_menu_message(first + 4,
+                          "PC input is echoed; press any PicoCalc key to refresh.");
+
+        draw_menu_option(first + 7, "Send Test Message", selected == 0);
+        std::snprintf(row, sizeof(row), "Echo              %s",
+                      bluetooth_test_echo_ ? "ON" : "OFF");
+        draw_menu_option(first + 8, row, selected == 1);
+        draw_menu_option(first + 9, "Back", selected == 2);
+
+        const int key = platform::get_char();
+        if (key == kKeyUp && selected > 0) --selected;
+        else if (key == kKeyDown && selected < 2) ++selected;
+        else if (key == kKeyEscape || key == 0x1b ||
+                 (key_is_enter(key) && selected == 2)) break;
+        else if (key_is_enter(key) && selected == 0) {
+            static constexpr char message[] = "CPB-PicoCalc test message\r\n";
+            if (bluetooth_serial::write_text(message)) {
+                bluetooth_serial::service();
+            }
+        } else if (key_is_enter(key) && selected == 1) {
+            bluetooth_test_echo_ = !bluetooth_test_echo_;
+        }
+    }
+    bluetooth_test_active_ = false;
+    bluetooth_test_banner_sent_ = false;
+    bluetooth_serial::set_test_terminal_active(false);
+}
+
+void Repl::menu_bluetooth() {
+ int selected=0;
+ while(true){
+  service_background();draw_menu_header("BLUETOOTH CLASSIC SPP","UP/DOWN SELECT  ENTER ACTION  ESC BACK");
+  const int first=(settings_.status_enabled?console_layout::status_rows:0)+3;char row[96]={};
+  std::snprintf(row,sizeof(row),"Bluetooth   %s",bluetooth_serial::enabled()?"ON":"OFF");draw_menu_message(first,row);
+  std::snprintf(row,sizeof(row),"Status      %s",bluetooth_serial::status());draw_menu_message(first+1,row);
+  std::snprintf(row,sizeof(row),"Device      %s",bluetooth_serial::device_name());draw_menu_message(first+2,row);
+  std::snprintf(row,sizeof(row),"Console     %s",bluetooth_serial::console_enabled()?"ON":"OFF");draw_menu_message(first+3,row);
+  std::snprintf(row,sizeof(row),"Overflow    RX:%lu TX:%lu",static_cast<unsigned long>(bluetooth_serial::rx_overflow_count()),static_cast<unsigned long>(bluetooth_serial::tx_overflow_count()));draw_menu_message(first+4,row);
+  std::snprintf(row,sizeof(row),"Last status %.72s",bluetooth_serial::last_error());draw_menu_message(first+5,row);
+  draw_menu_option(first+8,bluetooth_serial::enabled()?"Disable Bluetooth":"Enable Bluetooth",selected==0);
+  draw_menu_option(first+9,bluetooth_serial::console_enabled()?"Console: ON":"Console: OFF",selected==1);
+  draw_menu_option(first+10,"Test Terminal",selected==2);draw_menu_option(first+11,"Back",selected==3);
+  const int key=platform::get_char();
+  if(key==kKeyUp&&selected>0)--selected;else if(key==kKeyDown&&selected<3)++selected;
+  else if(key==kKeyEscape||key==0x1b||(key_is_enter(key)&&selected==3))return;
+  else if(key_is_enter(key)&&selected==0){if(bluetooth_serial::enabled()){bluetooth_serial::set_console_enabled(false);bluetooth_serial::disable();bluetooth_console_link_active_=false;}else bluetooth_serial::enable();}
+  else if(key_is_enter(key)&&selected==1){if(bluetooth_serial::enabled()){bluetooth_serial::set_console_enabled(!bluetooth_serial::console_enabled());bluetooth_console_link_active_=false;}}
+  else if(key_is_enter(key)&&selected==2)menu_bluetooth_test();
+ }
+}
+
 void Repl::show_system_menu() {
     // Keep both channels available while inside the control center. The
     // configured routing is restored when the menu closes.
@@ -3555,15 +3941,20 @@ void Repl::show_system_menu() {
 
     static const char* items[] = {
         "Files",
+        "Save Program",
+        "Save Program As...",
         "Quick Load Keys",
         "Display",
         "Console",
         "Date / Time",
+        "Audio",
         "Wireless LAN",
+        "Bluetooth",
         "Wi-Fi File Server",
         "File Transfer",
         "USB Storage",
         "SD Card",
+        "Firmware",
         "Power / CPU",
         "System Information",
         "Program Storage",
@@ -3613,28 +4004,38 @@ void Repl::show_system_menu() {
                 return;
             }
         } else if (selected == 1) {
-            menu_quick_keys();
+            menu_save_program(false);
         } else if (selected == 2) {
-            menu_display();
+            menu_save_program(true);
         } else if (selected == 3) {
-            menu_console();
+            menu_quick_keys();
         } else if (selected == 4) {
-            menu_datetime();
+            menu_display();
         } else if (selected == 5) {
-            menu_wifi();
+            menu_console();
         } else if (selected == 6) {
-            menu_file_server();
+            menu_datetime();
         } else if (selected == 7) {
-            menu_file_transfer();
+            menu_audio();
         } else if (selected == 8) {
-            menu_usb_storage();
+            menu_wifi();
         } else if (selected == 9) {
-            menu_sd();
+            menu_bluetooth();
         } else if (selected == 10) {
-            menu_power();
+            menu_file_server();
         } else if (selected == 11) {
-            menu_system_info();
+            menu_file_transfer();
         } else if (selected == 12) {
+            menu_usb_storage();
+        } else if (selected == 13) {
+            menu_sd();
+        } else if (selected == 14) {
+            menu_firmware();
+        } else if (selected == 15) {
+            menu_power();
+        } else if (selected == 16) {
+            menu_system_info();
+        } else if (selected == 17) {
             menu_program_storage();
         } else {
             break;
@@ -3654,39 +4055,95 @@ void Repl::menu_file_transfer() {
         "Send via XMODEM",
         "Back"
     };
+    auto route_label = [](platform::SerialTransferRoute route) {
+        switch (route) {
+        case platform::SerialTransferRoute::Auto: return "AUTO";
+        case platform::SerialTransferRoute::Usb: return "USB CDC";
+        case platform::SerialTransferRoute::Uart: return "UART0";
+        case platform::SerialTransferRoute::Bluetooth: return "Bluetooth SPP";
+        }
+        return "AUTO";
+    };
+    auto cycle_route = [](platform::SerialTransferRoute route, int direction) {
+        int value = static_cast<int>(route);
+        value = (value + direction + 4) % 4;
+        return static_cast<platform::SerialTransferRoute>(value);
+    };
+
+    // This selection intentionally lives only for this menu invocation.
+    platform::SerialTransferRoute transfer_route =
+        platform::SerialTransferRoute::Auto;
     int selected = 0;
     while (true) {
-        draw_menu_header("FILE TRANSFER", "UP/DOWN SELECT  ENTER OPEN  ESC BACK");
+        draw_menu_header(
+            "FILE TRANSFER",
+            "UP/DOWN SELECT  LEFT/RIGHT CHANGE  ENTER OPEN"
+        );
         const int first_row =
             (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        char transport[48];
+        std::snprintf(
+            transport,
+            sizeof(transport),
+            "Transport: %s",
+            route_label(transfer_route)
+        );
+        draw_menu_option(first_row, transport, selected == 0);
         for (int i = 0; i < 5; ++i) {
-            draw_menu_option(first_row + i, items[i], selected == i);
+            draw_menu_option(first_row + i + 1, items[i], selected == i + 1);
         }
         draw_menu_message(first_row + 8, "YMODEM: exact size / recommended");
         draw_menu_message(first_row + 9, "XMODEM: compatibility / emergency");
 
         const int key = platform::get_char();
         if (key == kKeyUp && selected > 0) { --selected; continue; }
-        if (key == kKeyDown && selected < 4) { ++selected; continue; }
+        if (key == kKeyDown && selected < 5) { ++selected; continue; }
+        if (selected == 0 && (key == kKeyLeft || key == kKeyRight)) {
+            transfer_route = cycle_route(
+                transfer_route,
+                key == kKeyLeft ? -1 : 1
+            );
+            continue;
+        }
         if (key == kKeyEscape || key == 0x1b || key == kKeyHome ||
-            (key_is_enter(key) && selected == 4)) return;
+            (key_is_enter(key) && selected == 5)) return;
         if (!key_is_enter(key)) continue;
+        if (selected == 0) {
+            transfer_route = cycle_route(transfer_route, 1);
+            continue;
+        }
 
         char filename[kFilenameSize] = {};
-        if (selected == 1 || selected == 3) {
+        if (selected == 2 || selected == 4) {
             if (!pick_transfer_file(filename, sizeof(filename),
-                    selected == 1 ? "YMODEM SEND" : "XMODEM SEND")) continue;
-        } else if (selected == 2) {
-            if (!prompt_text("XMODEM RECEIVE\r\nFilename: ", filename, sizeof(filename))) continue;
+                    selected == 2 ? "YMODEM SEND" : "XMODEM SEND")) continue;
+        } else if (selected == 3) {
+            if (!prompt_text(
+                    "XMODEM RECEIVE\r\nFilename: ",
+                    filename,
+                    sizeof(filename))) continue;
         }
 
         leave_menu_screen();
-        if (selected < 2) run_ymodem_transfer(filename, selected == 0, true);
-        else run_xmodem_transfer(filename, selected == 2);
+        if (selected < 3) {
+            run_ymodem_transfer(
+                filename,
+                selected == 1,
+                true,
+                transfer_route
+            );
+        } else {
+            run_xmodem_transfer(
+                filename,
+                selected == 3,
+                transfer_route
+            );
+        }
         platform::put_string("\r\nENTER: CONTROL CENTER\r\n");
         while (true) {
             const int done = platform::get_char();
-            if (key_is_enter(done) || done == kKeyEscape || done == 0x1b || done == kKeyHome) break;
+            if (key_is_enter(done) || done == kKeyEscape ||
+                done == 0x1b || done == kKeyHome) break;
         }
         draw_menu_header(nullptr, nullptr);
     }
@@ -3701,7 +4158,11 @@ void Repl::command_xmodem(char* argument, bool receive) {
     run_xmodem_transfer(filename, receive);
 }
 
-void Repl::run_xmodem_transfer(const char* filename, bool receive) {
+void Repl::run_xmodem_transfer(
+    const char* filename,
+    bool receive,
+    platform::SerialTransferRoute route
+) {
     if (!storage::init()) {
         print_storage_error();
         return;
@@ -3723,13 +4184,14 @@ void Repl::run_xmodem_transfer(const char* filename, bool receive) {
         "TERA TERM: FILE > TRANSFER > XMODEM > RECEIVE\r\n");
     platform::put_string("ESC: CANCEL\r\n");
     platform::put_string("TRANSPORT: ");
-    platform::put_string(platform::serial_transfer_route_name());
+    platform::put_string(platform::serial_transfer_route_name(route));
     platform::put_string("\r\n");
-    if (!platform::begin_serial_transfer()) {
+    if (!platform::begin_serial_transfer(route)) {
         platform::put_string(platform::serial_transfer_error());
         platform::put_string("\r\n");
         return;
     }
+    SerialTransferLease transfer_lease;
     xmodem::IO io {
         &file,
         [](void*, unsigned ms) { return platform::serial_transfer_read(ms); },
@@ -3740,7 +4202,7 @@ void Repl::run_xmodem_transfer(const char* filename, bool receive) {
     };
     auto result = receive ? xmodem::receive(io) : xmodem::send(io);
     file.abort();
-    platform::end_serial_transfer();
+    transfer_lease.close();
     // No textual output or status callbacks occur on the XMODEM transport.
     platform::put_string("\r\n");
     platform::put_string(result.error == xmodem::Error::Write ? file.error() :
@@ -3768,7 +4230,12 @@ void Repl::command_ymodem(char* argument,bool receive) {
     run_ymodem_transfer(filename,receive);
 }
 
-void Repl::run_ymodem_transfer(const char* filename,bool receive,bool menu_ui) {
+void Repl::run_ymodem_transfer(
+    const char* filename,
+    bool receive,
+    bool menu_ui,
+    platform::SerialTransferRoute route
+) {
     if(!storage::init()){
         print_storage_error();return;
     }
@@ -3795,19 +4262,26 @@ void Repl::run_ymodem_transfer(const char* filename,bool receive,bool menu_ui) {
         "TERA TERM: FILE > TRANSFER > YMODEM > SEND\r\n":
         "TERA TERM: FILE > TRANSFER > YMODEM > RECEIVE\r\n");
     platform::put_string("ESC: CANCEL\r\n");
-    platform::put_string("TRANSPORT: ");platform::put_string(platform::serial_transfer_route_name());platform::put_string("\r\n");
-    if(!platform::begin_serial_transfer()){
+    platform::put_string("TRANSPORT: ");platform::put_string(platform::serial_transfer_route_name(route));platform::put_string("\r\n");
+    if(!platform::begin_serial_transfer(route)){
         platform::put_string(platform::serial_transfer_error());platform::put_string("\r\n");return;
     }
+    SerialTransferLease transfer_lease;
     ymodem::IO io{
         &context,
         [](void*,unsigned ms){return platform::serial_transfer_read(ms);},
         [](void*,const std::uint8_t* p,std::size_t n){return platform::serial_transfer_write(p,n);},
         [](void* p,std::uint8_t* b,std::size_t n){return static_cast<Context*>(p)->file.read(b,n);},
-        [](void* p,const std::uint8_t* b,std::size_t n){return static_cast<Context*>(p)->file.write_exact(b,n);},
-        [](void* p){auto* c=static_cast<Context*>(p);return c->file.commit_exact(c->expected);},
+        [](void* p,const std::uint8_t* b,std::size_t n){
+            return static_cast<Context*>(p)->file.write_exact(b,n);
+        },
+        [](void* p){
+            auto* c=static_cast<Context*>(p);
+            return c->file.commit_exact(c->expected);
+        },
         [](void* p,const char* name,std::uint32_t size){
-            auto* c=static_cast<Context*>(p);c->expected=size;
+            auto* c=static_cast<Context*>(p);
+            c->expected=size;
             if(c->menu_ui){
                 char line[96];
                 std::snprintf(line,sizeof(line),"File: %.46s",name);
@@ -3819,16 +4293,25 @@ void Repl::run_ymodem_transfer(const char* filename,bool receive,bool menu_ui) {
         }
     };
     auto result=receive?ymodem::receive(io):ymodem::send(io,filename,context.file.size());
-    context.file.abort();platform::end_serial_transfer();
+    context.file.abort();transfer_lease.close();
     platform::put_string("\r\n");
     if(receive&&result.filename[0]){
-        platform::put_string("FILE: ");platform::put_string(result.filename);
+        platform::put_string(result.files>1?"LAST FILE: ":"FILE: ");platform::put_string(result.filename);
         char size[48];std::snprintf(size,sizeof(size),"\r\nSIZE: %lu BYTES\r\n",static_cast<unsigned long>(context.expected));
         platform::put_string(size);
     }
     if(result.error==ymodem::Error::None){
-        char text[64];std::snprintf(text,sizeof(text),"%s %lu BYTES\r\n",
-            receive?"RECEIVED":"SENT",static_cast<unsigned long>(result.bytes));platform::put_string(text);
+        char text[96];
+        if(receive&&result.files>1)
+            std::snprintf(text,sizeof(text),
+                "RECEIVED %lu FILES\r\nTOTAL %lu BYTES\r\n",
+                static_cast<unsigned long>(result.files),
+                static_cast<unsigned long>(result.bytes));
+        else
+            std::snprintf(text,sizeof(text),"%s %lu BYTES\r\n",
+                receive?"RECEIVED":"SENT",
+                static_cast<unsigned long>(result.bytes));
+        platform::put_string(text);
         platform::put_string("TRANSFER COMPLETE\r\n");
         if(receive&&std::strcmp(context.file.error(),"TRANSFER COMPLETE")!=0){
             platform::put_string(context.file.error());platform::put_string("\r\n");
@@ -4019,18 +4502,41 @@ void Repl::run() {
         [](void* context) { static_cast<Repl*>(context)->service_background(); }, this
     );
     platform::set_sleep_prepare_callback(
-        [](void*) { network::file_server_stop(); }, nullptr
+        [](void*) {
+            platform::audio_stop();
+            network::file_server_stop();
+            bluetooth_serial::disable();
+        },
+        nullptr
     );
 
+    bluetooth_serial::init(); // Lazy: leaves CYW43 Bluetooth powered OFF.
     storage::init();
     load_settings();
     apply_settings();
 
     platform::clear_lcd();
     print_banner();
-    if (!program_.initialize(settings_.storage_mode)) print_program_error();
+    if (!program_.initialize(settings_.storage_mode)) {
+        print_program_error();
+    } else {
+        set_current_filename(
+            *program_.filename() ? program_.filename() : "UNTITLED",
+            program_.is_dirty()
+        );
+        if (show_restored_editing_session(
+                program_.session_recovered(), program_.is_dirty())) {
+            platform::put_string("[RESTORED EDITING SESSION]\r\n");
+        }
+    }
     apply_network_settings();
-    run_autorun();
+    // Unsaved recovered edits take precedence over AUTORUN.BAS.
+    if (!(program_.session_recovered() && program_.is_dirty())) run_autorun();
+    if (settings_.startup_wav) {
+        // Start after ProgramStore/AUTORUN.BAS have finished using SD, but
+        // before the first READY prompt. Missing/invalid WAV never stops boot.
+        platform::audio_wavplay("AUTORUN.WAV");
+    }
 
     char input[kInputBufferSize] = {};
 

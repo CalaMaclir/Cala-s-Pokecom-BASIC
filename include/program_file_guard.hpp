@@ -21,8 +21,15 @@ inline bool transfer_staging(const char* name) {
            equal(name, "YMODEM.TMP") || equal(name, "YMODEM.BAK") ||
            equal(name, "HTTP.TMP") || equal(name, "HTTP.BAK");
 }
+inline bool session_staging(const char* name) {
+    return equal(name, "RMBSES.TMP") || equal(name, "RMBSES.BAK");
+}
 inline bool visible_for_transfer(const char* name) {
-    return name && *name && !reserved(name) && !transfer_staging(name);
+    return name && *name && !reserved(name) && !transfer_staging(name) &&
+           !session_staging(name);
+}
+inline bool visible_in_directory(const char* name) {
+    return visible_for_transfer(name);
 }
 inline bool in_use(const char* name) { return reserved(name) || (*active && equal(name,active)); }
 inline void set_active(const char* name) { std::snprintf(active,sizeof(active),"%s",name ? name : ""); }

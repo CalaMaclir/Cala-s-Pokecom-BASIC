@@ -14,6 +14,15 @@ namespace rmb {
 
 namespace {
 
+#ifndef RMB_BREAK_DISPATCH_INTERVAL
+#define RMB_BREAK_DISPATCH_INTERVAL 2048u
+#endif
+
+constexpr std::uint32_t kBreakDispatchInterval =
+    RMB_BREAK_DISPATCH_INTERVAL;
+static_assert(kBreakDispatchInterval > 0u,
+              "BREAK dispatch interval must be positive");
+
 constexpr std::size_t kStackSize = 192;
 constexpr std::size_t kReturnStackSize = 64;
 constexpr std::size_t kForStackSize = 32;
@@ -76,6 +85,7 @@ VmResult make_error(
 ) {
     VmResult result;
     result.ok = false;
+    result.interrupted = message && std::strcmp(message, "BREAK") == 0;
     result.pc = pc;
 
     const std::int32_t line = source_line_for_pc(program, pc);
@@ -509,6 +519,9 @@ VmResult VM::run_impl(
     const CompiledProgram& program,
     bool direct_mode
 ) {
+    // Discard runtime-only keys left by a previous RUN. This does not drain
+    // the hardware/serial source, so a key pressed after RUN starts is kept.
+    platform::reset_runtime_input();
     std::memset(numbers_, 0, sizeof(numbers_));
     std::memset(strings_, 0, sizeof(strings_));
     std::memset(arrays_, 0, sizeof(arrays_));
@@ -677,6 +690,7 @@ VmResult VM::run_impl(
 
     std::int32_t pc = 0;
     std::uint32_t dispatch_count = 0;
+    std::uint32_t next_break_dispatch = 0;
 
     const bool profile_run =
         !direct_mode && profile_mode_ != VmProfileMode::Off;
@@ -692,10 +706,17 @@ VmResult VM::run_impl(
     );
 
     while (pc >= 0 && static_cast<std::size_t>(pc) < program.code_count) {
-        if ((dispatch_count++ & 0xfffu) == 0u &&
+        // A subtraction-free dispatch deadline cannot skip a poll when a
+        // fused opcode accounts for several logical operations at once.
+        // The platform still throttles the 10 kHz I2C keyboard to 200 ms.
+        if (dispatch_count >= next_break_dispatch &&
             platform::break_requested()) {
             return make_error(program, pc, "BREAK");
         }
+        if (dispatch_count >= next_break_dispatch) {
+            next_break_dispatch = dispatch_count + kBreakDispatchInterval;
+        }
+        ++dispatch_count;
 
         const std::int32_t op_pc = pc;
         const Op& op = program.code[pc++];
@@ -2410,6 +2431,129 @@ VmResult VM::run_impl(
                         }
                         break;
 
+                    case FnId::INKEY: {
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        const platform::RuntimeKeyResult key =
+                            platform::poll_runtime_key();
+                        if (key.type == platform::RuntimeKeyType::Break) {
+                            return make_error(program, op_pc, "BREAK");
+                        }
+                        const BasicNumber value =
+                            key.type == platform::RuntimeKeyType::Key
+                                ? static_cast<BasicNumber>(key.code)
+                                : 0.0;
+                        if (!push(Value::num(value)))
+                            return make_error(program, op_pc, "STACK OVERFLOW");
+                        break;
+                    }
+
+                    case FnId::I2CREAD: { if(argc!=2||args[0].is_string||args[1].is_string)return make_error(program,op_pc,"ARGUMENT COUNT");const int a=static_cast<int>(args[0].number),r=static_cast<int>(args[1].number);if(a<8||a>0x77)return make_error(program,op_pc,"BAD I2C ADDRESS");if(r<0||r>255)return make_error(program,op_pc,"BAD I2C REGISTER");std::uint8_t v=0;const auto e=platform::external_i2c_read(static_cast<std::uint8_t>(a),static_cast<std::uint8_t>(r),v);if(e!=platform::I2cResult::Ok)return make_error(program,op_pc,platform::i2c_result_text(e));if(!push(Value::num(static_cast<BasicNumber>(v))))return make_error(program,op_pc,"STACK OVERFLOW");break; }
+                    case FnId::I2CWRITE: { if(argc!=3||args[0].is_string||args[1].is_string||args[2].is_string)return make_error(program,op_pc,"ARGUMENT COUNT");const int a=static_cast<int>(args[0].number),r=static_cast<int>(args[1].number),v=static_cast<int>(args[2].number);if(a<8||a>0x77)return make_error(program,op_pc,"BAD I2C ADDRESS");if(r<0||r>255||v<0||v>255)return make_error(program,op_pc,"BAD I2C VALUE");const auto e=platform::external_i2c_write(static_cast<std::uint8_t>(a),static_cast<std::uint8_t>(r),static_cast<std::uint8_t>(v));if(e!=platform::I2cResult::Ok)return make_error(program,op_pc,platform::i2c_result_text(e));break; }
+                    case FnId::I2CSCAN: {
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        std::uint8_t addresses[112] = {};
+                        const int count =
+                            platform::external_i2c_scan(addresses, 112);
+                        platform::put_string("I2C0 GP4/GP5 100kHz\r\n");
+                        for (int i = 0; i < count; ++i) {
+                            char address[8] = {};
+                            std::snprintf(
+                                address,
+                                sizeof(address),
+                                "%02X\r\n",
+                                static_cast<unsigned>(addresses[i])
+                            );
+                            platform::put_string(address);
+                        }
+                        char summary[24] = {};
+                        std::snprintf(
+                            summary,
+                            sizeof(summary),
+                            "%d DEVICE(S)\r\n",
+                            count
+                        );
+                        platform::put_string(summary);
+                        break;
+                    }
+                    case FnId::BEEP: {
+                        if (argc != 2 || args[0].is_string || args[1].is_string)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        if (!platform::audio_beep(
+                                static_cast<int>(args[0].number),
+                                static_cast<int>(args[1].number))) {
+                            return make_error(
+                                program, op_pc, platform::audio_last_error());
+                        }
+                        break;
+                    }
+
+                    case FnId::PLAY: {
+                        if (argc < 1 || argc > 3)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        const char* voices[3] = {};
+                        for (int i = 0; i < argc; ++i) {
+                            if (!args[i].is_string)
+                                return make_error(program, op_pc, "TYPE MISMATCH");
+                            voices[i] = args[i].string;
+                        }
+                        if (!platform::audio_play_mml(voices, argc))
+                            return make_error(
+                                program, op_pc, platform::audio_last_error());
+                        break;
+                    }
+
+                    case FnId::PLAYSTOP:
+                    case FnId::WAVSTOP:
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        platform::audio_stop();
+                        break;
+
+                    case FnId::PLAYPAUSE:
+                    case FnId::WAVPAUSE:
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        platform::audio_pause();
+                        break;
+
+                    case FnId::PLAYRESUME:
+                    case FnId::WAVRESUME:
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        platform::audio_resume();
+                        break;
+
+                    case FnId::PLAYWAIT:
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        while (platform::audio_playing()) {
+                            platform::audio_service();
+                            if (platform::break_requested())
+                                return make_error(program, op_pc, "BREAK");
+                            platform::sleep_millis(1);
+                        }
+                        break;
+
+                    case FnId::PLAYING:
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        if (!push(Value::num(
+                                platform::audio_playing() ? 1.0f : 0.0f))) {
+                            return make_error(
+                                program, op_pc, "STACK OVERFLOW");
+                        }
+                        break;
+
+                    case FnId::WAVPLAY:
+                        if (argc != 1 || !args[0].is_string)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        if (!platform::audio_wavplay(args[0].string))
+                            return make_error(
+                                program, op_pc, platform::audio_last_error());
+                        break;
+
                     case FnId::RANDOMIZE:
                         if (argc > 1 || (argc == 1 && args[0].is_string))
                             return make_error(program, op_pc, "ARGUMENT COUNT");
@@ -3030,12 +3174,40 @@ VmResult VM::run_impl(
                     case FnId::GSLEEP:
                         if (argc != 1 || args[0].is_string)
                             return make_error(program, op_pc, "ARGUMENT COUNT");
-                        sleep_ms(
-                            args[0].number < 0.0
-                                ? 0u
-                                : static_cast<std::uint32_t>(args[0].number)
-                        );
+                        {
+                            const std::uint32_t duration =
+                                args[0].number < 0.0
+                                    ? 0u
+                                    : static_cast<std::uint32_t>(args[0].number);
+                            const std::uint32_t start =
+                                platform::monotonic_millis();
+                            while (static_cast<std::uint32_t>(
+                                       platform::monotonic_millis() - start
+                                   ) < duration) {
+                                if (platform::break_requested()) {
+                                    return make_error(program, op_pc, "BREAK");
+                                }
+                                const std::uint32_t elapsed =
+                                    platform::monotonic_millis() - start;
+                                const std::uint32_t remaining =
+                                    elapsed < duration ? duration - elapsed : 0u;
+                                platform::sleep_millis(
+                                    remaining < 10u ? remaining : 10u
+                                );
+                            }
+                        }
                         break;
+
+                    case FnId::PAUSE: {
+                        if (argc != 0)
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        const platform::RuntimeKeyResult key =
+                            platform::wait_runtime_key();
+                        if (key.type == platform::RuntimeKeyType::Break) {
+                            return make_error(program, op_pc, "BREAK");
+                        }
+                        break;
+                    }
 
                     case FnId::GLOCATE:
                         if (argc != 2 ||
@@ -3043,18 +3215,81 @@ VmResult VM::run_impl(
                             args[1].is_string) {
                             return make_error(program, op_pc, "ARGUMENT COUNT");
                         }
-                        platform::set_cursor_position(
-                            map_graphics_x(args[0].number) / 6,
-                            map_graphics_y(args[1].number) / 8
+                        platform::graphics_text_locate(
+                            map_graphics_x(args[0].number),
+                            map_graphics_y(args[1].number)
                         );
                         break;
 
                     case FnId::GPRINT:
                         for (int i = 0; i < argc; ++i) {
                             char temp[48] = {};
-                            platform::put_string(
+                            platform::graphics_text_print(
                                 arg_text(i, temp, sizeof(temp))
                             );
+                        }
+                        break;
+
+                    case FnId::GDEF:
+                        if (argc == 0) {
+                            platform::graphics_define_clear();
+                            break;
+                        }
+                        if (argc != 2 || !args[0].is_string || !args[1].is_string) {
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        }
+                        if (!args[0].string || std::strlen(args[0].string) != 1 ||
+                            static_cast<unsigned char>(args[0].string[0]) < 0x20 ||
+                            static_cast<unsigned char>(args[0].string[0]) > 0x7e) {
+                            return make_error(program, op_pc, "BAD GDEF CHARACTER");
+                        }
+                        if (!platform::graphics_define(
+                                args[0].string[0],
+                                args[1].string ? args[1].string : "")) {
+                            return make_error(program, op_pc, "BAD GDEF DATA");
+                        }
+                        break;
+
+                    case FnId::GPALETTE:
+                        if (argc == 0) {
+                            platform::graphics_palette_reset();
+                            break;
+                        }
+                        if ((argc != 2 && argc != 4)) {
+                            return make_error(program, op_pc, "ARGUMENT COUNT");
+                        }
+                        for (int i = 0; i < argc; ++i) {
+                            if (args[i].is_string) {
+                                return make_error(program, op_pc, "TYPE MISMATCH");
+                            }
+                        }
+                        {
+                            const int index = static_cast<int>(args[0].number);
+                            if (index < 1 || index > 255 ||
+                                args[0].number != static_cast<BasicNumber>(index)) {
+                                return make_error(program, op_pc, "BAD PALETTE INDEX");
+                            }
+                            bool ok = false;
+                            if (argc == 2) {
+                                const std::int64_t rgb =
+                                    static_cast<std::int64_t>(args[1].number);
+                                ok = args[1].number == static_cast<BasicNumber>(rgb) &&
+                                    rgb >= 0 && rgb <= 0xffffff &&
+                                    platform::graphics_palette_rgb24(
+                                        index, static_cast<std::uint32_t>(rgb));
+                            } else {
+                                const int red = static_cast<int>(args[1].number);
+                                const int green = static_cast<int>(args[2].number);
+                                const int blue = static_cast<int>(args[3].number);
+                                ok = args[1].number == static_cast<BasicNumber>(red) &&
+                                    args[2].number == static_cast<BasicNumber>(green) &&
+                                    args[3].number == static_cast<BasicNumber>(blue) &&
+                                    platform::graphics_palette_rgb(
+                                        index, red, green, blue);
+                            }
+                            if (!ok) {
+                                return make_error(program, op_pc, "BAD PALETTE COLOR");
+                            }
                         }
                         break;
 

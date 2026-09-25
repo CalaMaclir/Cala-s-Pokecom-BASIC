@@ -36,8 +36,8 @@ bool get_keyboard_backlight(unsigned char& value);
 bool read_battery(int& percent, bool& charging);
 bool caps_lock_enabled();
 bool shift_held();
-bool read_rtc(RtcDateTime& value);
-bool write_rtc(const RtcDateTime& value);
+bool read_rtc(RtcDateTime& value, unsigned char address = 0x51);
+bool write_rtc(const RtcDateTime& value, unsigned char address = 0x51);
 RtcError last_rtc_error();
 
 } // namespace rmb::picocalc::keyboard

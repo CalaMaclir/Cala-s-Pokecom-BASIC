@@ -2,6 +2,11 @@
 #include <cassert>
 #include <cstdio>
 #include <string>
+
+// display.cpp cooperatively services audio during long PAINT operations.
+// The host scroll regression has no audio backend, so provide a no-op stub.
+namespace rmb::platform { void audio_service() {} }
+
 #include "../src/platform/picocalc/display.cpp"
 
 int main() {

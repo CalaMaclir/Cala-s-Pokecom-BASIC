@@ -6,6 +6,7 @@
 #include "basic_compiler.hpp"
 #include "platform.hpp"
 #include "program_store.hpp"
+#include "serial_transfer.hpp"
 #include "vm.hpp"
 
 namespace rmb {
@@ -32,6 +33,9 @@ private:
         std::uint32_t console_foreground = 0xffffff;
         std::uint32_t console_background = 0x000000;
         platform::ConsoleMode console_mode = platform::ConsoleMode::Both;
+        std::uint8_t audio_volume = 70;
+        audio::KeyClickMode key_click = audio::KeyClickMode::Classic;
+        bool startup_wav = true;
         bool wifi_enabled = false;
         bool wifi_auto_rtc = true;
         int wifi_timezone_minutes = 540;
@@ -57,6 +61,14 @@ private:
     bool program_dirty_ = false;
     std::uint32_t last_run_ms_ = 0;
 
+    // Stage 1 SPP test state lives in the UI layer, never in the transport.
+    bool bluetooth_test_active_ = false;
+    bool bluetooth_test_echo_ = true;
+    bool bluetooth_test_banner_sent_ = false;
+    bool bluetooth_console_link_active_ = false;
+    std::uint32_t bluetooth_test_rx_count_ = 0;
+    char bluetooth_test_last_rx_[24] = "-";
+
     void print_banner();
     void print_prompt();
     void process_line(char* line);
@@ -71,8 +83,19 @@ private:
     void render_status();
     void command_xmodem(char* argument, bool receive);
     void command_ymodem(char* argument, bool receive);
-    void run_xmodem_transfer(const char* filename, bool receive);
-    void run_ymodem_transfer(const char* filename, bool receive, bool menu_ui = false);
+    void run_xmodem_transfer(
+        const char* filename,
+        bool receive,
+        platform::SerialTransferRoute route =
+            platform::SerialTransferRoute::Auto
+    );
+    void run_ymodem_transfer(
+        const char* filename,
+        bool receive,
+        bool menu_ui = false,
+        platform::SerialTransferRoute route =
+            platform::SerialTransferRoute::Auto
+    );
     void render_function_keys();
     void capture_hotkey_screenshot();
     void ensure_body_cursor();
@@ -83,11 +106,16 @@ private:
     void menu_display();
     void menu_console();
     void menu_datetime();
+    void menu_audio();
     void menu_wifi();
+    void menu_bluetooth();
+    void menu_bluetooth_test();
     void menu_file_server();
     void menu_file_transfer();
     void menu_usb_storage();
     void menu_sd();
+    void menu_firmware();
+    bool recover_after_sd_remount();
     void menu_program_storage();
     void service_background();
     void print_program_error();
@@ -106,6 +134,11 @@ private:
 
     bool load_named_program(const char* filename, bool run_after_load);
     void set_current_filename(const char* filename, bool dirty = false);
+    bool has_current_filename() const;
+    bool save_current_program();
+    bool save_program_as(const char* filename);
+    void menu_save_program(bool save_as);
+    bool confirm_program_overwrite(const char* filename);
 
     void draw_menu_header(const char* title, const char* help);
     void draw_menu_option(int row, const char* text, bool selected);

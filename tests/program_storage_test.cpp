@@ -41,6 +41,7 @@ bool init(){return card&&mounted&&!locked;}
 bool available(){return mounted;}
 bool card_present(){return card;}
 bool remount(){if(locked)return false;mounted=card;return mounted;}
+bool firmware_owns_card(){return true;}
 bool try_lock(){if(locked||!card||!mounted)return false;locked=true;return true;}
 void unlock(){assert(locked);locked=false;}
 const char* last_error(){return locked?"STORAGE BUSY":"SD NOT AVAILABLE";}
@@ -49,7 +50,18 @@ using namespace rmb;
 std::string read(const std::string& path){std::ifstream f(path);return {std::istreambuf_iterator<char>(f),{}};}
 void write(const std::string& path,const std::string& text){std::ofstream(path)<<text;}
 std::string listing(const ProgramStore& p) {
-    std::string out; for(size_t i=0;i<p.size();++i){ProgramLine line;assert(p.read_line(i,line));out+=std::to_string(line.number)+" "+line.text+"\n";} return out;
+    std::string out;
+    for(size_t i=0;i<p.size();++i) {
+        std::int32_t number=0;const char* text=nullptr;std::size_t length=0;
+        assert(p.read_line_text(i,number,text,length));
+        out+=std::to_string(number)+" ";
+        out.append(text,length);out+="\n";
+    }
+    return out;
+}
+std::string make_body(std::size_t length,const std::string& tail={}) {
+    assert(length>=tail.size());
+    return std::string(length-tail.size(),'X')+tail;
 }
 void parity(const ProgramStore& a,const ProgramStore& b) {
     static CompiledProgram x,y;BasicCompiler c;
@@ -62,6 +74,43 @@ void parity(const ProgramStore& a,const ProgramStore& b) {
 }
 int main(int argc,char** argv) {
     char temp[]="/tmp/rmb075-XXXXXX";assert(mkdtemp(temp));std::string root=std::string(temp)+"/";
+    // Current-name saves use the same transactional ProgramStore::save path
+    // in every selectable mode and both AUTO backend outcomes.
+    for(int scenario=0;scenario<4;++scenario) {
+        card=mounted=scenario!=3;
+        ProgramStorageMode mode=
+            scenario==0 ? ProgramStorageMode::SdCard :
+            scenario==1 ? ProgramStorageMode::InternalRam :
+            ProgramStorageMode::Auto;
+        ProgramStore current;current.set_root(root.c_str());
+        assert(current.initialize(mode));
+        assert(current.backend_type()==
+            ((scenario==0||scenario==2)?ProgramBackend::Sd:ProgramBackend::Ram));
+        // AUTO selected RAM while no card was present. A later card insertion
+        // makes SAVE available without silently migrating the live backend.
+        if(scenario==3) card=mounted=true;
+        assert(current.set_line(10,"PRINT 1"));
+        char name[24];std::snprintf(name,sizeof(name),"MODE%d",scenario);
+        assert(current.save(name));
+        assert(current.filename()[0] && !current.is_dirty());
+        assert(current.set_line(10,"PRINT 2") && current.is_dirty());
+        assert(current.save(current.filename()));
+        assert(!current.is_dirty());
+        assert(read(root+std::string(current.filename()))=="10 PRINT 2\n");
+    }
+    card=mounted=true;
+    {
+        ProgramStore limits;limits.set_root(root.c_str());
+        assert(limits.initialize(ProgramStorageMode::InternalRam));
+        assert(limits.set_line(10,std::string(191,'R').c_str()));
+        const auto kept=listing(limits);
+        assert(!limits.set_line(20,std::string(192,'R').c_str()));
+        assert(!std::strcmp(limits.error(),"LINE TOO LONG"));
+        assert(listing(limits)==kept);
+        write(root+"RAM192.BAS","10 "+std::string(192,'R')+"\n");
+        assert(!limits.load("RAM192"));
+        assert(listing(limits)==kept);
+    }
     {
         ProgramStore unavailable; unavailable.set_root(root.c_str());card=mounted=false;
         assert(!unavailable.initialize(ProgramStorageMode::SdCard));
@@ -115,7 +164,73 @@ int main(int argc,char** argv) {
     assert(p.load("SORT"));assert(listing(p)=="10 PRINT 3\n30 END\n");
     assert(p.switch_mode(ProgramStorageMode::SdCard));assert(p.load("SORT"));assert(listing(p)=="10 PRINT 3\n30 END\n");
     auto before=listing(p);write(root+"BAD.BAS","10 PRINT 1\nBAD\n");assert(!p.load("BAD"));assert(listing(p)==before);
-    write(root+"LONG.BAS","10 "+std::string(192,'X')+"\n");assert(!p.load("LONG"));assert(listing(p)==before);
+    // SD line boundaries are independent of ProgramLine/RAM capacity.
+    write(root+"EMPTY.BAS","10 \n");assert(p.load("EMPTY"));assert(p.size()==0);
+    for(const std::size_t length:{1u,190u,191u,192u,511u,1023u,2047u}) {
+        const auto body=make_body(length);
+        const auto name="BOUND"+std::to_string(length)+".BAS";
+        write(root+name,"10 "+body+"\r\n");
+        assert(p.load(name.c_str()));
+        std::int32_t number=0;const char* text=nullptr;std::size_t actual=0;
+        assert(p.read_line_text(0,number,text,actual));
+        assert(number==10&&actual==length&&std::string(text,actual)==body);
+    }
+    before=listing(p);
+    write(root+"LONG2048.BAS","10 "+make_body(2048)+"\n");
+    assert(!p.load("LONG2048"));
+    assert(std::strstr(p.error(),"LINE TOO LONG"));
+    assert(listing(p)==before);
+    write(root+"LONG2049.BAS","10 "+make_body(2049)+"\n");
+    assert(!p.load("LONG2049"));
+    assert(std::strstr(p.error(),"LINE TOO LONG"));
+    assert(listing(p)==before);
+
+    const std::string sentinel="END_SENTINEL";
+    const std::string long_body=
+        "REM "+make_body(2047-4-sentinel.size(),sentinel);
+    const std::string long_program=
+        "10 "+long_body+"\n20 PRINT 77\n";
+    write(root+"LONGOK.BAS",long_program);
+    assert(p.load("LONGOK"));
+    assert(listing(p)==long_program);
+    static CompiledProgram long_il;BasicCompiler long_compiler;
+    assert(long_compiler.compile(p,long_il).ok);
+    assert(p.save("LONGROUND"));
+    assert(read(root+"LONGROUND.BAS")==long_program);
+    assert(p.clear()&&p.load("LONGROUND"));
+    assert(listing(p)==long_program);
+
+    // Hash verification covers bytes well beyond the legacy 191-character tail.
+    std::string long_work;
+    for(const auto& e:std::filesystem::directory_iterator(root)) {
+        const auto name=e.path().filename().string();
+        if(name.rfind("RMBP",0)==0&&read(e.path().string())==long_program)
+            long_work=e.path().string();
+    }
+    assert(!long_work.empty());
+    std::fstream mutate(long_work,std::ios::in|std::ios::out|std::ios::binary);
+    mutate.seekp(3+500);mutate.put('Z');mutate.close();
+    std::int32_t hash_number=0;const char* hash_text=nullptr;
+    std::size_t hash_length=0;
+    assert(!p.read_line_text(0,hash_number,hash_text,hash_length));
+    assert(std::strstr(p.error(),"SD SOURCE CHANGED"));
+    write(long_work,long_program);assert(p.resume());
+    assert(listing(p)==long_program);
+
+    // A long SD source cannot be migrated into the fixed RAM ProgramLine store.
+    const auto long_before=listing(p);
+    assert(!p.switch_mode(ProgramStorageMode::InternalRam));
+    assert(!std::strcmp(p.error(),"LINE TOO LONG FOR RAM"));
+    assert(p.backend_type()==ProgramBackend::Sd&&listing(p)==long_before);
+
+    // Syntax after character 191 proves the compiler consumes the full SD line.
+    const std::string late_error=
+        "PRINT 1"+std::string(220,' ')+": THIS IS NOT BASIC";
+    write(root+"LATEERR.BAS","10 "+late_error+"\n");
+    assert(p.load("LATEERR"));
+    const auto late_result=long_compiler.compile(p,long_il);
+    assert(!late_result.ok);
+
     assert(!p.load("../TEST.BAS"));assert(!p.save("RMBEDIT.TMP"));
     // Leftover staging from interrupted power is never overwritten automatically.
     write(root+"RMBEDIT.BAK","recover me");assert(!p.set_line(40,"END"));assert(read(root+"RMBEDIT.BAK")=="recover me");
@@ -196,6 +311,21 @@ int main(int argc,char** argv) {
     write(root+"USBTEST.BAS","10 PRINT 81\n20 END\n");
     assert(p.resume_after_usb());
     assert(listing(p)=="10 PRINT 81\n20 END\n");
+
+    // USB return rebuilds offsets, lengths and full-line hashes for long source.
+    const std::string usb_long_body=
+        "REM "+make_body(2047-4-sentinel.size(),sentinel);
+    const std::string usb_long_program=
+        "10 "+usb_long_body+"\n20 PRINT 82\n";
+    write(root+"USBTEST.BAS",usb_long_program);
+    assert(p.load("USBTEST.BAS"));
+    assert(p.suspend_for_usb());mounted=false;
+    std::string usb_changed=usb_long_program;
+    usb_changed[3+1000]='Q';
+    write(root+"USBTEST.BAS",usb_changed);mounted=true;
+    assert(p.resume_after_usb());
+    assert(listing(p)==usb_changed);
+
     std::filesystem::remove_all(temp);
     std::puts("Program storage transactions, backend parity and failures passed");
 }

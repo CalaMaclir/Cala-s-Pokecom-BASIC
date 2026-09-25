@@ -1,62 +1,102 @@
-# Cala's Pokecom BASIC アーキテクチャ
+# Cala's Pokecom BASIC Version 0.85 アーキテクチャ
 
-## 現行バージョン
+## 対象と名称
 
-製品版数は**0.6**です。GitHub Actionsの実行番号はBuild番号として別に組み込まれます。
+対象はClockworkPi PicoCalc + Raspberry Pi Pico 2 Wです。製品名はCala's Pokecom BASIC（CPB）です。repository名、namespace、内部CMake target `retrominibasic_picocalc`には開発系譜の名称が残ります。外向けartifactは`CPokecombasic.uf2`、`CPokecombasic.elf`、`CPokecombasic-pico2w`です。
 
-## 系譜
+## 全体構造
 
-**Cala's Pokecom BASIC**は、Cala Maclirが制作した**RetroMiniBASIC**の言語処理系、コンパイラー／中間言語、仮想マシンを基盤に、Cala Maclir本人がPicoCalc向けに設計・実装した環境です。
+```text
+PicoCalc keyboard / LCD / SD / RTC-I2C / audio
+                   |
+              Platform layer
+                   |
+       REPL + Control Center + routing
+       /          |           \
+ProgramStore   BasicCompiler   SerialTransfer
+ RAM / SD          |          USB / UART / SPP
+ session            v          XMODEM / YMODEM
+ continuity    CompiledProgram
+                   |
+                   VM
+        graphics / PCG / audio service
+```
 
-## レイヤー
+## BASIC execution
 
-### BASICコア
+`Repl`はline editor、direct mode、`LIST`／`RUN`／`LOAD`／`SAVE`、status、function keys、Control Centerを所有します。`BasicCompiler`はsourceをILとliteral／symbol／line mapを含む`CompiledProgram`へ変換し、`VM`が実行します。RUNとdirect statementは同じcompile workspaceを排他的に再利用します。
 
-ハードウェアから独立したソース管理、コンパイラー、RetroMini中間言語、VM、実行状態、直接モードを担当します。Pico SDKの表示・入力・SD・Wi-Fi APIは直接呼びません。
+VMはcooperative BREAK poll時にbackground serviceも呼び、audio、network、Bluetoothを継続します。BREAKはprogramとbackground audioを停止しますが、通常のEND／STOPとruntime errorはaudioを自動停止しません。
 
-### REPL／デバイスシェル
+## ProgramStore
 
-行編集、`LIST`／`RUN`／`LOAD`／`SAVE`、直接モード、3行ステータス、F1～F10、HOME Control Center、設定、日時、コンソール経路、XMODEMを担当します。
+`ProgramStore` abstractionはRAMとSD backendを同じREPL操作へ提供します。
 
-### プラットフォーム層
+| backend | lines | body characters | storage |
+|---|---:|---:|---|
+| RAM | 256 | 191 | fixed RAM entries |
+| SD | 1,024 | 2,047 | source file + RAM index + reusable scratch |
 
-320×320 LCD、PicoCalcキーボード、バッテリー、Caps Lock、バックライト、時計、任意のPCF8563、USB CDC／UART、グラフィック、画面キャプチャを抽象化します。
+行番号とその後のspaceはbody character数へ含めません。SD `Entry`はline number、file offset、full-line hash、body lengthを持ちます。2,080-byte scratchはSD backend ownerへheap allocationされ、scan、read、verify、compileで再利用されます。RAM用`ProgramLine`と`RamProgramStore`のlayoutは拡張していません。
 
-### ストレージ層
+SD→RAM切替は行数とbody lengthを事前検証します。191文字超過行があれば`LINE TOO LONG FOR RAM`でtransaction全体を拒否し、SD sourceを保持します。
 
-SDカード上のBASICファイル、`RMBASIC.CFG`／`RMBASIC.BAK`、BMP、`AUTORUN.BAS`を扱います。XMODEM受信とHTTP Uploadは共通の安全な一時ファイル置換を利用します。
+## Storage Continuity
 
-FatFSは同時アクセスさせません。HTTP転送などがSDを使用中はstorage busy状態とし、LOAD／SAVE／DIR／スクリーンショット／設定保存／XMODEMとの競合を防ぎます。
+SD backendはcurrent editing sourceとdirty stateを`RMBASIC.SES`で追跡し、transactional temporary file、`RMBASIC.BAK`、recovery scanを組み合わせます。起動時はverified sessionだけを採用し、dirty sessionを復元した場合だけnoticeを表示します。fresh UNTITLEDとclean named sessionでは表示しません。
 
-### ネットワーク層
+USB MSC開始前にSD ProgramStoreをsuspendし、hostへownershipを移します。return後は古いoffset／hashを破棄し、indexを再構築してから再開します。FirmwareとUSB hostが同時にFatFs／raw blockへアクセスしないownership modelです。
 
-Pico 2 WのCYW43とlwIPを使用し、Wi-Fiの有効化、SSID接続、DHCP、DNS、NTP、HTTP File Serverを担当します。File ServerはlwIP raw APIとメインループ上の処理を連携させ、callbackから長時間のFatFS処理を行わない構成です。
+## Graphics and PCG
 
-HTTP File Serverは次の制約で小さく保ちます。
+graphicsは物理320×320へvirtual coordinateを縦横比維持でmappingします。`SCREEN`、drawing、`PAINT`、`SAVE IMAGE`をplatform serviceへ渡します。
 
-- ポート80、Connection: close
-- 原則1クライアント／1操作
-- GET／PUT／DELETEのみ
-- SDルートの単一ファイル名だけを許可
-- `..`、`/`、`\\`、制御文字を拒否
-- Content-Length必須、chunked非対応
-- 小さな固定バッファによるストリーミング
-- 起動ごとのセッショントークン
+PCGはprintable ASCII 0x20～0x7eに8×8 glyphを定義します。mono dataは16 hex digits、indexed-color dataは128 hex digitsです。palette index 0はtransparentで、1～255は`GPALETTE`管理です。`GLOCATE`／`GPRINT` cursorは8 pixelずつ進みます。
 
-## 表示モデル
+## Audio
 
-通常コンソールでは上3行をステータス、下1行をFキー表示として固定します。スクロール領域はその間だけです。グラフィックは物理320×320全体を使用でき、REPL復帰時に固定領域を再描画します。
+core audio engineは22,050 Hzで最大3 MML voiceとBEEPをmixします。WAV parserはPCM、mono／stereo、8／16 bit、11,025／22,050／44,100 Hzを受理します。PicoCalc側は6 DMA bufferで約139 msのheadroomを持ち、foreground VM serviceとPAINT cooperationで補給します。WAV終端はtail ramp後にidleへ移行します。Key Clickは同じPCM outputへ小さくmixし、program audioを停止しません。
 
-## 起動・停止ポリシー
+## Bluetooth
 
-- 起動時CPU：FULL 150 MHz
-- 起動時Wi-Fi：OFF
-- 起動時File Server：OFF
-- Wi-Fi OFF、切断、STANDBYでFile Serverを停止
-- CPUプロファイルは保存せず、再起動時にFULLへ復帰
+BluetoothはCYW43439上のClassic RFCOMM SPP serverです。device nameは`CPB-PicoCalc`、同時clientは1つです。BLEはlinkしません。
 
-## 移植方針
+Bluetooth Coreは固定ringとexclusive RX ownerを持ちます。
 
-BASICコアとユーザー向けの言語仕様は可搬に保ち、表示、入力、ストレージ、時刻、ネットワーク、電源管理をプラットフォームサービスとして分離します。
+- RX ring：8192 bytes
+- TX ring：2048 bytes
+- owner：Console／Test Terminal／Transfer
+- binary transfer：0x00～0xffをtext変換せず処理
+- overflow counterと即時transfer failure
+- transfer終了後は350 ms quiet windowのRX quarantine
 
-リポジトリ名、ビルドターゲット、設定ファイル名には互換性のため`RetroMiniBASIC`／`RMBASIC`が残っていますが、ユーザー向け製品名は**Cala's Pokecom BASIC**です。
+## SerialTransfer and protocols
+
+`SerialTransferRoute`はcommand input routeと分離されています。explicit routeはfallbackしません。AUTOはUSB／UART／Bluetooth command sourceを尊重し、local menuではconnected USB CDC、なければUART0です。
+
+Bluetooth transferは2048-byte prefetchでbulk RXし、短いprotocol-control TXをdrainしてからreadへ進みます。XMODEMはsingle-file send／receiveです。YMODEM senderはsingle-file、receiverはfile loopを持つbatch receiveです。Block 0 sizeまでをcommitし、paddingを保存しません。duplicate Block 0、pre-data timeout ACK + `C`、partial-packet NAK／retry、final empty Block 0を処理します。
+
+## USB composite
+
+Pico 2 W native USBは固定composite descriptorです。
+
+- Interface 0/1：CDC
+- Interface 2：MSC
+- Interface 3：Raspberry Pi reset vendor interface
+- application identity：VID `0xcafe` / PID `0x4003`
+- `bcdUSB 2.10`、Microsoft OS 2.0 descriptor
+
+reset interfaceは`picotool -f`によるBOOTSEL移行を可能にします。MSC mediaのON/OFFでdevice全体をre-enumerateしません。
+
+## Network
+
+Wi-Fi、DHCP、DNS、NTP、HTTP File ServerはPico 2 WのCYW43／lwIPを使用します。Wi-Fiはsessionごとに手動ONです。File Serverはroot直下のfileをfixed bufferでstreamし、temporary fileから安全に置換します。
+
+## Startup and power policy
+
+- CPU：FULL 150 MHz
+- Wi-Fi／File Server／Bluetooth／USB Storage：OFF
+- Program Storage：保存設定（初期AUTO）
+- `AUTORUN.BAS`を実行し、設定有効時は`AUTORUN.WAV`を再生
+- CPU profiles：150／100／75 MHz、再起動時150 MHz
+

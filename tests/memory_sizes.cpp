@@ -4,6 +4,10 @@
 #define private public
 #include "repl.hpp"
 #undef private
+static_assert(rmb::kMaxProgramLineLength==192);
+static_assert(sizeof(rmb::ProgramLine)==sizeof(std::int32_t)+192);
+static_assert(sizeof(rmb::RamProgramStore)==
+              rmb::kMaxRamProgramLines*sizeof(rmb::ProgramLine));
 #define SIZE(name, expression) extern "C" { char memory_size_##name[sizeof(expression)]; }
 SIZE(repl, rmb::Repl)
 SIZE(vm, rmb::VM)

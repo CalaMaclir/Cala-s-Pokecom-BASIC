@@ -1,5 +1,6 @@
 #include "picocalc_display.hpp"
 #include "console_layout.hpp"
+#include "platform.hpp"
 
 #include <cstdint>
 #include <cstring>
@@ -541,10 +542,15 @@ void redraw_function_key_overlay() {
 void scroll_shadow_rows(int rows) {
     if (rows <= 0) return;
 
-    // The footer participates physically in the controller's scroll ring.
-    // Clear its current pixels before advancing VSCRSADD: after a one-row
-    // scroll these pixels become the newly exposed blank console row.
-    if (fixed_function_key_bar) {
+    // Normal LIST/PRINT scrolling advances exactly one row. For that hot path
+    // we can render the footer into the next (currently hidden) GRAM row
+    // before moving VSCRSADD, then clear the old footer only after it has
+    // become the newly exposed body row. This avoids visibly blanking and
+    // redrawing the function-key bar on every line of a long listing.
+    const bool smooth_footer_scroll =
+        fixed_function_key_bar && rows == 1;
+
+    if (fixed_function_key_bar && !smooth_footer_scroll) {
         const int footer_y = text_physical_y((text_rows - 1) * cell_h);
         fill_rect_ram(
             0,
@@ -596,26 +602,46 @@ void scroll_shadow_rows(int rows) {
     const int next_scroll_y =
         (text_scroll_y + rows * cell_h) % area;
 
-    // Clear newly exposed rows in hidden GRAM before changing VSCRSADD.
-    for (int row = last_row - rows; row < last_row; ++row) {
-        int relative =
-            (row * cell_h - top) + next_scroll_y;
-        relative %= area;
-        if (relative < 0) relative += area;
-        const int physical_y = top + relative;
+    auto clear_exposed_rows = [&]() {
+        for (int row = last_row - rows; row < last_row; ++row) {
+            int relative =
+                (row * cell_h - top) + next_scroll_y;
+            relative %= area;
+            if (relative < 0) relative += area;
+            const int physical_y = top + relative;
 
-        fill_rect_ram(
-            0,
-            physical_y,
-            width - 1,
-            physical_y + cell_h - 1,
-            bg
-        );
+            fill_rect_ram(
+                0,
+                physical_y,
+                width - 1,
+                physical_y + cell_h - 1,
+                bg
+            );
+        }
+    };
+
+    if (smooth_footer_scroll) {
+        // With the old scroll origin, the next footer location is one text row
+        // beyond the visible 320-line viewport, so this repaint is invisible.
+        const int old_scroll_y = text_scroll_y;
+        text_scroll_y = next_scroll_y;
+        redraw_function_key_overlay();
+        text_scroll_y = old_scroll_y;
+    } else {
+        // Multi-row jumps retain the conservative legacy ordering.
+        clear_exposed_rows();
     }
 
     text_scroll_y = next_scroll_y;
     set_hw_scroll_start(text_scroll_y);
-    redraw_function_key_overlay();
+
+    if (smooth_footer_scroll) {
+        // The old footer is now the bottom body row. Blank it only after the
+        // hardware scroll moved it out of the footer position.
+        clear_exposed_rows();
+    } else {
+        redraw_function_key_overlay();
+    }
 
     cursor_y -= rows * cell_h;
     if (cursor_y < top) cursor_y = top;
@@ -1055,6 +1081,90 @@ void graphics_pixel(int x, int y) {
     }
 }
 
+namespace {
+
+void draw_indexed_glyph(
+    int x,
+    int y,
+    const uint8_t pixels[64],
+    const uint32_t* palette,
+    bool indexed,
+    uint32_t mono_color
+) {
+    normalize_scroll_for_graphics();
+
+    for (int row = 0; row < 8; ++row) {
+        const int py = y + row;
+        if (py < 0 || py >= height) continue;
+
+        int col = 0;
+        while (col < 8) {
+            while (col < 8 && pixels[row * 8 + col] == 0) ++col;
+            if (col == 8) break;
+            const int run_start = col;
+            while (col < 8 && pixels[row * 8 + col] != 0) ++col;
+            const int run_end = col - 1;
+
+            const int visible_start = (x + run_start < 0) ? -x : run_start;
+            const int visible_end =
+                (x + run_end >= width) ? width - 1 - x : run_end;
+            if (visible_start > visible_end) continue;
+
+            uint8_t rgb[8 * 3] = {};
+            int pos = 0;
+            for (int draw_col = visible_start;
+                 draw_col <= visible_end;
+                 ++draw_col) {
+                const uint8_t index = pixels[row * 8 + draw_col];
+                const uint32_t color =
+                    indexed ? palette[index] : (mono_color & 0x00ffffffu);
+                rgb[pos++] = static_cast<uint8_t>((color >> 16) & 0xff);
+                rgb[pos++] = static_cast<uint8_t>((color >> 8) & 0xff);
+                rgb[pos++] = static_cast<uint8_t>(color & 0xff);
+                set_graphics_bit(x + draw_col, py, color != 0);
+            }
+
+            begin_window_write(
+                x + visible_start,
+                py,
+                x + visible_end,
+                py
+            );
+            spi_write_blocking(lcd_spi, rgb, static_cast<size_t>(pos));
+            select(false);
+        }
+    }
+}
+
+} // namespace
+
+void graphics_draw_builtin8(int x, int y, char character, uint32_t color) {
+    uint8_t columns[5] = {};
+    if (!glyph(character, columns)) glyph('?', columns);
+
+    uint8_t pixels[64] = {};
+    for (int row = 0; row < 7; ++row) {
+        for (int col = 0; col < 5; ++col) {
+            if (columns[col] & (1u << row)) {
+                pixels[row * 8 + col] = 1;
+            }
+        }
+    }
+    draw_indexed_glyph(x, y, pixels, nullptr, false, color);
+}
+
+void graphics_draw_glyph8(
+    int x,
+    int y,
+    const uint8_t pixels[64],
+    const uint32_t palette[256],
+    bool indexed,
+    uint32_t mono_color
+) {
+    if (!pixels || (indexed && !palette)) return;
+    draw_indexed_glyph(x, y, pixels, palette, indexed, mono_color);
+}
+
 void graphics_line(int x1, int y1, int x2, int y2) {
     normalize_scroll_for_graphics();
 
@@ -1287,12 +1397,20 @@ bool graphics_paint(int x, int y) {
     };
 
     std::size_t seed_count = 0;
+    std::uint32_t service_counter = 0;
     paint_seed_stack[seed_count++] = {
         static_cast<std::int16_t>(x),
         static_cast<std::int16_t>(y)
     };
 
     while (seed_count > 0) {
+        // Flood fill can spend hundreds of milliseconds in one VM opcode.
+        // Refill audio cooperatively inside the algorithm so the DMA queue
+        // cannot drain while PAINT is traversing a large region.
+        if ((service_counter++ & 7u) == 0u) {
+            rmb::platform::audio_service();
+        }
+
         const PaintSeed seed = paint_seed_stack[--seed_count];
         const int sy = seed.y;
         const int sx = seed.x;

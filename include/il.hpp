@@ -110,6 +110,21 @@ constexpr int CLAMP = 33;
 constexpr int RNDI = 34;
 constexpr int TIMER = 40;
 constexpr int RANDOMIZE = 41;
+constexpr int INKEY = 42;
+constexpr int I2CREAD = 43;
+constexpr int I2CWRITE = 44;
+constexpr int I2CSCAN = 45;
+constexpr int BEEP = 46;
+constexpr int PLAY = 47;
+constexpr int PLAYSTOP = 48;
+constexpr int PLAYPAUSE = 49;
+constexpr int PLAYRESUME = 50;
+constexpr int PLAYWAIT = 51;
+constexpr int PLAYING = 52;
+constexpr int WAVPLAY = 53;
+constexpr int WAVSTOP = 54;
+constexpr int WAVPAUSE = 55;
+constexpr int WAVRESUME = 56;
 
 constexpr int INPUT = 100;
 constexpr int LOCATE = 120;
@@ -129,6 +144,9 @@ constexpr int GPOINT = 211;
 constexpr int GLOCATE = 212;
 constexpr int GPRINT = 213;
 constexpr int GPAINT = 214;
+constexpr int PAUSE = 215;
+constexpr int GDEF = 216;
+constexpr int GPALETTE = 217;
 } // namespace FnId
 
 // Compact fixed-width VM instruction.

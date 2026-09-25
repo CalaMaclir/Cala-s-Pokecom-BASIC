@@ -553,6 +553,47 @@ bool list_program_files() {
     return true;
 }
 
+bool list_root_files() {
+    if (!regular_io_allowed() || !init()) return false;
+
+    DIR* dir = opendir("/");
+    if (!dir) {
+        set_error("CANNOT OPEN SD DIRECTORY");
+        return false;
+    }
+
+    std::size_t count = 0;
+    while (dirent* ent = readdir(dir)) {
+        if (!ent->d_name || !program_files::visible_in_directory(ent->d_name) ||
+            !SafeFileWriter::valid_root_name(ent->d_name)) continue;
+
+        char path[96] = {};
+        if (std::snprintf(path, sizeof(path), "/%s", ent->d_name) >=
+            static_cast<int>(sizeof(path))) continue;
+        struct stat value;
+        if (stat(path, &value) != 0) continue;
+
+        char row[96] = {};
+        if (S_ISREG(value.st_mode)) {
+            std::snprintf(row, sizeof(row), "%-38.38s %10lu\r\n",
+                          ent->d_name,
+                          static_cast<unsigned long>(value.st_size));
+        } else if (S_ISDIR(value.st_mode)) {
+            std::snprintf(row, sizeof(row), "%-46.46s <DIR>\r\n",
+                          ent->d_name);
+        } else {
+            continue;
+        }
+        platform::put_string(row);
+        ++count;
+    }
+    closedir(dir);
+
+    if (count == 0) platform::put_string("(no files)\r\n");
+    set_error("OK");
+    return true;
+}
+
 std::size_t collect_program_files(
     char* output,
     std::size_t max_files,

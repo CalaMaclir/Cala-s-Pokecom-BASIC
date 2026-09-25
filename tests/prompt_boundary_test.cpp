@@ -5,6 +5,9 @@
 namespace {std::string output;int key=0;int column=7;}
 namespace rmb::platform {
 ConsoleMode get_console_mode(){return ConsoleMode::Both;}
+bool terminal_console_enabled(){return true;}
+void begin_command_input(){}
+void end_command_input(){}
 int get_char(){return key;}
 int cursor_column(){return column;} int cursor_row(){return 38;}
 int text_columns(){return 53;} int text_rows(){return 39;}

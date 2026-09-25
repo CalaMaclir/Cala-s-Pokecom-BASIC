@@ -1,9 +1,15 @@
 #include "platform.hpp"
 #include "picocalc_display.hpp"
 #include "picocalc_keyboard.hpp"
+#include "external_i2c.hpp"
+#include "graphics_text.hpp"
+#include "bluetooth_serial.hpp"
 #include "serial_transfer.hpp"
+#include "serial_crlf_filter.hpp"
 
 #include "hardware/clocks.h"
+#include "hardware/watchdog.h"
+#include "pico/bootrom.h"
 #include "pico/stdio.h"
 #include "pico/stdlib.h"
 #include "pico/low_power.h"
@@ -37,8 +43,63 @@ uint64_t software_clock_base_us = 0;
 uint64_t next_hardware_rtc_probe_us = 0;
 bool hardware_rtc_ok = false;
 bool hardware_rtc_probed = false;
+RtcSource configured_rtc_source = RtcSource::Auto;
+std::uint8_t configured_rtc_address = 0x51;
+enum class ActiveRtc : std::uint8_t { None, External, Internal };
+ActiveRtc active_rtc = ActiveRtc::None;
 std::uint32_t cpu_clock_source_hz = 0;
 bool peripheral_clock_isolated = false;
+
+constexpr std::size_t runtime_key_queue_size = 8;
+int runtime_key_queue[runtime_key_queue_size] = {};
+std::size_t runtime_key_read = 0;
+std::size_t runtime_key_write = 0;
+std::uint32_t next_runtime_keyboard_poll_ms = 0;
+
+enum class RuntimeSerialState : std::uint8_t {
+    Idle,
+    Escape
+};
+RuntimeSerialState runtime_serial_state = RuntimeSerialState::Idle;
+char runtime_serial_sequence[6] = {};
+std::size_t runtime_serial_length = 0;
+std::uint32_t runtime_serial_deadline_ms = 0;
+detail::SerialCrLfFilter serial_crlf_filter;
+detail::SerialCrLfFilter bluetooth_crlf_filter;
+enum class CommandInputSource : std::uint8_t { None, Local, Serial, Bluetooth };
+CommandInputSource command_input_source = CommandInputSource::None;
+bool command_input_active = false;
+enum class RuntimeTerminalSource : std::uint8_t { None, Serial, Bluetooth };
+RuntimeTerminalSource runtime_terminal_source = RuntimeTerminalSource::None;
+
+RuntimeKeyResult no_runtime_key() {
+    return {RuntimeKeyType::None, 0};
+}
+
+RuntimeKeyResult runtime_key(int code) {
+    return {RuntimeKeyType::Key, code};
+}
+
+RuntimeKeyResult runtime_break() {
+    return {RuntimeKeyType::Break, 0};
+}
+
+bool queue_runtime_key(int code) {
+    const std::size_t next =
+        (runtime_key_write + 1u) % runtime_key_queue_size;
+    if (next == runtime_key_read) return false;
+    runtime_key_queue[runtime_key_write] = code;
+    runtime_key_write = next;
+    return true;
+}
+
+bool dequeue_runtime_key(int& code) {
+    if (runtime_key_read == runtime_key_write) return false;
+    code = runtime_key_queue[runtime_key_read];
+    runtime_key_read =
+        (runtime_key_read + 1u) % runtime_key_queue_size;
+    return true;
+}
 
 bool leap_year(int year) {
     return (year % 4 == 0 && year % 100 != 0) ||
@@ -124,6 +185,7 @@ void init() {
 
     picocalc::display::init();
     picocalc::display::set_text_color(0x00ff00, 0x000000);
+    audio_init();
 }
 
 void clear_lcd() {
@@ -139,8 +201,8 @@ void clear_screen() {
         picocalc::display::clear(console_background_color);
     }
 
-    if (console_uses_serial()) {
-        // ANSI clear-screen + home for USB/UART terminal consoles.
+    if (console_uses_serial() || bluetooth_serial::console_enabled()) {
+        // ANSI clear-screen + home for terminal consoles.
         serial_put_string_raw("\x1b[2J\x1b[H");
     }
 }
@@ -150,16 +212,25 @@ void screen_put_char(char c) {
 }
 
 void serial_put_char_raw(char c) {
-    if (serial_transfer_active()) return;
-    putchar_raw(c);
+    if (!serial_transfer_active() && console_uses_serial()) putchar_raw(c);
+    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_char(c);
 }
 
 void serial_put_string_raw(const char* text) {
-    if (serial_transfer_active()) return;
     if (!text) return;
-    while (*text) {
-        putchar_raw(*text++);
+    if (!serial_transfer_active() && console_uses_serial()) {
+        const char* p=text; while (*p) putchar_raw(*p++);
     }
+    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_text(text);
+}
+
+bool terminal_console_enabled(){return console_uses_serial()||bluetooth_serial::console_enabled();}
+void begin_command_input(){command_input_active=true;command_input_source=CommandInputSource::None;}
+void end_command_input(){
+ command_input_active=false;
+ if(command_input_source==CommandInputSource::Local)console_local_input();
+ else if(command_input_source==CommandInputSource::Bluetooth)console_bluetooth_input();
+ command_input_source=CommandInputSource::None;
 }
 
 void set_console_mode(ConsoleMode mode) {
@@ -227,7 +298,7 @@ void sleep_millis(std::uint32_t milliseconds) {
     sleep_ms(milliseconds);
 }
 
-void enter_sleep_mode() {
+void enter_sleep_mode(bool refresh_status) {
     if (sleep_prepare_callback) sleep_prepare_callback(sleep_prepare_context);
     unsigned char lcd_level = 160;
     unsigned char keyboard_level = 0;
@@ -281,11 +352,36 @@ void enter_sleep_mode() {
         picocalc::keyboard::set_keyboard_backlight(keyboard_level);
     }
 
-    if (status_refresh_callback) {
+    if (refresh_status && status_area_enabled() && status_refresh_callback) {
         status_refresh_callback(status_refresh_context);
     }
 
     serial_put_string_raw("[WAKE]\r\n");
+}
+
+void enter_bootsel() {
+    if (sleep_prepare_callback) {
+        sleep_prepare_callback(sleep_prepare_context);
+    }
+
+    // Enter the RP2350 ROM USB boot path without requiring the physical
+    // RESET/BOOTSEL key sequence. The call does not normally return.
+    reset_usb_boot(0, 0);
+    while (true) {
+        tight_loop_contents();
+    }
+}
+
+void reboot_system() {
+    if (sleep_prepare_callback) {
+        sleep_prepare_callback(sleep_prepare_context);
+    }
+
+    // Use the watchdog reset path for a clean restart from flash.
+    watchdog_reboot(0, 0, 0);
+    while (true) {
+        tight_loop_contents();
+    }
 }
 
 void draw_text_row(
@@ -309,92 +405,28 @@ bool shift_held() {
     return picocalc::keyboard::shift_held();
 }
 
-bool get_datetime(DateTime& value) {
-    const uint64_t now_us = to_us_since_boot(get_absolute_time());
-
-    if (now_us >= next_hardware_rtc_probe_us) {
-        picocalc::keyboard::RtcDateTime rtc;
-        if (picocalc::keyboard::read_rtc(rtc)) {
-            value.year = rtc.year;
-            value.month = rtc.month;
-            value.day = rtc.day;
-            value.hour = rtc.hour;
-            value.minute = rtc.minute;
-            value.second = rtc.second;
-            set_software_clock(value);
-            hardware_rtc_ok = true;
-            hardware_rtc_probed = true;
-
-            // Once loaded, the monotonic software clock is sufficient for UI
-            // updates. Re-check the external RTC only occasionally.
-            next_hardware_rtc_probe_us = now_us + 60000000u;
-            return true;
-        }
-
-        hardware_rtc_ok = false;
-        hardware_rtc_probed = true;
-
-        // Do not automatically touch the RTC again after a failed probe.
-        // The keyboard controller and battery monitor share the same physical
-        // I2C bus and are essential PicoCalc input devices. A manual time set
-        // or an NTP sync may still try write_rtc() explicitly.
-        next_hardware_rtc_probe_us = ~uint64_t{0};
-    }
-
-    return read_software_clock(value);
+namespace {
+std::uint8_t bcd(std::uint8_t v){return static_cast<std::uint8_t>((v>>4)*10+(v&15));}
+std::uint8_t tobcd(int v){return static_cast<std::uint8_t>(((v/10)<<4)|(v%10));}
+bool external_rtc_read(DateTime& out){std::uint8_t d[7]={};if(picocalc::external_i2c::read_registers(configured_rtc_address,2,d,7)!=picocalc::external_i2c::Result::Ok)return false;DateTime x{2000+bcd(d[6]),bcd(d[5]&31),bcd(d[3]&63),bcd(d[2]&63),bcd(d[1]&127),bcd(d[0]&127)};if(x.month<1||x.month>12||x.day<1||x.day>31||x.hour>23||x.minute>59||x.second>59)return false;out=x;return true;}
+bool external_rtc_write(const DateTime& v){const std::uint8_t d[10]={0,0,0,tobcd(v.second),tobcd(v.minute),tobcd(v.hour),tobcd(v.day),1,tobcd(v.month),tobcd(v.year-2000)};return picocalc::external_i2c::write_bytes(configured_rtc_address,d,10)==picocalc::external_i2c::Result::Ok;}
+bool probe_selected(DateTime& out){hardware_rtc_probed=true;hardware_rtc_ok=false;active_rtc=ActiveRtc::None;if(configured_rtc_source!=RtcSource::Off&&configured_rtc_source!=RtcSource::Internal&&external_rtc_read(out)){active_rtc=ActiveRtc::External;hardware_rtc_ok=true;return true;}picocalc::keyboard::RtcDateTime k;if(configured_rtc_source!=RtcSource::Off&&configured_rtc_source!=RtcSource::External&&picocalc::keyboard::read_rtc(k,configured_rtc_address)){out={k.year,k.month,k.day,k.hour,k.minute,k.second};active_rtc=ActiveRtc::Internal;hardware_rtc_ok=true;return true;}return false;}
 }
-
-bool set_datetime(const DateTime& value) {
-    // The PicoCalc does not require an onboard RTC. The software clock is the
-    // primary clock and is valid after manual input or NTP synchronization.
-    set_software_clock(value);
-
-    // Only write an external PCF8563 when one was actually detected. This
-    // avoids treating a perfectly normal "no external RTC fitted" PicoCalc as
-    // an error and avoids unnecessary traffic on the keyboard I2C bus.
-    if (!hardware_rtc_available()) {
-        return true;
-    }
-
-    picocalc::keyboard::RtcDateTime rtc;
-    rtc.year = value.year;
-    rtc.month = value.month;
-    rtc.day = value.day;
-    rtc.hour = value.hour;
-    rtc.minute = value.minute;
-    rtc.second = value.second;
-
-    const bool written = picocalc::keyboard::write_rtc(rtc);
-    hardware_rtc_ok = written;
-    hardware_rtc_probed = true;
-    next_hardware_rtc_probe_us = written
-        ? to_us_since_boot(get_absolute_time()) + 60000000u
-        : ~uint64_t{0};
-
-    // The software clock remains valid even if an optional external RTC write
-    // subsequently fails.
-    return true;
-}
-
-bool hardware_rtc_available() {
-    return hardware_rtc_probed && hardware_rtc_ok;
-}
-
-const char* datetime_last_error() {
-    using Error = picocalc::keyboard::RtcError;
-    switch (picocalc::keyboard::last_rtc_error()) {
-        case Error::None: return "NONE";
-        case Error::NotInitialized: return "RTC DRIVER NOT INITIALIZED";
-        case Error::InvalidValue: return "INVALID DATE/TIME VALUE";
-        case Error::PointerWriteFailed: return "RTC POINTER WRITE FAILED";
-        case Error::ReadFailed: return "RTC READ FAILED";
-        case Error::WriteFailed: return "RTC WRITE FAILED";
-        case Error::ReadbackFailed: return "RTC READBACK FAILED";
-        case Error::ReadbackMismatch: return "RTC READBACK MISMATCH";
-    }
-    return "RTC ERROR";
-}
-
+void set_rtc_source(RtcSource source){configured_rtc_source=source;next_hardware_rtc_probe_us=0;hardware_rtc_probed=false;hardware_rtc_ok=false;active_rtc=ActiveRtc::None;}
+RtcSource rtc_source(){return configured_rtc_source;}
+const char* rtc_source_name(){switch(configured_rtc_source){case RtcSource::Auto:return "AUTO";case RtcSource::External:return "EXTERNAL";case RtcSource::Internal:return "INTERNAL";case RtcSource::Off:return "OFF";}return "AUTO";}
+bool set_rtc_address(std::uint8_t v){if(v<8||v>0x77)return false;configured_rtc_address=v;set_rtc_source(configured_rtc_source);return true;}
+std::uint8_t rtc_address(){return configured_rtc_address;}
+bool probe_rtc(){DateTime d;const bool ok=probe_selected(d);if(ok){set_software_clock(d);next_hardware_rtc_probe_us=to_us_since_boot(get_absolute_time())+60000000u;}return ok;}
+const char* rtc_location(){return active_rtc==ActiveRtc::External?"EXT":active_rtc==ActiveRtc::Internal?"INT":"OFF";}
+I2cResult external_i2c_read(std::uint8_t a,std::uint8_t r,std::uint8_t& v){return static_cast<I2cResult>(picocalc::external_i2c::read_register(a,r,v));}
+I2cResult external_i2c_write(std::uint8_t a,std::uint8_t r,std::uint8_t v){return static_cast<I2cResult>(picocalc::external_i2c::write_register(a,r,v));}
+int external_i2c_scan(std::uint8_t* a,int cap){int count=0;picocalc::external_i2c::scan(a,cap,count);return count;}
+const char* i2c_result_text(I2cResult x){switch(x){case I2cResult::Ok:return "OK";case I2cResult::Nack:return "I2C NACK";case I2cResult::Timeout:return "I2C TIMEOUT";case I2cResult::Busy:return "I2C BUSY";case I2cResult::BadAddress:return "BAD I2C ADDRESS";}return "I2C ERROR";}
+bool get_datetime(DateTime& out){const uint64_t now=to_us_since_boot(get_absolute_time());if(now>=next_hardware_rtc_probe_us){if(probe_selected(out)){set_software_clock(out);next_hardware_rtc_probe_us=now+60000000u;return true;}next_hardware_rtc_probe_us=now+60000000u;}return read_software_clock(out);}
+bool set_datetime(const DateTime& v){set_software_clock(v);if(!hardware_rtc_available())return true;bool ok=false;if(active_rtc==ActiveRtc::External)ok=external_rtc_write(v);else if(active_rtc==ActiveRtc::Internal){picocalc::keyboard::RtcDateTime k{v.year,v.month,v.day,v.hour,v.minute,v.second};ok=picocalc::keyboard::write_rtc(k,configured_rtc_address);}hardware_rtc_ok=ok;return true;}
+bool hardware_rtc_available(){return hardware_rtc_probed&&hardware_rtc_ok;}
+const char* datetime_last_error(){return hardware_rtc_available()?"NONE":"RTC NOT FOUND";}
 bool set_lcd_backlight(std::uint8_t value) {
     return picocalc::keyboard::set_lcd_backlight(value);
 }
@@ -416,6 +448,7 @@ void put_char(char c) {
     if (console_uses_serial()) {
         putchar_raw(c);
     }
+    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_char(c);
 }
 
 void put_string(const char* text) {
@@ -431,6 +464,7 @@ void put_string(const char* text) {
             putchar_raw(*p++);
         }
     }
+    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_text(text);
 }
 
 void clear_to_eol() {
@@ -438,7 +472,7 @@ void clear_to_eol() {
         picocalc::display::clear_to_eol();
     }
 
-    if (console_uses_serial()) {
+    if (console_uses_serial() || bluetooth_serial::console_enabled()) {
         // ANSI erase from cursor to end of line.
         serial_put_string_raw("\x1b[K");
     }
@@ -521,6 +555,65 @@ bool graphics_point_nonblack(int x, int y) {
     return picocalc::display::graphics_point_nonblack(x, y);
 }
 
+void graphics_text_locate(int x, int y) {
+    graphics_text::set_cursor(x, y);
+}
+
+void graphics_text_print(const char* text) {
+    if (!text) return;
+    picocalc::display::set_function_key_bar_enabled(false);
+
+    while (*text) {
+        unsigned char character = static_cast<unsigned char>(*text++);
+        if (character < graphics_text::first_character ||
+            character > graphics_text::last_character) {
+            character = '?';
+        }
+
+        const int x = graphics_text::cursor_x();
+        const int y = graphics_text::cursor_y();
+        const std::uint8_t* pixels = nullptr;
+        const graphics_text::GlyphKind kind =
+            graphics_text::glyph(static_cast<char>(character), pixels);
+
+        if (kind == graphics_text::GlyphKind::Builtin) {
+            picocalc::display::graphics_draw_builtin8(
+                x, y, static_cast<char>(character), graphics_color());
+        } else {
+            picocalc::display::graphics_draw_glyph8(
+                x,
+                y,
+                pixels,
+                graphics_text::palette(),
+                kind == graphics_text::GlyphKind::Indexed,
+                graphics_color()
+            );
+        }
+        graphics_text::advance();
+    }
+}
+
+bool graphics_define(char character, const char* hex_pixels) {
+    return graphics_text::define(character, hex_pixels) ==
+        graphics_text::DefineResult::Ok;
+}
+
+void graphics_define_clear() {
+    graphics_text::clear_definitions();
+}
+
+bool graphics_palette_rgb(int index, int red, int green, int blue) {
+    return graphics_text::set_palette_rgb(index, red, green, blue);
+}
+
+bool graphics_palette_rgb24(int index, std::uint32_t rgb) {
+    return graphics_text::set_palette_rgb24(index, rgb);
+}
+
+void graphics_palette_reset() {
+    graphics_text::reset_palette();
+}
+
 std::uint32_t monotonic_millis() {
     return to_ms_since_boot(get_absolute_time());
 }
@@ -580,198 +673,173 @@ bool set_cpu_clock_mhz(std::uint32_t mhz) {
     // PicoCalc keyboard/RTC bus at its requested 10 kHz and, importantly,
     // keeps transactions within the existing 5 ms timeout at 75 MHz.
     picocalc::keyboard::reconfigure_bus_clock();
+    picocalc::external_i2c::reconfigure_bus_clock();
+    audio_reconfigure_clock();
 
     return true;
 }
 
-bool break_requested() {
-    if (serial_transfer_active()) return false;
+namespace {
+
+int poll_runtime_terminal_byte(){
+ if(runtime_terminal_source==RuntimeTerminalSource::Serial)return console_uses_serial()?console_serial_read(0,true):-1;
+ if(runtime_terminal_source==RuntimeTerminalSource::Bluetooth){
+  if(!bluetooth_serial::console_enabled()||!bluetooth_serial::connected()){runtime_terminal_source=RuntimeTerminalSource::None;runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;return -1;}
+  return bluetooth_serial::read_console();
+ }
+ int v=console_uses_serial()?console_serial_read(0):-1;
+ if(v>=0){runtime_terminal_source=RuntimeTerminalSource::Serial;return v;}
+ v=bluetooth_serial::console_enabled()?bluetooth_serial::read_console():-1;
+ if(v>=0)runtime_terminal_source=RuntimeTerminalSource::Bluetooth;
+ return v;
+}
+RuntimeKeyResult poll_runtime_terminal(){
+ const std::uint32_t now=to_ms_since_boot(get_absolute_time());
+ int c=poll_runtime_terminal_byte();
+ if(c<0){
+  if(runtime_serial_state==RuntimeSerialState::Escape&&static_cast<std::int32_t>(now-runtime_serial_deadline_ms)>=0){runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;runtime_terminal_source=RuntimeTerminalSource::None;return runtime_break();}
+  return no_runtime_key();
+ }
+ auto& filter=runtime_terminal_source==RuntimeTerminalSource::Bluetooth?bluetooth_crlf_filter:serial_crlf_filter;
+ if(runtime_serial_state==RuntimeSerialState::Idle){
+  if(filter.should_ignore(c)){runtime_terminal_source=RuntimeTerminalSource::None;return no_runtime_key();}
+  if(c==0x03){runtime_terminal_source=RuntimeTerminalSource::None;return runtime_break();}
+  if(c!=0x1b){runtime_terminal_source=RuntimeTerminalSource::None;if(c==0x7f)c=0x08;return runtime_key(c);}
+  runtime_serial_state=RuntimeSerialState::Escape;runtime_serial_sequence[0]=static_cast<char>(c);runtime_serial_length=1;runtime_serial_deadline_ms=now+25u;return no_runtime_key();
+ }
+ if(runtime_serial_length<sizeof(runtime_serial_sequence))runtime_serial_sequence[runtime_serial_length++]=static_cast<char>(c);
+ else{runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;runtime_terminal_source=RuntimeTerminalSource::None;return runtime_break();}
+ runtime_serial_deadline_ms=now+25u;
+ const char* q=runtime_serial_sequence;const std::size_t n=runtime_serial_length;int decoded=-1;bool complete=false,valid=false;
+ if(n>=2&&q[1]=='O'){valid=n==2;if(n==3&&q[2]>='P'&&q[2]<='S'){decoded=0x81+(q[2]-'P');complete=true;}}
+ else if(n>=2&&q[1]=='['){
+  valid=n==2;
+  if(n==3){switch(q[2]){case 'A':decoded=0xb5;complete=true;break;case 'B':decoded=0xb6;complete=true;break;case 'C':decoded=0xb7;complete=true;break;case 'D':decoded=0xb4;complete=true;break;case 'H':decoded=0xd2;complete=true;break;case 'F':decoded=0xd5;complete=true;break;case '1':case '2':case '3':valid=true;break;default:break;}}
+  else if(n==4&&q[2]=='3'&&q[3]=='~'){decoded=0xd4;complete=true;}
+  else if(n==4&&(q[2]=='1'||q[2]=='2')&&q[3]>='0'&&q[3]<='9')valid=true;
+  else if(n==5&&q[4]=='~'){const int code=(q[2]-'0')*10+(q[3]-'0');if(code==15)decoded=0x85;else if(code==17)decoded=0x86;else if(code==18)decoded=0x87;else if(code==19)decoded=0x88;else if(code==20)decoded=0x89;else if(code==21)decoded=0x90;complete=decoded>=0;}
+ }
+ if(complete){runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;runtime_terminal_source=RuntimeTerminalSource::None;return runtime_key(decoded);}
+ if(valid)return no_runtime_key();
+ runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;runtime_terminal_source=RuntimeTerminalSource::None;return runtime_break();
+}
+
+RuntimeKeyResult poll_runtime_source() {
+    if (serial_transfer_active()) return no_runtime_key();
     if (background_service_callback)
         background_service_callback(background_service_context);
-    // USB/UART polling is effectively free, so keep it responsive when
-    // serial input is enabled.
-    if (console_uses_serial()) {
-        const int debug_char = console_serial_read(0);
-        if (debug_char == 0x03 || debug_char == 0x1b) {
-            return true;
-        }
-    }
+
+    const RuntimeKeyResult terminal = poll_runtime_terminal();
+    if (terminal.type != RuntimeKeyType::None) return terminal;
 
     // PicoCalc keyboard reads use the 10 kHz I2C controller and include a
-    // short settling delay. For long numeric/graphics loops, 5 Hz BREAK
-    // sampling is sufficient and removes nearly all I2C polling overhead.
-    static uint32_t next_keyboard_poll_ms = 0;
+    // short settling delay. Runtime input and BREAK share the same 5 Hz poll,
+    // while USB/UART remains non-blocking on every call.
     const uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    if (static_cast<int32_t>(now - next_keyboard_poll_ms) < 0) {
-        return false;
+    if (static_cast<int32_t>(now - next_runtime_keyboard_poll_ms) < 0) {
+        return no_runtime_key();
     }
 
-    next_keyboard_poll_ms = now + 200;
+    next_runtime_keyboard_poll_ms = now + 200;
 
     const int key = picocalc::keyboard::read_key();
+    // read_key() updates modifier/Caps state internally. Runtime input does
+    // not redraw the status area because a full-screen graphics program may
+    // be paused underneath it; the REPL refreshes status after RUN returns.
     if (key == picocalc::keyboard::key_hotkey_screenshot) {
         if (screenshot_callback) {
             screenshot_callback(screenshot_context);
         }
-        return false;
+        return no_runtime_key();
     }
     if (key == picocalc::keyboard::key_hotkey_sleep) {
-        enter_sleep_mode();
-        return false;
+        enter_sleep_mode(false);
+        return no_runtime_key();
     }
-    return key == 0x03 || key == 0xb1 || key == 0xd0;
+    if (key == 0xc1) {
+        return no_runtime_key();
+    }
+    if (key == 0x03 || key == 0xb1 || key == 0xd0) {
+        return runtime_break();
+    }
+    return key >= 0 ? runtime_key(key) : no_runtime_key();
 }
 
-int get_char() {
-    if (serial_transfer_active()) return -1;
-    constexpr uint32_t blink_ms = 500;
-    static bool swallow_serial_lf = false;
+} // namespace
 
-    bool cursor_visible = true;
-    if (console_uses_lcd()) {
-        picocalc::display::set_cursor_visible(true);
-    }
-    uint32_t next_blink =
-        to_ms_since_boot(get_absolute_time()) + blink_ms;
+RuntimeKeyResult poll_runtime_key() {
+    int queued = 0;
+    if (dequeue_runtime_key(queued)) return runtime_key(queued);
+    return poll_runtime_source();
+}
 
-    static bool last_shift_held = false;
-
+RuntimeKeyResult wait_runtime_key() {
     while (true) {
-        if (background_service_callback)
-            background_service_callback(background_service_context);
-        const int key = picocalc::keyboard::read_key();
-
-        const bool current_shift_held = picocalc::keyboard::shift_held();
-        if (current_shift_held != last_shift_held) {
-            last_shift_held = current_shift_held;
-            if (status_refresh_callback) {
-                status_refresh_callback(status_refresh_context);
-            }
-        }
-
-        if (key == picocalc::keyboard::key_hotkey_screenshot) {
-            if (screenshot_callback) {
-                screenshot_callback(screenshot_context);
-            }
-            continue;
-        }
-
-        if (key == picocalc::keyboard::key_hotkey_sleep) {
-            if (console_uses_lcd()) {
-                picocalc::display::set_cursor_visible(false);
-            }
-            enter_sleep_mode();
-            cursor_visible = true;
-            if (console_uses_lcd()) {
-                picocalc::display::set_cursor_visible(true);
-            }
-            next_blink =
-                to_ms_since_boot(get_absolute_time()) + blink_ms;
-            continue;
-        }
-
-        // Caps Lock is a state-change event, not a text character. Refresh the
-        // status rows immediately and keep waiting for the user's next key.
-        if (key == 0xc1) {
-            if (status_refresh_callback) {
-                status_refresh_callback(status_refresh_context);
-            }
-            continue;
-        }
-
-        if (key >= 0) {
-            if (console_uses_lcd()) {
-                picocalc::display::set_cursor_visible(false);
-            }
-            return key;
-        }
-
-        // USB CDC and UART stdio are both enabled. Treat either as a complete
-        // terminal input path when serial console input is enabled.
-        int serial_char = console_uses_serial()
-            ? console_serial_read(0)
-            : -1;
-        if (serial_char >= 0) {
-            if (swallow_serial_lf && serial_char == '\n') {
-                swallow_serial_lf = false;
-                continue;
-            }
-            swallow_serial_lf = false;
-
-            if (serial_char == '\r') {
-                swallow_serial_lf = true;
-            }
-
-            // Most terminal emulators send DEL for Backspace.
-            if (serial_char == 0x7f) {
-                serial_char = 0x08;
-            }
-
-            // Minimal ANSI cursor-key decoding. Full line editing remains
-            // available from the PicoCalc keyboard, while serial terminals get
-            // the common arrow/home/end/delete keys as well.
-            if (serial_char == 0x1b) {
-                const int c2 = console_serial_read(3000, true);
-
-                if (c2 == 'O') {
-                    // Common VT/xterm F1-F4 sequences: ESC O P..S.
-                    const int c3 = console_serial_read(3000, true);
-                    if (c3 >= 'P' && c3 <= 'S') {
-                        serial_char = 0x81 + (c3 - 'P');
-                    } else {
-                        serial_char = 0x1b;
-                    }
-                } else if (c2 == '[') {
-                    const int c3 = console_serial_read(3000, true);
-                    if (c3 == 'A') serial_char = 0xb5;      // up
-                    else if (c3 == 'B') serial_char = 0xb6; // down
-                    else if (c3 == 'C') serial_char = 0xb7; // right
-                    else if (c3 == 'D') serial_char = 0xb4; // left
-                    else if (c3 == 'H') serial_char = 0xd2; // home
-                    else if (c3 == 'F') serial_char = 0xd5; // end
-                    else if (c3 == '3') {
-                        const int c4 = console_serial_read(3000, true);
-                        serial_char = c4 == '~' ? 0xd4 : 0x1b;
-                    } else if (c3 == '1' || c3 == '2') {
-                        const int c4 = console_serial_read(3000, true);
-                        const int c5 = console_serial_read(3000, true);
-                        if (c4 >= '0' && c4 <= '9' && c5 == '~') {
-                            const int code =
-                                (c3 - '0') * 10 + (c4 - '0');
-                            if (code == 15) serial_char = 0x85;      // F5
-                            else if (code == 17) serial_char = 0x86; // F6
-                            else if (code == 18) serial_char = 0x87; // F7
-                            else if (code == 19) serial_char = 0x88; // F8
-                            else if (code == 20) serial_char = 0x89; // F9
-                            else if (code == 21) serial_char = 0x90; // F10
-                            else serial_char = 0x1b;
-                        } else {
-                            serial_char = 0x1b;
-                        }
-                    } else {
-                        serial_char = 0x1b;
-                    }
-                }
-            }
-
-            if (console_uses_lcd()) {
-                picocalc::display::set_cursor_visible(false);
-            }
-            return serial_char;
-        }
-
-        const uint32_t now = to_ms_since_boot(get_absolute_time());
-        if (static_cast<int32_t>(now - next_blink) >= 0) {
-            cursor_visible = !cursor_visible;
-            if (console_uses_lcd()) {
-                picocalc::display::set_cursor_visible(cursor_visible);
-            }
-            next_blink = now + blink_ms;
-        }
-
-        sleep_ms(4);
+        const RuntimeKeyResult result = poll_runtime_key();
+        if (result.type != RuntimeKeyType::None) return result;
+        sleep_ms(10);
     }
+}
+
+void reset_runtime_input() {
+    runtime_key_read = 0;
+    runtime_key_write = 0;
+    runtime_serial_state = RuntimeSerialState::Idle;
+    runtime_serial_length = 0;
+    runtime_terminal_source = RuntimeTerminalSource::None;
+    command_input_source = CommandInputSource::None;
+    next_runtime_keyboard_poll_ms = 0;
+}
+
+bool break_requested() {
+    // The VM calls this cooperatively every RMB_BREAK_DISPATCH_INTERVAL
+    // dispatches. Service background work here as well as checking BREAK so
+    // asynchronous audio, networking and Bluetooth keep progressing while a
+    // BASIC program is running.
+    if (background_service_callback) {
+        background_service_callback(background_service_context);
+    }
+    const RuntimeKeyResult result = poll_runtime_source();
+    if (result.type == RuntimeKeyType::Key) {
+        queue_runtime_key(result.code);
+        return false;
+    }
+    return result.type == RuntimeKeyType::Break;
+}
+
+int read_command_source(CommandInputSource source,unsigned timeout_us){
+ if(source==CommandInputSource::Serial)return console_uses_serial()?console_serial_read(timeout_us,true):-1;
+ if(source!=CommandInputSource::Bluetooth||!bluetooth_serial::console_enabled()||!bluetooth_serial::connected())return -1;
+ const auto deadline=make_timeout_time_us(timeout_us);do{const int v=bluetooth_serial::read_console();if(v>=0)return v;if(timeout_us)sleep_us(50);}while(!time_reached(deadline));return -1;
+}
+int decode_terminal_key(int c,CommandInputSource source){
+ if(c==0x7f)c=0x08;if(c!=0x1b)return c;
+ const int c2=read_command_source(source,30000);
+ if(c2=='O'){const int c3=read_command_source(source,30000);return c3>='P'&&c3<='S'?0x81+(c3-'P'):0x1b;}
+ if(c2!='[')return 0x1b;const int c3=read_command_source(source,30000);
+ if(c3=='A')return 0xb5;if(c3=='B')return 0xb6;if(c3=='C')return 0xb7;if(c3=='D')return 0xb4;if(c3=='H')return 0xd2;if(c3=='F')return 0xd5;
+ if(c3=='3')return read_command_source(source,30000)=='~'?0xd4:0x1b;
+ if(c3=='1'||c3=='2'){const int c4=read_command_source(source,30000),c5=read_command_source(source,30000);if(c4>='0'&&c4<='9'&&c5=='~'){const int code=(c3-'0')*10+(c4-'0');if(code==15)return 0x85;if(code==17)return 0x86;if(code==18)return 0x87;if(code==19)return 0x88;if(code==20)return 0x89;if(code==21)return 0x90;}}
+ return 0x1b;
+}
+int get_char(){
+ if(serial_transfer_active())return -1;constexpr uint32_t blink_ms=500;bool cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);uint32_t next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;static bool last_shift_held=false;
+ while(true){
+  if(background_service_callback)background_service_callback(background_service_context);
+  if(command_input_source==CommandInputSource::Bluetooth&&(!bluetooth_serial::console_enabled()||!bluetooth_serial::connected()))command_input_source=CommandInputSource::None;
+  int key=-1;if(command_input_source==CommandInputSource::None||command_input_source==CommandInputSource::Local)key=picocalc::keyboard::read_key();
+  const bool shift=picocalc::keyboard::shift_held();if(shift!=last_shift_held){last_shift_held=shift;if(status_refresh_callback)status_refresh_callback(status_refresh_context);}
+  if(key==picocalc::keyboard::key_hotkey_screenshot){if(screenshot_callback)screenshot_callback(screenshot_context);continue;}
+  if(key==picocalc::keyboard::key_hotkey_sleep){if(console_uses_lcd())picocalc::display::set_cursor_visible(false);enter_sleep_mode();cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;continue;}
+  if(key==0xc1){if(status_refresh_callback)status_refresh_callback(status_refresh_context);continue;}
+  if(key>=0){audio_key_click();if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=CommandInputSource::Local;if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return key;}
+  int c=-1;CommandInputSource source=command_input_source;
+  if(source==CommandInputSource::None||source==CommandInputSource::Serial){c=console_uses_serial()?console_serial_read(0,source==CommandInputSource::Serial):-1;if(c>=0)source=CommandInputSource::Serial;}
+  if(c<0&&(command_input_source==CommandInputSource::None||command_input_source==CommandInputSource::Bluetooth)){c=bluetooth_serial::console_enabled()?bluetooth_serial::read_console():-1;if(c>=0)source=CommandInputSource::Bluetooth;}
+  if(c>=0){auto& filter=source==CommandInputSource::Bluetooth?bluetooth_crlf_filter:serial_crlf_filter;if(filter.should_ignore(c))continue;if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=source;c=decode_terminal_key(c,source);if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return c;}
+  const uint32_t now=to_ms_since_boot(get_absolute_time());if(static_cast<int32_t>(now-next_blink)>=0){cursor_visible=!cursor_visible;if(console_uses_lcd())picocalc::display::set_cursor_visible(cursor_visible);next_blink=now+blink_ms;}sleep_ms(4);
+ }
 }
 
 } // namespace rmb::platform

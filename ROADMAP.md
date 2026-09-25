@@ -1,136 +1,85 @@
 # Cala's Pokecom BASIC Roadmap
 
-この文書は、Cala's Pokecom BASICのリリース済み機能と今後の検討項目を整理します。
+現在の正式版は**Version 0.85**です。対象hardwareはClockworkPi PicoCalc + Raspberry Pi Pico 2 Wです。
 
-This document summarizes released features and future work for Cala's Pokecom BASIC.
+## Completed
 
-> 現在の正式版：Version 0.8 / `main`
->
-> Current stable release: Version 0.8 / `main`
+### Version 0.8
 
-PicoCalc実機での安定性、予測可能なメモリ使用量、データ保護を優先します。将来項目は実装順序やリリース時期を保証するものではありません。
-
-Hardware stability, predictable memory use, and data integrity take priority. Future items do not guarantee an implementation order or release date.
-
----
-
-## Version 0.8 - Released / 実装済み
-
-### USB CDC + Mass Storage Composite Device
-
-Pico 2 WのネイティブUSB（Micro-USB）を、固定descriptorのCDC + MSC Composite Deviceとして実装しました。
-
-The Pico 2 W native USB port is implemented as a fixed CDC + MSC composite device.
-
-- USB CDC BASIC Console
-- PicoCalc SDカードを公開するUSB Mass Storage
-- MSC ON／OFF時もUSB deviceを再enumerateしない固定descriptor
-- WindowsでSDカード認識、read、create、overwrite、deleteを実機確認
-- USB CDCとMSCの共存を実機確認
-
-PicoCalc本体USB Type-CはCH340C経由UART0および電源・充電用です。Version 0.8のUSB MSCはPico 2 WのMicro-USBから提供します。
-
-### Safe SD ownership / 安全なSD所有権管理
-
-SDカードは常にCPBまたはUSBホストのどちらか一方だけが所有します。
-
-The SD card is owned by exactly one side: CPB firmware or the USB host.
-
-- FatFsをunmountしてからMSC mediaを公開
-- MSC ACTIVE中はCPB側FatFsアクセスを拒否
-- host Safe Eject後の`Return SD to CPB`
-- 緊急用`Force Disconnect`
-- Force確認画面の初期値は`Cancel`
-- Force時もCDC interfaceは維持
-- 新しいREAD10／WRITE10を停止し、実行中raw I/O完了後にsync／remount
-- unsafe disconnect、card removal、raw I/O errorの明示復旧
-
-`Force Disconnect`はhostの未送信write cacheを失う可能性があるため、通常操作には使用しません。
-
-### ProgramStore coordination / ProgramStore連携
-
-Version 0.75で導入したAUTO／SD CARD／INTERNAL RAMを維持し、USB Storageと統合しました。
-
-- INTERNAL RAM backendはMSC中もSDを使わないLIST／RUN／編集が可能
-- SD backendはMSC開始前にsuspend
-- USB返却後は古いoffset／hash indexを再利用しない
-- backing BASを再scan／verifyしてtransactionalに再開
-- host側で削除・破損した場合はsuspended状態を維持
-
-### Version 0.75までの主要機能 / Existing features
-
-- RAM 256行／SD 1,024行のProgram Storage
-- RUN／direct mode共有workspace
-- 単一ファイルYMODEM exact-size transfer
-- XMODEM-CRC compatibility transfer
-- Control Center File Transfer
+- 初公開
+- USB CDC + Mass Storage composite device
+- AUTO／SD CARD／INTERNAL RAM Program Storage
+- XMODEM／YMODEM single-file transfer
 - Wi-Fi HTTP File Server
-- 3行status、固定Fキー行、CPU FULL／NORMAL／ECO
-- graphics、PAINT、3DHAT、Alt+S screenshot、STANDBY
 
----
+### Version 0.81
 
-## Future candidates / 将来候補
+- `PAUSE`、`INKEY`、runtime input
+- BREAK responsivenessとinterruptible `SLEEP`
+- current-file `SAVE`とControl Center保存操作
 
-### YMODEM multi-file batch
+### Version 0.82
 
-Version 0.8のYMODEMは単一ファイル転送です。複数ファイルbatchは未実装で、将来候補として扱います。
+- External PCF8563 RTCとI2C
+- `I2C SCAN`、`I2CREAD`、`I2CWRITE`
+- `&Hxxxx` hexadecimal literal
+- PCG：`GDEF`、`GPRINT`、`GLOCATE`、`GPALETTE`
 
-Version 0.8 supports single-file YMODEM only. Multi-file batch transfer remains a future candidate.
+### Version 0.83
 
-### Memory architecture / メモリ構造
+- `BEEP`
+- 最大3 voiceのMML `PLAY`
+- PCM WAV playback
+- background audio
 
-機能やデータ保護を損なわない範囲で、次の領域のライフタイムと共有可能性を継続調査します。
+### Version 0.84
 
-- numeric／string array pools
-- graphics／PAINT workspace
-- compiler／VM workspace
-- network／lwIP buffers
-- XMODEM／YMODEM／USB transfer buffers
+- SD editing session continuity
+- dirty session recovery
+- transactional save／backup／power-loss recovery
+- USB Storage返却後のProgramStore index rebuild
 
-### Runtime memory measurement
+### Version 0.85
 
-CIはELF／MAP、static SRAM、object size、compiler stack-usage estimateを記録します。実機runtime heap／stack high-water measurementは未実装です。
+- Bluetooth Classic SPP／RFCOMM
+- Bluetooth Console、Test Terminal、exclusive RX ownership
+- Bluetooth XMODEM／YMODEM transport
+- File Transfer route selector：AUTO／USB CDC／UART0／Bluetooth SPP
+- YMODEM multi-file batch receive、exact-size commit、timeout／duplicate Block 0 recovery
+- RX 8192 bytes、TX 2048 bytes、transfer prefetch 2048 bytes
+- Firmware → Enter BOOTSEL／Reboot
+- Windows `flash-cpb.cmd`とRaspberry Pi reset vendor interface
+- graphics実行中のbackground audio service、6-buffer audio queue、PAINT cooperation
+- LIST footer scroll改善、WAV tail ramp
+- Key Click：OFF／SOFT／CLASSIC／SHARP
+- SD Program Storage：1024 lines × 2047 body characters
+- 外向けartifactを`CPokecombasic`へ統一
 
----
+## Future candidates
 
-## Deferred / 見送り
+- 実機runtime heap／stack high-water measurement
+- YMODEM sender側のmulti-file batch
+- Bluetooth RFCOMM timingの継続的な実機互換性評価
+- 既存機能を損なわない範囲でのcompiler／VM／graphics／network buffer最適化
 
-### Persistent arrays in direct mode
+将来候補は実装順序やrelease時期を保証しません。
 
-直接モードのスカラー変数はコマンド間で保持されますが、数値配列・文字列配列はコマンドごとにリセットされます。配列の永続化はVersion 0.8には含まれません。
+## Deferred
 
-### Full hardware Suspend / Resume
+- Direct mode配列のcommand間永続化
+- 現行`STANDBY`より深いhardware suspend／resume
 
-現在の`STANDBY`はRAMを保持してRP2350のlow-power sleepを使用します。より深いhardware suspend／resumeはVersion 0.8には含まれません。
+## Intentionally not planned
 
----
+`LOADURL`／`RUNURL`は実装しません。安全なtransferと実行を分離するため、USB Storage、Wi-Fi File Server、YMODEM、XMODEMを使用します。
 
-## Intentionally not planned / 実装しない機能
+## Design priorities
 
-### LOADURL / RUNURL
+1. データ保全
+2. スタンドアロン動作の安定性
+3. PicoCalc標準hardwareとの整合
+4. 予測可能なmemory使用量
+5. storage／通信障害からの復旧
+6. 明確なuser operation
+7. performance
 
-`LOADURL`と`RUNURL`は実装しません。TLS証明書検証を伴わないURL取得や、取得したプログラムの暗黙実行は行いません。
-
-ファイル転送には次を使用します。
-
-- USB Mass Storage
-- Wi-Fi File Server
-- YMODEM
-- XMODEM
-
-Transfer、Load、Runは明示的に分離します。
-
----
-
-## Design priorities / 設計優先順位
-
-1. データ保全 / Data integrity
-2. スタンドアロン動作の安定性 / Stable standalone operation
-3. ClockworkPi PicoCalc標準ハードウェアとの整合 / Standard PicoCalc compatibility
-4. 予測可能なメモリ使用量 / Predictable memory usage
-5. SDカード・通信障害からの復旧 / Recovery from storage and communication failures
-6. 明確なユーザー操作 / Clear user-visible behavior
-7. 性能 / Performance
-
-Cala's Pokecom BASICは、Wi-FiやPCがなくても単体で利用できるポケットコンピュータ型BASIC環境を維持します。
