@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
+#include "command_history.hpp"
 #include "platform.hpp"
 
 namespace rmb {
@@ -15,6 +16,8 @@ constexpr int kEnter = 0x0a;
 constexpr int kCarriageReturn = 0x0d;
 constexpr int kLeft = 0xb4;
 constexpr int kRight = 0xb7;
+constexpr int kUp = 0xb5;
+constexpr int kDown = 0xb6;
 constexpr int kHome = 0xd2;
 constexpr int kDelete = 0xd4;
 constexpr int kEnd = 0xd5;
@@ -139,7 +142,12 @@ int LineEditor::last_special_key() {
 
 class CommandInputLease { public: CommandInputLease(){platform::begin_command_input();} ~CommandInputLease(){platform::end_command_input();} };
 
-std::size_t LineEditor::read(char* buffer, std::size_t capacity) {
+std::size_t LineEditor::read(
+    char* buffer,
+    std::size_t capacity,
+    CommandHistory* history,
+    const char* initial
+) {
     CommandInputLease input_lease;
     special_key = 0;
 
@@ -147,7 +155,12 @@ std::size_t LineEditor::read(char* buffer, std::size_t capacity) {
         return 0;
     }
 
-    buffer[0] = '\0';
+    if (initial) {
+        std::snprintf(buffer, capacity, "%s", initial);
+    } else {
+        buffer[0] = '\0';
+    }
+    if (history) history->reset_navigation();
 
     if (serial_console_enabled()) {
         // Prompt has already been printed. Save the terminal cursor position
@@ -163,9 +176,20 @@ std::size_t LineEditor::read(char* buffer, std::size_t capacity) {
     // blank rows below every prompt.
     const std::size_t max_length = capacity - 1;
 
-    std::size_t length = 0;
-    std::size_t cursor = 0;
-    std::size_t rendered_length = 0;
+    std::size_t length = std::strlen(buffer);
+    std::size_t cursor = length;
+    std::size_t rendered_length = length;
+
+    if (length != 0) {
+        redraw(
+            buffer,
+            length,
+            0,
+            cursor,
+            origin_col,
+            origin_row
+        );
+    }
 
     while (true) {
         const int c = platform::get_char();
@@ -174,6 +198,7 @@ std::size_t LineEditor::read(char* buffer, std::size_t capacity) {
             position_cursor(origin_col, origin_row, length);
             platform::put_string("\r\n");
             buffer[length] = '\0';
+            if (history) history->append(buffer);
             return length;
         }
 
@@ -206,6 +231,27 @@ std::size_t LineEditor::read(char* buffer, std::size_t capacity) {
             if (cursor < length) {
                 ++cursor;
                 position_cursor(origin_col, origin_row, cursor);
+            }
+            continue;
+        }
+
+        if ((c == kUp || c == kDown) && history) {
+            const std::size_t old_length = rendered_length;
+            const bool changed = c == kUp
+                ? history->previous(buffer, buffer, capacity)
+                : history->next(buffer, capacity);
+            if (changed) {
+                length = std::strlen(buffer);
+                cursor = length;
+                redraw(
+                    buffer,
+                    length,
+                    old_length,
+                    cursor,
+                    origin_col,
+                    origin_row
+                );
+                rendered_length = length;
             }
             continue;
         }

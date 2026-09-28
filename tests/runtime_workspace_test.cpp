@@ -9,6 +9,7 @@
 #define private public
 #include "repl.hpp"
 #undef private
+#include "full_screen_editor.hpp"
 #include "line_editor.hpp"
 #include "storage.hpp"
 
@@ -26,7 +27,7 @@ int runtime_reset_count = 0;
 bool storage_save_allowed = true;
 std::string host_config;
 std::string host_config_backup;
-rmb::audio::KeyClickMode host_key_click = rmb::audio::KeyClickMode::Classic;
+rmb::audio::KeyClickMode host_key_click = rmb::audio::KeyClickMode::Low;
 rmb::platform::I2cResult host_i2c_result = rmb::platform::I2cResult::Ok;
 std::uint8_t host_i2c_value = 0x42;
 int graphics_text_x = -1;
@@ -39,21 +40,75 @@ bool host_audio_active = false;
 bool host_audio_paused = false;
 bool host_audio_wav_allowed = true;
 int host_audio_volume = 70;
+int host_wav_volume = 50;
+int host_play_volume = 100;
 int host_audio_service_countdown = -1;
 int host_audio_voice_count = 0;
+std::size_t host_audio_voice_length[3] = {};
+char host_audio_voice_last[3] = {};
 int host_audio_stop_count = 0;
 char host_audio_error[48] = "OK";
+
+std::vector<int> editor_keys;
+std::size_t editor_key_index = 0;
+int editor_repeat_count = 0;
+bool editor_in_burst = false;
+int editor_body_row_draws = 0;
+int editor_body_row_draws_in_burst = 0;
+int editor_status_row_draws = 0;
+int editor_span_draws_in_burst = 0;
+int editor_cursor_position_calls = 0;
+int editor_cursor_positions_before_burst = 0;
+int editor_cursor_visibility_calls = 0;
+int editor_last_cursor_row = -1;
+
+void reset_editor_draw_counters() {
+    editor_body_row_draws = 0;
+    editor_body_row_draws_in_burst = 0;
+    editor_status_row_draws = 0;
+    editor_span_draws_in_burst = 0;
+    editor_cursor_position_calls = 0;
+    editor_cursor_positions_before_burst = 0;
+    editor_cursor_visibility_calls = 0;
+    editor_last_cursor_row = -1;
+}
 }
 namespace rmb::platform {
 void put_char(char c) { output += c; col = c == '\n' || c == '\r' ? 0 : col + 1; }
 void put_string(const char* s) { while (*s) put_char(*s++); }
 int cursor_column() { return col; }
 int cursor_row() { return 3; }
-void set_cursor_position(int c, int) { col = c; }
+void set_cursor_visible(bool) { ++editor_cursor_visibility_calls; }
+void set_cursor_position(int c, int row) {
+    col = c;
+    editor_last_cursor_row = row;
+    ++editor_cursor_position_calls;
+}
 int text_rows() { return 40; }
 int text_columns() { return 53; }
 void scroll_text_rows(int) {}
+void collect_navigation_burst(
+    int key,
+    NavigationStepCallback callback,
+    void* context
+) {
+    editor_cursor_positions_before_burst = editor_cursor_position_calls;
+    editor_in_burst = true;
+    for (int i = 0; i < editor_repeat_count; ++i) {
+        host_clock_ms += 25;
+        callback(key, context);
+    }
+    editor_in_burst = false;
+}
+int get_char() {
+    if (editor_key_index == 0) reset_editor_draw_counters();
+    if (editor_key_index < editor_keys.size()) {
+        return editor_keys[editor_key_index++];
+    }
+    return 0xb1;
+}
 void clear_to_eol() {}
+ConsoleMode get_console_mode() { return ConsoleMode::Both; }
 void set_status_area_enabled(bool) {}
 void set_rtc_source(RtcSource) {}
 bool set_rtc_address(std::uint8_t) { return true; }
@@ -63,6 +118,8 @@ bool set_lcd_backlight(std::uint8_t) { return true; }
 bool set_cpu_clock_mhz(std::uint32_t) { return true; }
 void set_text_color(std::uint32_t,std::uint32_t) {}
 void set_console_mode(ConsoleMode) {}
+void clear_lcd() {}
+void clear_lcd_color(std::uint32_t) {}
 bool status_area_enabled() { return true; }
 void set_function_key_bar_enabled(bool) {}
 bool function_key_bar_enabled() { return true; }
@@ -72,8 +129,32 @@ bool get_battery_status(int&, bool&) { return false; }
 bool get_datetime(DateTime&) { return false; }
 std::uint32_t system_clock_hz() { return 150000000; }
 std::uint32_t monotonic_millis() { return host_clock_ms; }
+std::uint64_t monotonic_micros() {
+    return static_cast<std::uint64_t>(host_clock_ms) * 1000u;
+}
 void sleep_millis(std::uint32_t ms) { host_clock_ms += ms; ++sleep_calls; }
-void draw_text_row(int, const char*, std::uint32_t, std::uint32_t) {}
+void draw_text_row(
+    int row,
+    const char*,
+    std::uint32_t,
+    std::uint32_t
+) {
+    if (row >= 3 && row <= 35) {
+        ++editor_body_row_draws;
+        if (editor_in_burst) ++editor_body_row_draws_in_burst;
+    }
+    if (row == 1 || row == 36) ++editor_status_row_draws;
+}
+void draw_text_span(
+    int,
+    int,
+    const char*,
+    int,
+    std::uint32_t,
+    std::uint32_t
+) {
+    if (editor_in_burst) ++editor_span_draws_in_burst;
+}
 void set_graphics_color(std::uint32_t) {}
 std::uint32_t graphics_color() { return 0; }
 void graphics_clear(std::uint32_t) {}
@@ -142,7 +223,17 @@ bool audio_play_mml(const char* const* voices,int count) {
         std::snprintf(host_audio_error,sizeof(host_audio_error),"BAD MML");
         return false;
     }
-    host_audio_voice_count=count; host_audio_active=true;
+    host_audio_voice_count=count;
+    for(int i=0;i<3;++i) {
+        host_audio_voice_length[i]=0;
+        host_audio_voice_last[i]=0;
+    }
+    for(int i=0;i<count;++i) {
+        host_audio_voice_length[i]=std::strlen(voices[i]);
+        if(host_audio_voice_length[i])
+            host_audio_voice_last[i]=voices[i][host_audio_voice_length[i]-1];
+    }
+    host_audio_active=true;
     host_audio_paused=false; return true;
 }
 bool audio_wavplay(const char* filename) {
@@ -157,9 +248,13 @@ bool audio_wavplay(const char* filename) {
     host_audio_active=true; host_audio_paused=false; return true;
 }
 void audio_set_volume(int percent) { host_audio_volume=percent; }
+void audio_set_play_volume(int percent) { host_play_volume=percent; }
+void audio_set_wav_volume(int percent) { host_wav_volume=percent; }
 void audio_set_key_click(rmb::audio::KeyClickMode mode) { host_key_click=mode; }
 void audio_key_click() {}
 int audio_volume() { return host_audio_volume; }
+int audio_play_volume() { return host_play_volume; }
+int audio_wav_volume() { return host_wav_volume; }
 const char* audio_last_error() { return host_audio_error; }
 bool break_requested() {
     return interrupt_run ||
@@ -178,6 +273,7 @@ const char* last_error() { return "HOST STORAGE"; }
 bool save_program(const char* name, ProgramStore& program) {
     return storage_save_allowed && program.save(name);
 }
+bool program_exists(const char*) { return false; }
 bool load_program(const char* name, ProgramStore& program) {
     return program.load(name);
 }
@@ -192,8 +288,16 @@ bool write_root_text(const char* name,const char* text) {
     return true;
 }
 }
-namespace rmb::network { bool connected() { return false; } }
-namespace rmb { std::size_t LineEditor::read(char* b, std::size_t) { b[0]=0; return 0; } }
+namespace rmb::network {
+bool init() { return true; }
+void shutdown() {}
+bool initialized() { return false; }
+bool connect(const char*, const char*) { return true; }
+bool connected() { return false; }
+bool file_server_start() { return true; }
+bool file_server_running() { return false; }
+}
+namespace rmb { std::size_t LineEditor::read(char* b, std::size_t, CommandHistory*, const char*) { b[0]=0; return 0; } }
 
 static rmb::Repl repl;
 void workspace_empty() {
@@ -221,21 +325,103 @@ void run(const char* prefix) {
     assert(output.rfind(prefix,0) == 0);
     workspace_empty();
 }
+
+void run_editor_navigation_case(
+    rmb::ProgramStore& program,
+    std::initializer_list<int> keys,
+    int repeats
+) {
+    char filename[80] = "UNTITLED";
+    bool dirty = false;
+    editor_keys.assign(keys);
+    editor_key_index = 0;
+    editor_repeat_count = repeats;
+    editor_in_burst = false;
+    rmb::FullScreenEditor editor(
+        program, filename, sizeof(filename), dirty);
+    assert(editor.run());
+}
+
+void editor_navigation_render_policy() {
+    constexpr int kEscape = 0xb1;
+    constexpr int kRight = 0xb7;
+    constexpr int kDown = 0xb6;
+
+    {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.set_line(10, "ABCDE"));
+        run_editor_navigation_case(program, {kRight, kEscape}, 0);
+        assert(editor_cursor_positions_before_burst >= 1);
+        assert(editor_body_row_draws == 0);
+        assert(editor_body_row_draws_in_burst == 0);
+        assert(editor_status_row_draws == 2);
+        assert(editor_cursor_visibility_calls >= 4);
+        assert(editor_last_cursor_row == 3);
+    }
+
+    {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.set_line(10, "FIRST"));
+        assert(program.set_line(20, "SECOND"));
+        run_editor_navigation_case(program, {kDown, kEscape}, 0);
+        assert(editor_cursor_positions_before_burst >= 1);
+        assert(editor_body_row_draws == 0);
+        assert(editor_body_row_draws_in_burst == 0);
+        assert(editor_last_cursor_row == 4);
+    }
+
+    {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        for (int i = 1; i <= 40; ++i) {
+            assert(program.set_line(i * 10, "PRINT 1"));
+        }
+        // Initial Down plus 33 repeats crosses the 33-row viewport twice.
+        run_editor_navigation_case(program, {kDown, kEscape}, 33);
+        assert(editor_cursor_positions_before_burst >= 1);
+        assert(editor_body_row_draws_in_burst == 0);
+        assert(editor_span_draws_in_burst == 2);
+        // The release path performs exactly one 33-row viewport render.
+        assert(editor_body_row_draws == 33);
+        assert(editor_last_cursor_row == 35);
+    }
+}
+
 int main(int argc, char** argv) {
     char temporary[]="/tmp/rmb-runtime-XXXXXX";
     assert(mkdtemp(temporary));
     std::string root=std::string(temporary)+"/";
+    editor_navigation_render_policy();
     repl.program_.set_root(root.c_str());
-    repl.settings_.key_click=rmb::audio::KeyClickMode::Sharp;
+    repl.settings_.key_click=rmb::audio::KeyClickMode::High;
+    repl.settings_.audio_volume=80;
+    repl.settings_.wav_volume=60;
+    repl.settings_.play_volume=90;
     repl.save_settings();
-    assert(host_config.find("key_click=SHARP\n")!=std::string::npos);
+    assert(host_config.find("key_click=HIGH\n")!=std::string::npos);
+    assert(host_config.find("audio_volume=80\n")!=std::string::npos);
+    assert(host_config.find("wav_volume=60\n")!=std::string::npos);
+    assert(host_config.find("play_volume=90\n")!=std::string::npos);
     repl.settings_.key_click=rmb::audio::KeyClickMode::Off;
+    repl.settings_.audio_volume=0;
+    repl.settings_.wav_volume=10;
+    repl.settings_.play_volume=0;
     repl.load_settings(); repl.apply_settings();
-    assert(repl.settings_.key_click==rmb::audio::KeyClickMode::Sharp);
-    assert(host_key_click==rmb::audio::KeyClickMode::Sharp);
-    host_config="[ui]\nstatus=on\n"; // Previous versions did not store Key Click.
+    assert(repl.settings_.key_click==rmb::audio::KeyClickMode::High);
+    assert(host_key_click==rmb::audio::KeyClickMode::High);
+    assert(host_audio_volume==80);
+    assert(host_wav_volume==60);
+    assert(host_play_volume==90);
+    // Version 0.85 timbre names migrate to the new LOW volume level.
+    host_config="[audio]\nkey_click=CLASSIC\n";
     repl.load_settings(); repl.apply_settings();
-    assert(repl.settings_.key_click==rmb::audio::KeyClickMode::Classic);
+    assert(repl.settings_.key_click==rmb::audio::KeyClickMode::Low);
+    assert(host_key_click==rmb::audio::KeyClickMode::Low);
+    host_config="[ui]\nstatus=on\n"; // Missing setting defaults to LOW.
+    repl.load_settings(); repl.apply_settings();
+    assert(repl.settings_.key_click==rmb::audio::KeyClickMode::Low);
 
     for (int backend=0; backend<2; ++backend) {
     assert(repl.program_.initialize(backend ? rmb::ProgramStorageMode::SdCard : rmb::ProgramStorageMode::InternalRam));
@@ -293,6 +479,25 @@ int main(int argc, char** argv) {
         assert(!std::strcmp(repl.current_filename_, "C.BAS"));
         storage_save_allowed = true;
         assert(repl.save_current_program());
+
+        // FILES dispatches its complete selected value to these APIs.
+        std::ofstream(root + "MY PROGRAM.BAS") << "10 PRINT 314\n";
+        output.clear();
+        assert(repl.load_named_program("MY PROGRAM.BAS", false));
+        assert(!std::strcmp(
+            repl.current_filename_, "MY PROGRAM.BAS"));
+        assert(output.find("LOADED MY PROGRAM.BAS\r\n") == 0);
+        editor_keys = {0xb1};
+        editor_key_index = 0;
+        editor_repeat_count = 0;
+        repl.open_full_screen_editor();
+        assert(!std::strcmp(
+            repl.current_filename_, "MY PROGRAM.BAS"));
+        output.clear();
+        assert(repl.load_named_program("MY PROGRAM.BAS", true));
+        assert(output.find("LOADED MY PROGRAM.BAS\r\n") == 0);
+        assert(output.find("314\r\n[RUN]") != std::string::npos);
+        workspace_empty();
     }
 
     source({"PRINT 42"});
@@ -535,6 +740,24 @@ int main(int argc, char** argv) {
     assert(output.find(long_tail)!=std::string::npos);
     run("77\r\n[RUN]");
 
+    // Long SD string literals must reach PLAY intact. Version 0.85's parser
+    // silently kept only the first 191 characters, which made long scores end
+    // early even though the SD source line itself could hold 2047 characters.
+    const std::string long_mml =
+        "T400O4L32 " + std::string(1000,'C') + "G";
+    assert(long_mml.size() > 384);
+    std::ofstream(root+"LONGMML.BAS")
+        << "10 PLAY \"" << long_mml << "\"\n20 END\n";
+    assert(repl.program_.load("LONGMML"));
+    output.clear();
+    repl.run_program();
+    assert(output.find('?')==std::string::npos);
+    workspace_empty();
+    assert(host_audio_voice_count==1);
+    assert(host_audio_voice_length[0]==long_mml.size());
+    assert(host_audio_voice_last[0]=='G');
+    rmb::platform::audio_stop();
+
     std::filesystem::copy_file("tests/fixtures/cpb_large_400.bas",root+"LARGE.BAS");
     assert(repl.program_.load("LARGE")); assert(repl.program_.size()==400);
     rmb::BasicCompiler large_compiler; static rmb::CompiledProgram large_il;
@@ -565,3 +788,4 @@ int main(int argc, char** argv) {
     assert(output.find("END OF 400 LINE TEST")!=std::string::npos);workspace_empty();
     std::filesystem::remove_all(temporary);
 }
+

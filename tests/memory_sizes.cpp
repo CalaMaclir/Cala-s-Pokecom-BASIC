@@ -3,6 +3,7 @@
 #include <cstdint>
 #define private public
 #include "repl.hpp"
+#include "full_screen_editor.hpp"
 #undef private
 static_assert(rmb::kMaxProgramLineLength==192);
 static_assert(sizeof(rmb::ProgramLine)==sizeof(std::int32_t)+192);
@@ -14,6 +15,8 @@ SIZE(vm, rmb::VM)
 SIZE(program, rmb::ProgramStore)
 SIZE(ram_backend_heap, rmb::RamProgramStore)
 SIZE(sd_backend_heap, rmb::SdProgramStore)
+SIZE(editor_heap, rmb::FullScreenEditor)
+SIZE(editor_model, rmb::EditorModel)
 SIZE(compiled, rmb::CompiledProgram)
 SIZE(program_storage, rmb::Repl::program_)
 SIZE(numeric_arrays, rmb::VM::array_pool_)

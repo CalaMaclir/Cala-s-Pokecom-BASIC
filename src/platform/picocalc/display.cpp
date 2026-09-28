@@ -245,10 +245,13 @@ void fill_rect_ram(
     const uint8_t g = static_cast<uint8_t>((rgb >> 8) & 0xff);
     const uint8_t b = static_cast<uint8_t>(rgb & 0xff);
 
+    const int total_pixels = (x1 - x0 + 1) * (y1 - y0 + 1);
+    const int block_pixels = total_pixels > 128 ? 128 : total_pixels;
+
     // 128 RGB888 pixels per transfer reduces SDK call overhead for clears,
-    // filled boxes and axis-aligned lines.
+    // while tiny cursor rectangles initialize only the bytes they send.
     uint8_t block[384];
-    for (size_t i = 0; i < sizeof(block); i += 3) {
+    for (int i = 0; i < block_pixels * 3; i += 3) {
         block[i] = r;
         block[i + 1] = g;
         block[i + 2] = b;
@@ -256,7 +259,7 @@ void fill_rect_ram(
 
     begin_window_write(x0, y0, x1, y1);
 
-    int pixels = (x1 - x0 + 1) * (y1 - y0 + 1);
+    int pixels = total_pixels;
     while (pixels > 0) {
         const int n = pixels > 128 ? 128 : pixels;
         spi_write_blocking(
@@ -882,6 +885,57 @@ void draw_text_row(
     text_row_bg[row] = background;
     text_row_style_valid[row] = true;
 
+    fg = old_fg;
+    bg = old_bg;
+    cursor_x = old_x;
+    cursor_y = old_y;
+}
+
+void draw_text_span(
+    int row,
+    int first_column,
+    const char* text,
+    int columns,
+    uint32_t foreground,
+    uint32_t background
+) {
+    if (row < 0 || row >= text_rows ||
+        first_column < 0 || first_column >= text_columns ||
+        columns <= 0) {
+        return;
+    }
+    if (first_column + columns > text_columns) {
+        columns = text_columns - first_column;
+    }
+
+    const bool same_style =
+        text_row_style_valid[row] &&
+        text_row_fg[row] == foreground &&
+        text_row_bg[row] == background;
+    const uint32_t old_fg = fg;
+    const uint32_t old_bg = bg;
+    const int old_x = cursor_x;
+    const int old_y = cursor_y;
+    fg = foreground;
+    bg = background;
+
+    bool text_ended = text == nullptr;
+    for (int offset = 0; offset < columns; ++offset) {
+        char ch = ' ';
+        if (!text_ended) {
+            if (*text == '\0') {
+                text_ended = true;
+            } else {
+                ch = *text++;
+            }
+        }
+        const int col = first_column + offset;
+        if (same_style && text_shadow[row][col] == ch) continue;
+        text_shadow[row][col] = ch;
+        draw_char(col * cell_w, row * cell_h, ch);
+    }
+
+    if (!same_style) text_row_style_valid[row] = false;
     fg = old_fg;
     bg = old_bg;
     cursor_x = old_x;

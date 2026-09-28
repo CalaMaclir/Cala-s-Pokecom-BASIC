@@ -29,12 +29,14 @@ enum class RtcError {
 void init();
 void reconfigure_bus_clock();
 int read_key();
+bool navigation_key_held(int key);
 bool set_lcd_backlight(unsigned char value);
 bool get_lcd_backlight(unsigned char& value);
 bool set_keyboard_backlight(unsigned char value);
 bool get_keyboard_backlight(unsigned char& value);
 bool read_battery(int& percent, bool& charging);
 bool caps_lock_enabled();
+void set_caps_lock(bool enabled);
 bool shift_held();
 bool read_rtc(RtcDateTime& value, unsigned char address = 0x51);
 bool write_rtc(const RtcDateTime& value, unsigned char address = 0x51);

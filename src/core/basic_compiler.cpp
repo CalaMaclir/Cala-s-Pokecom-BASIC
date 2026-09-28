@@ -1556,24 +1556,20 @@ struct Parser {
 
         if (*p == '"') {
             ++p;
-
-            char text[192] = {};
-            std::size_t n = 0;
-
-            while (*p && *p != '"') {
-                if (n + 1 < sizeof(text)) text[n++] = *p;
-                ++p;
-            }
+            const char* start = p;
+            while (*p && *p != '"') ++p;
 
             if (*p != '"') {
                 set_error("UNTERMINATED STRING");
                 return ExprType::Invalid;
             }
 
+            const std::size_t length =
+                static_cast<std::size_t>(p - start);
+            const std::uint16_t offset =
+                out->intern_string(start, length);
             ++p;
-            text[n] = '\0';
 
-            const std::uint16_t offset = out->intern_string(text);
             if (offset == 0xffffu) {
                 set_error("STRING POOL FULL");
                 return ExprType::Invalid;

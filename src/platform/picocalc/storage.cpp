@@ -1,4 +1,5 @@
 #include "storage.hpp"
+#include "file_management.hpp"
 #include "program_file_guard.hpp"
 #include "safe_file.hpp"
 
@@ -79,44 +80,14 @@ bool has_bas_extension(const char* name) {
 }
 
 bool make_path(const char* input, char* out, std::size_t capacity) {
-    if (!input || !*input || !out || capacity < 8) {
-        set_error("BAD FILENAME");
-        return false;
-    }
-
-    while (*input == ' ' || *input == '\t') ++input;
-
     char name[80] = {};
-    std::size_t n = 0;
-
-    while (*input && *input != ' ' && *input != '\t') {
-        const unsigned char c = static_cast<unsigned char>(*input++);
-        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) {
-            set_error("BAD FILENAME");
-            return false;
-        }
-        if (n + 1 >= sizeof(name)) {
-            set_error("FILENAME TOO LONG");
-            return false;
-        }
-        name[n++] = static_cast<char>(c);
-    }
-    name[n] = '\0';
-
-    if (n == 0) {
+    if (!out || capacity < 8 ||
+        !file_management::normalize_program_name(input, name, sizeof(name))) {
         set_error("BAD FILENAME");
         return false;
     }
-
-    if (!has_bas_extension(name)) {
-        if (n + 4 >= sizeof(name)) {
-            set_error("FILENAME TOO LONG");
-            return false;
-        }
-        std::strcat(name, ".BAS");
-    }
-
-    if (std::snprintf(out, capacity, "/%s", name) >= static_cast<int>(capacity)) {
+    if (std::snprintf(out, capacity, "/%s", name) >=
+        static_cast<int>(capacity)) {
         set_error("FILENAME TOO LONG");
         return false;
     }
@@ -660,6 +631,94 @@ std::size_t collect_transfer_files(
     closedir(dir);
     set_error("OK");
     return count;
+}
+
+std::size_t collect_root_entries(
+    DirectoryEntry* output,
+    std::size_t max_entries
+) {
+    if (!regular_io_allowed()) return 0;
+    if (!output || max_entries == 0) return 0;
+    if (!init()) return 0;
+
+    DIR* dir = opendir("/");
+    if (!dir) {
+        set_error("CANNOT OPEN SD DIRECTORY");
+        return 0;
+    }
+
+    std::size_t count = 0;
+    while (dirent* ent = readdir(dir)) {
+        if (count >= max_entries) break;
+        if (!ent->d_name || !program_files::visible_in_directory(ent->d_name) ||
+            !SafeFileWriter::valid_root_name(ent->d_name)) continue;
+
+        char path[96] = {};
+        if (std::snprintf(path, sizeof(path), "/%s", ent->d_name) >=
+            static_cast<int>(sizeof(path))) continue;
+        struct stat value = {};
+        if (stat(path, &value) != 0) continue;
+        if (!S_ISREG(value.st_mode) && !S_ISDIR(value.st_mode)) continue;
+
+        DirectoryEntry& item = output[count++];
+        item = DirectoryEntry{};
+        std::snprintf(item.name, sizeof(item.name), "%s", ent->d_name);
+        item.directory = S_ISDIR(value.st_mode);
+        item.size = item.directory ? 0u : static_cast<std::uint32_t>(value.st_size);
+    }
+
+    closedir(dir);
+    set_error("OK");
+    return count;
+}
+
+bool root_entry_info(const char* name, DirectoryEntry& output) {
+    output = DirectoryEntry{};
+    if (!regular_io_allowed() || !init()) return false;
+    if (!SafeFileWriter::valid_root_name(name) ||
+        !program_files::visible_in_directory(name)) {
+        set_error("BAD FILENAME");
+        return false;
+    }
+    char path[96] = {};
+    if (std::snprintf(path, sizeof(path), "/%s", name) >=
+        static_cast<int>(sizeof(path))) {
+        set_error("FILENAME TOO LONG");
+        return false;
+    }
+    struct stat value = {};
+    if (stat(path, &value) != 0 ||
+        (!S_ISREG(value.st_mode) && !S_ISDIR(value.st_mode))) {
+        set_error("FILE NOT FOUND");
+        return false;
+    }
+    std::snprintf(output.name, sizeof(output.name), "%s", name);
+    output.directory = S_ISDIR(value.st_mode);
+    output.size = output.directory ? 0u : static_cast<std::uint32_t>(value.st_size);
+    set_error("OK");
+    return true;
+}
+
+bool rename_root_file(
+    const char* old_name,
+    const char* new_name,
+    const char* current_file,
+    bool recovery
+) {
+    if (!regular_io_allowed() || !init()) return false;
+    const auto result = file_management::rename_file(
+        "/", old_name, new_name, current_file,
+        file_management::Access::Allowed, recovery);
+    set_error(file_management::message(result));
+    return result == file_management::Result::Success;
+}
+
+bool delete_root_file(const char* name, const char* current_file) {
+    if (!regular_io_allowed() || !init()) return false;
+    const auto result = file_management::delete_file(
+        "/", name, current_file);
+    set_error(file_management::message(result));
+    return result == file_management::Result::Success;
 }
 
 bool read_root_text(

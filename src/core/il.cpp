@@ -43,16 +43,24 @@ std::int32_t CompiledProgram::intern_number(BasicNumber value) {
 }
 
 std::uint16_t CompiledProgram::intern_string(const char* text) {
+    return text ? intern_string(text, std::strlen(text)) : 0;
+}
+
+std::uint16_t CompiledProgram::intern_string(
+    const char* text,
+    std::size_t length
+) {
     if (!text) return 0;
 
-    const std::size_t len = std::strlen(text) + 1;
-    if (string_used + len > kStringPoolSize || string_used > 0xffffu) {
+    const std::size_t bytes = length + 1;
+    if (string_used + bytes > kStringPoolSize || string_used > 0xffffu) {
         return 0xffffu;
     }
 
     const auto offset = static_cast<std::uint16_t>(string_used);
-    std::memcpy(string_pool + string_used, text, len);
-    string_used += len;
+    std::memcpy(string_pool + string_used, text, length);
+    string_pool[string_used + length] = '\0';
+    string_used += bytes;
     return offset;
 }
 

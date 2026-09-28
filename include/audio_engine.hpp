@@ -7,7 +7,7 @@ namespace rmb::audio {
 
 constexpr std::uint32_t sample_rate = 22050;
 constexpr int max_voices = 3;
-constexpr std::size_t max_mml_length = 384;
+constexpr std::size_t max_mml_length = 2047; // Matches SD program-line body capacity.
 
 enum class Result : std::uint8_t {
     Ok,

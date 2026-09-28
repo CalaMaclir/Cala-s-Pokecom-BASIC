@@ -214,6 +214,7 @@ struct CompiledProgram {
     bool emit(const Op& op);
     std::int32_t intern_number(BasicNumber value);
     std::uint16_t intern_string(const char* text);
+    std::uint16_t intern_string(const char* text, std::size_t length);
     int find_or_add_symbol(const char* name);
     int find_pc_for_line(std::int32_t line) const;
 };

@@ -1,0 +1,519 @@
+# Cala's Pokecom BASIC System
+## Version 0.90
+## Programming Reference Manual / プログラミング・リファレンスマニュアル
+
+for ClockworkPi PicoCalc  
+with Raspberry Pi Pico 2 W
+
+Copyright (C) 2026 Cala Maclir
+
+---
+
+## 1. BASIC Language Overview
+
+CPB BASICはline number付きのprogramと、line numberなしで直ちに実行するDirect modeを持ちます。
+
+```basic
+10 PRINT "HELLO"
+20 END
+```
+
+- keywordとidentifierはcase-insensitiveです。
+- statementはcolon（`:`）で区切れます。
+- commentは `REM` またはapostrophe（`'`）から行末までです。
+- line numberは0～2,147,483,647です。
+- 同じline numberの入力は既存lineを置換します。line numberだけなら削除します。
+- programの保存上限はProgram Storage backendに従います。RAMは256行・本文191 characters、SDは1,024行・本文2,047 charactersです。
+- `EDIT`でFull-Screen BASIC Editorを開けます。SDの2,047文字行はEditorまたはPCで編集します。
+
+## 2. Lexical Elements
+
+| 要素 | 構文／範囲 |
+|---|---|
+| decimal number | `12`、`-3.5`、`.25` |
+| hexadecimal number | `&HFF`、`&h20`。0～0x7fffffff |
+| string literal | `"TEXT"`。quoteのescape syntaxはありません |
+| identifier | 英字または`_`で開始し、英数字・`_`・`$`を続ける |
+| string variable | 末尾`$`。例：`NAME$` |
+| separator | colon `:` |
+| expression separator | comma `,` |
+| PRINT separator | comma `,` またはsemicolon `;` |
+
+## 3. Data Types、Variables、Arrays
+
+数値はsingle-precision floating pointとして扱います。文字列variableはidentifier末尾に`$`を付けます。数値と文字列を混在して演算することはできません。ただし `+` は文字列連結にも使用します。
+
+```basic
+10 A=12.5
+20 NAME$="CPB"
+30 PRINT NAME$+" ";A
+```
+
+### DIM
+
+**分類** Array Statement  
+**構文** `DIM name(size[,size])[,name(size[,size])]...`  
+**説明** 1Dまたは2D arrayを確保します。string arrayはname末尾に`$`を付けます。  
+**例**
+
+```basic
+10 DIM A(99),M$(9,9)
+```
+
+**制限**
+
+| 種類 | 合計上限 |
+|---|---:|
+| numeric array cells | 4,096 |
+| string array cells | 512 |
+| string array element | 127 characters |
+
+添字とsizeは数値expressionです。Direct modeのarrayはcommand完了後にresetされます。
+
+## 4. Operator Precedence
+
+同じ優先順位のbinary operatorは左から評価されます。指数演算 `^` もVersion 0.90では左結合です。
+
+| 優先順位（高→低） | operator |
+|---:|---|
+| 1 | primary、function call、parentheses |
+| 2 | unary `+`、`-`、`NOT` |
+| 3 | `^` |
+| 4 | `*`、`/`、`MOD` |
+| 5 | `+`、`-` |
+| 6 | `=`、`<>`、`<`、`<=`、`>`、`>=` |
+| 7 | `AND` |
+| 8 | `OR` |
+
+comparisonの結果は数値です。logical operatorのoperandも数値でなければなりません。
+
+## 5. Assignment、PRINT、INPUT
+
+### LET / Assignment
+
+**分類** Assignment Statement  
+**構文** `[LET] variable=expression`  
+**説明** scalar variableまたはarray elementへ代入します。LETは省略できます。
+
+```basic
+10 LET A=10
+20 A$="PICO"
+30 A(2)=A*2
+```
+
+### PRINT
+
+**分類** Output Statement  
+**構文** `PRINT [expression[;|, expression]...]`  
+**説明** expressionをconsoleへ出力します。argumentなしは改行します。semicolonで後続出力を連結し、commaはtabulated fieldへ進めます。行末semicolonは改行しません。
+
+```basic
+10 PRINT "X=";12
+20 PRINT "A","B","C"
+30 PRINT SPC(3);"OK"
+```
+
+### INPUT
+
+**分類** Input Statement  
+**構文** `INPUT ["prompt";] variable`  
+**説明** consoleから1個のscalar variableを読み込みます。variableの型に従って数値または文字列へ変換します。  
+**例** `INPUT "NAME";N$`
+
+## 6. Conditional and Loops
+
+### IF ... THEN ... ELSE
+
+**分類** Conditional Statement  
+**構文** `IF expression THEN statement-or-line [ELSE statement-or-line]`  
+**説明** 数値expressionが真のときTHEN側、偽のときELSE側を実行します。THEN／ELSEの後にはline numberまたは1個のinline statementを置けます。
+
+```basic
+10 IF A>0 THEN PRINT "PLUS" ELSE PRINT "ZERO OR MINUS"
+20 IF A=1 THEN 100
+```
+
+### FOR ... NEXT
+
+**分類** Loop Statement  
+**構文** `FOR variable=start TO limit [STEP increment]` / `NEXT [variable]`  
+**説明** numeric loopです。STEP省略時は1です。  
+**制限** compile時のnesting上限は16です。
+
+```basic
+10 FOR I=1 TO 10 STEP 2
+20 PRINT I
+30 NEXT I
+```
+
+### WHILE ... WEND
+
+**分類** Loop Statement  
+**構文** `WHILE expression` / `WEND`  
+**説明** expressionが真の間、bodyを繰り返します。  
+**制限** compile時のnesting上限は16です。
+
+### DO ... LOOP [UNTIL]
+
+**分類** Loop Statement  
+**構文** `DO` / `LOOP [UNTIL expression]`  
+**説明** UNTILなしでは無限loop、UNTILありではexpressionが真になるまで繰り返します。  
+**制限** compile時のnesting上限は16です。
+
+```basic
+10 DO
+20 K=INKEY
+30 LOOP UNTIL K=27
+```
+
+## 7. Branch and Termination
+
+| 名称 | 分類 | 構文 | 説明 |
+|---|---|---|---|
+| GOTO | Branch | `GOTO line` | 指定lineへ移動 |
+| GOSUB | Subroutine | `GOSUB line` | subroutineを呼び出す |
+| RETURN | Subroutine | `RETURN` | GOSUBの呼出元へ戻る |
+| ON GOTO | Branch | `ON expression GOTO line[,line...]` | 1始まりのselectorで移動先を選択 |
+| ON GOSUB | Subroutine | `ON expression GOSUB line[,line...]` | 1始まりのselectorでsubroutineを選択 |
+| END | Termination | `END` | programを通常終了 |
+| STOP | Termination | `STOP` | programを停止 |
+
+BREAKは実行中programを停止し、background audioも停止します。END、STOP、通常のruntime errorはbackground audioを自動停止しません。
+
+## 8. Timing and Input
+
+### SLEEP
+
+**分類** Timing Statement  
+**構文** `SLEEP milliseconds`  
+**説明** 指定時間待機します。background serviceを継続し、BREAKを受け付けます。  
+**例** `SLEEP 100`
+
+### PAUSE
+
+**分類** Input Statement  
+**構文** `PAUSE`  
+**説明** 画面を変更せず通常keyを待ちます。
+
+### INKEY
+
+**分類** Numeric Function  
+**構文** `INKEY` または `INKEY()`  
+**戻り値** 入力なしは0、入力ありはkey code。  
+**説明** non-blockingでkeyを読みます。
+
+### TIMER
+
+**分類** Numeric Function  
+**構文** `TIMER` または `TIMER()`  
+**戻り値** system startからの経過時間。
+
+### INKEY Key Code
+
+| key | code |
+|---|---:|
+| Enter | 0x0A |
+| Carriage Return | 0x0D |
+| Escape | 0xB1 |
+| Left | 0xB4 |
+| Up | 0xB5 |
+| Down | 0xB6 |
+| Right | 0xB7 |
+| Home | 0xD2 |
+| Delete | 0xD4 |
+| printable ASCII | ASCII code |
+
+physical keyboardとBluetooth HID keyboardはCPBの共通input code体系へ変換されます。
+
+## 9. Numeric Functions
+
+| 名称 | 構文 | 戻り値・説明 |
+|---|---|---|
+| ABS | `ABS(x)` | absolute value |
+| INT | `INT(x)` | integer directionへの変換 |
+| VAL | `VAL(string$)` | stringを数値へ変換 |
+| RND | `RND` / `RND()` | pseudo-random number |
+| RNDI | `RNDI(limit)` | integer random value |
+| SIN | `SIN(x)` | sine |
+| COS | `COS(x)` | cosine |
+| TAN | `TAN(x)` | tangent |
+| SQR | `SQR(x)` | square root |
+| ATN | `ATN(x)` | arctangent |
+| LOG | `LOG(x)` | natural logarithm |
+| EXP | `EXP(x)` | exponential |
+| PI | `PI` / `PI()` | π |
+| RAD | `RAD(degrees)` | degreeをradianへ変換 |
+| DEG | `DEG(radians)` | radianをdegreeへ変換 |
+| SGN | `SGN(x)` | sign（-1、0、1） |
+| MIN | `MIN(a,b)` | 小さい方 |
+| MAX | `MAX(a,b)` | 大きい方 |
+| CLAMP | `CLAMP(value,low,high)` | rangeへclamp |
+| TIMER | `TIMER` / `TIMER()` | elapsed timer |
+| INKEY | `INKEY` / `INKEY()` | non-blocking key input |
+| I2CREAD | `I2CREAD(address,register)` | I2C read value |
+| PLAYING | `PLAYING()` | PLAYがactiveなら真 |
+| POINT | `POINT(x,y)` | graphics pixelがnon-blackなら真 |
+
+functionを式として使用する場合、zero-argument function以外はparenthesesが必要です。
+
+```basic
+10 A=MAX(ABS(-5),INT(2.9))
+20 PRINT SIN(RAD(90))
+```
+
+## 10. String Functions
+
+| 名称 | 構文 | 戻り値・説明 |
+|---|---|---|
+| STR$ | `STR$(number)` | 数値の文字列表現 |
+| LEN | `LEN(string$)` | character数 |
+| CHR$ | `CHR$(code)` | codeから1文字を作る |
+| ASC | `ASC(string$)` | 先頭文字のcode |
+| LEFT$ | `LEFT$(string$,length)` | 左からlength文字 |
+| RIGHT$ | `RIGHT$(string$,length)` | 右からlength文字 |
+| MID$ | `MID$(string$,start[,length])` | startから部分文字列 |
+| INSTR | `INSTR(string$,find$)` | 部分文字列の位置 |
+| STRING$ | `STRING$(count,string$)` | stringをcount回反復 |
+| SPC | `SPC(count)` | count個のspace |
+| TAB | `TAB(column)` | PRINT用tabulation string |
+
+```basic
+10 A$=MID$("PICOCALC",5,4)
+20 PRINT LEFT$(A$,2);STRING$(3,"!")
+```
+
+## 11. Graphics Reference
+
+physical LCDは320×320 pixelです。virtual coordinateは`SCREEN`で定義し、縦横比を保ってLCD中央へmappingされます。
+
+| 名称 | 構文 | 説明 |
+|---|---|---|
+| SCREEN | `SCREEN [width,height]` | virtual screenを設定。引数なしは640×480 |
+| CLS | `CLS` | graphics screenをclear |
+| COLOR | `COLOR palette` / `COLOR r,g,b` | drawing colorを設定 |
+| COLORHSV | `COLORHSV h,s,v` | HSVからdrawing colorを設定 |
+| PSET | `PSET x,y[,color]` | pixelを描く |
+| LINE | `LINE x1,y1,x2,y2[,color]` | lineを描く |
+| LINE | `LINE -x,y[,color]` | current graphics pointからlineを描く |
+| CIRCLE | `CIRCLE x,y,r[,color]` | circleを描く |
+| BOX | `BOX x1,y1,x2,y2[,filled[,color]]` | rectangleを描く |
+| PAINT | `PAINT x,y[,color]` | closed regionをflood fill |
+| POINT | `POINT(x,y)` | pixel query |
+| FLUSH | `FLUSH` | graphics bufferをLCDへ反映 |
+| GLOCATE | `GLOCATE x,y` | graphics text cursorを設定 |
+| GPRINT | `GPRINT expression[,expression...]` | graphics textを描く |
+| SAVEIMAGE | `SAVEIMAGE "name"[,x1,y1,x2,y2]` | BMP保存 |
+| SAVE IMAGE | `SAVE IMAGE "name"[,x1,y1,x2,y2]` | SAVEIMAGEと同義 |
+
+COLORのRGB componentは0～255、COLORHSVのhはdegree、s/vは0～1です。PAINTはfill対象が確定しない場合、または領域が大きい場合に時間を要します。
+
+```basic
+10 SCREEN 320,320:CLS
+20 COLOR 255,255,255
+30 LINE 0,0,319,319
+40 CIRCLE 160,160,80
+50 FLUSH
+```
+
+## 12. PCG Reference
+
+### GDEF
+
+**分類** Graphics Statement  
+**構文** `GDEF "character"="hexdata"` / `GDEF "character"=""` / `GDEF CLEAR`  
+**説明** printable ASCII 0x20～0x7Eに8×8 PCG glyphを定義します。
+
+mono PCGは16 hex digits（8 rows×1 byte）です。bit 7がleft pixelです。set bitはcurrent COLOR、clear bitはbackgroundを描きます。
+
+```basic
+10 GDEF "A"="183C66667E666600"
+20 GLOCATE 20,20:GPRINT "A"
+```
+
+128 hex digitsでは64個のpalette index byteによるindexed-color PCGです。index 0はtransparentです。
+
+### GPALETTE
+
+**分類** Graphics Statement  
+**構文** `GPALETTE index,r,g,b` / `GPALETTE index,rgb24` / `GPALETTE RESET`  
+**説明** indexed-color PCGのpaletteを設定します。indexは1～255です。
+
+```basic
+10 GPALETTE 8,18,38,84
+20 GPALETTE 9,&H1ED6FF
+30 GPALETTE RESET
+```
+
+## 13. Audio Reference
+
+### BEEP
+
+**分類** Audio Statement  
+**構文** `BEEP frequency_hz,duration_ms`  
+**範囲** frequency 20～20,000 Hz、duration 1～60,000 ms。  
+**例** `BEEP 880,150`
+
+### PLAY
+
+**分類** Audio Statement  
+**構文**
+
+```text
+PLAY voice1$[,voice2$[,voice3$]]
+PLAY PAUSE
+PLAY RESUME
+PLAY WAIT
+PLAY STOP
+PLAYING()
+```
+
+最大3 voiceです。PLAYはbackgroundで開始します。PLAY WAITは完了まで待機します。PLAY STOPはMML playbackを停止します。
+
+### MML
+
+| token | 意味 |
+|---|---|
+| `Tn` | tempo、32～400 |
+| `On` | octave、0～8 |
+| `Ln` | default note length。1、2、4、8、16、32 |
+| `Vn` | level、0～15 |
+| `C D E F G A B` | note |
+| `R` | rest |
+| `#` / `+` | sharp |
+| `-` | flat |
+| `<` / `>` | octave down / up |
+| number | note length |
+| `.` | dotted note |
+
+MMLは1 voiceあたり384 charactersまでです。
+
+```basic
+10 PLAY "T120O5L8V12 CDEFGAB>C","T120O4L4V8 CEGC"
+20 PLAY WAIT
+```
+
+### WAV / MP3
+
+| 名称 | 構文 | 説明 |
+|---|---|---|
+| WAVPLAY | `WAVPLAY "file"` | background WAV / MP3 playback開始 |
+| WAVPAUSE | `WAVPAUSE` | playbackをpause |
+| WAVRESUME | `WAVRESUME` | playbackをresume |
+| WAVSTOP | `WAVSTOP` | playbackを停止 |
+
+file内容からformatを判定します。対応formatは次のとおりです。
+
+- RIFF/WAVE PCM（format 1）、8/16-bit、mono/stereo、11,025／22,050／44,100 Hz
+- MP3、44,100／48,000 Hz、mono/stereo
+
+compressed WAV、24-bit WAV、48 kHz WAV、対応外sample rateのMP3は対象外です。MP3再生時は必要に応じてCPU 200 MHzへ自動移行し、停止後に元のprofileへ戻ります。
+
+BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もbackground audioは継続します。
+
+## 14. I2C Reference
+
+### I2C SCAN
+
+**分類** I2C Statement  
+**構文** `I2C SCAN`  
+**説明** 7-bit addressをscanします。
+
+### I2CREAD
+
+**分類** Numeric Function  
+**構文** `I2CREAD(address,register)`  
+**説明** external I2Cから1 byteをreadします。
+
+### I2CWRITE
+
+**分類** I2C Statement  
+**構文** `I2CWRITE address,register,value`  
+**範囲** address 0x08～0x77、register 0～255、value 0～255。
+
+```basic
+10 I2C SCAN
+20 V=I2CREAD(&H51,&H02)
+30 I2CWRITE &H20,&H01,&HFF
+```
+
+## 15. Other BASIC Statements
+
+| 名称 | 構文 | 説明 |
+|---|---|---|
+| LOCATE | `LOCATE column,row` | console text cursor位置を設定 |
+| RANDOMIZE | `RANDOMIZE [seed]` | pseudo-random sequenceを初期化 |
+| REM | `REM text` | comment |
+| ' | `' text` | comment |
+
+## 16. REPL Command Reference
+
+以下はBASIC statementではなく、`BASIC>` promptで実行するREPL commandです。
+
+| command | 構文 | 説明 |
+|---|---|---|
+| EDIT | `EDIT` | Full-Screen BASIC Editorを開く |
+| LIST | `LIST` | current programを表示 |
+| RUN | `RUN` | current programを実行 |
+| NEW | `NEW` | program、Direct scalar、current filenameをclear |
+| CLEAR | `CLEAR` | Direct scalarをclear |
+| CLS | `CLS` | console／graphics画面をclear |
+| LOAD | `LOAD "name"` | BASIC sourceをload |
+| SAVE | `SAVE` / `SAVE "name"` | current fileへsave／Save As |
+| FILES | `FILES` | SD root一覧 |
+| DIR | `DIR` | FILESと同義 |
+| SD | `SD` / `SD STATUS` / `SD REMOUNT` | SD status／remount |
+| SCREENSHOT | `SCREENSHOT ["name"]` | LCD BMPをSDへ保存 |
+| XRECV | `XRECV "name"` | XMODEM receive |
+| XSEND | `XSEND "name"` | XMODEM send |
+| YRECV | `YRECV` | YMODEM receive |
+| YSEND | `YSEND "name"` | YMODEM send |
+| DATE | `DATE [yyyy-mm-dd]` | date表示／設定 |
+| TIME | `TIME [hh:mm:ss]` | time表示／設定 |
+| DATETIME | `DATETIME` | dateとtimeを表示 |
+| SERIAL | `SERIAL ...` | serial route設定表示／変更 |
+| CONSOLE | `CONSOLE LCD ONLY`等 | console mode変更 |
+| PROFILE | `PROFILE ...` | execution profile表示／制御 |
+| STANDBY | `STANDBY` | RAM保持待機 |
+| MENU | `MENU` | Control Centerを開く |
+| HELP | `HELP` | command概要 |
+
+`SAVE IMAGE` はBASIC statement、`SAVE` はREPL commandです。`EDIT` はprogram内には記述できません。
+
+## 17. Runtime Limits and Errors
+
+| resource | limit |
+|---|---:|
+| compiled operations | 1,536 |
+| symbols | 64 |
+| compiled line map | 256 |
+| FOR nesting | 16 |
+| WHILE nesting | 16 |
+| DO nesting | 16 |
+| numeric array cells | 4,096 |
+| string array cells | 512 |
+| string array element | 127 characters |
+| MML per voice | 384 characters |
+| RAM program | 256 lines / 191 body chars |
+| SD program | 1,024 lines / 2,047 body chars |
+
+代表的なerror：
+
+| category | 例 | 対処 |
+|---|---|---|
+| Compile | `SYNTAX ERROR`、`TYPE MISMATCH` | syntaxとdata typeを確認 |
+| Control flow | `NEXT WITHOUT FOR`、`WEND WITHOUT WHILE` | pairを確認 |
+| Resource | `PROGRAM TOO COMPLEX`、`TOO MANY VARIABLES` | programを分割、variableを削減 |
+| Storage | `LINE TOO LONG FOR RAM`、`PROGRAM TOO LARGE FOR RAM MODE` | SD modeを使うかsourceを縮小 |
+| I/O | transfer timeout、SD mount failure | route、cable、SD状態を確認 |
+
+## 18. Quick Reference
+
+### Statements（alphabetical）
+
+`BEEP`、`BOX`、`CIRCLE`、`CLS`、`COLOR`、`COLORHSV`、`DIM`、`DO`、`END`、`FLUSH`、`FOR`、`GDEF`、`GLOCATE`、`GOSUB`、`GOTO`、`GPALETTE`、`GPRINT`、`I2C SCAN`、`I2CWRITE`、`IF`、`INPUT`、`LET`、`LINE`、`LOCATE`、`LOOP`、`NEXT`、`ON ... GOSUB`、`ON ... GOTO`、`PAINT`、`PAUSE`、`PLAY`、`PRINT`、`PSET`、`RANDOMIZE`、`REM`、`RETURN`、`SAVE IMAGE`、`SAVEIMAGE`、`SCREEN`、`SLEEP`、`STOP`、`WAVPAUSE`、`WAVPLAY`、`WAVRESUME`、`WAVSTOP`、`WEND`、`WHILE`
+
+### Functions（alphabetical）
+
+`ABS`、`ASC`、`ATN`、`CHR$`、`CLAMP`、`COS`、`DEG`、`EXP`、`I2CREAD`、`INKEY`、`INSTR`、`INT`、`LEFT$`、`LEN`、`LOG`、`MAX`、`MID$`、`MIN`、`PI`、`PLAYING`、`POINT`、`RAD`、`RND`、`RNDI`、`RIGHT$`、`SGN`、`SIN`、`SPC`、`SQR`、`STR$`、`STRING$`、`TAB`、`TAN`、`TIMER`、`VAL`
+
+実行可能なより大きいsampleはrepositoryの `examples/` を参照してください。

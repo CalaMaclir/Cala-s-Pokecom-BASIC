@@ -1,0 +1,87 @@
+; Adapted from rp2040-psram by Ian Scott.
+; Copyright (c) 2023 Ian Scott
+;
+; Permission is hereby granted, free of charge, to any person obtaining a copy
+; of this software and associated documentation files (the "Software"), to deal
+; in the Software without restriction, including without limitation the rights
+; to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+; copies of the Software, and to permit persons to whom the Software is
+; furnished to do so, subject to the following conditions:
+;
+; The above copyright notice and this permission notice shall be included in
+; all copies or substantial portions of the Software.
+;
+; THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+; IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+; FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+; AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+; LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+; OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+; SOFTWARE.
+
+.program cpb_psram_spi_fudge
+.side_set 2
+begin:
+    out x, 8            side 0b01
+    out y, 8            side 0b01
+    jmp x--, writeloop  side 0b01
+writeloop:
+    out pins, 1         side 0b00
+    jmp x--, writeloop  side 0b10
+    jmp !y, begin       side 0b00
+    ; PicoCalc's official PSRAM example selects the upstream fudge path.
+    ; Add the settling cycle and sample on the falling edge to match it.
+    nop                 side 0b10
+    jmp readloop_mid    side 0b00
+readloop:
+    in pins, 1          side 0b00
+readloop_mid:
+    jmp y--, readloop   side 0b10
+
+.program cpb_psram_spi
+.side_set 2
+begin:
+    out x, 8            side 0b01
+    out y, 8            side 0b01
+    jmp x--, writeloop  side 0b01
+writeloop:
+    out pins, 1         side 0b00
+    jmp x--, writeloop  side 0b10
+    jmp !y, begin       side 0b00
+    ; Pre-decrement the read count without toggling SCK.  The prior version
+    ; raised SCK here and then raised it again for the first IN instruction,
+    ; consuming the first PSRAM data bit before it was sampled.  The hardware
+    ; signature was an exact one-bit left shift (55 AA 00 FF -> AB 54 01 FF).
+    jmp y--, readloop   side 0b00
+readloop:
+    in pins, 1          side 0b10
+    jmp y--, readloop   side 0b00
+
+% c-sdk {
+#include "hardware/gpio.h"
+static inline void cpb_psram_spi_init(
+    PIO pio, uint sm, uint offset, float clock_divider,
+    bool fudge, uint pin_cs, uint pin_mosi, uint pin_miso
+) {
+    pio_sm_config config = fudge
+        ? cpb_psram_spi_fudge_program_get_default_config(offset)
+        : cpb_psram_spi_program_get_default_config(offset);
+    sm_config_set_out_pins(&config, pin_mosi, 1);
+    sm_config_set_in_pins(&config, pin_miso);
+    sm_config_set_sideset_pins(&config, pin_cs);
+    sm_config_set_out_shift(&config, false, true, 8);
+    sm_config_set_in_shift(&config, false, true, 8);
+    sm_config_set_clkdiv(&config, clock_divider);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_cs, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_mosi, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin_miso, 1, false);
+    pio_gpio_init(pio, pin_miso);
+    pio_gpio_init(pio, pin_mosi);
+    pio_gpio_init(pio, pin_cs);
+    pio_gpio_init(pio, pin_cs + 1);
+    hw_set_bits(&pio->input_sync_bypass, 1u << pin_miso);
+    pio_sm_init(pio, sm, offset, &config);
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

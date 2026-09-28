@@ -344,7 +344,11 @@ void Engine::render(std::int16_t* stereo, std::size_t frames) {
                     if (voice.finished) continue;
                     any = true;
                     if (voice.sounding) {
-                        const int amplitude = voice.level * 650;
+                        // Keep the requested loudness stable as voices are
+                        // added: one V15 voice may use about 26k PCM peak,
+                        // while a three-voice chord shares the same headroom.
+                        const int amplitude =
+                            voice.level * 1733 / std::max(1, voice_count_);
                         mixed += (voice.phase & 0x80000000u)
                             ? amplitude : -amplitude;
                         voice.phase += voice.phase_step;
