@@ -1,4 +1,5 @@
 #include "repl.hpp"
+#include "psram.hpp"
 #include "session_notice.hpp"
 
 #include <cctype>
@@ -6,14 +7,23 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
+#include "audio_file_policy.hpp"
 #include "basic_compiler.hpp"
-#include "bluetooth_serial.hpp"
+#include "bluetooth_manager.hpp"
+#include "bluetooth_hid_keyboard.hpp"
+#include "bluetooth_hid_ble_keyboard.hpp"
+#include "bluetooth_device_registry.hpp"
 #include "console_layout.hpp"
 #include "line_editor.hpp"
+#include "menu_scroll.hpp"
 #include "network.hpp"
 #include "file_server.hpp"
+#include "file_management.hpp"
+#include "full_screen_editor.hpp"
 #include "platform.hpp"
+#include "program_file_guard.hpp"
 #include "storage.hpp"
 #include "storage_recovery.hpp"
 #include "vm.hpp"
@@ -22,6 +32,8 @@
 #include "usb_device.hpp"
 #include "usb_msc.hpp"
 #include "usb_storage_menu.hpp"
+#include "wireless.hpp"
+#include "system_controls.hpp"
 #include "xmodem.hpp"
 #include "ymodem.hpp"
 
@@ -78,8 +90,16 @@ private:
 };
 
 constexpr std::size_t kInputBufferSize = 224;
-constexpr std::size_t kMenuFileCount = 48;
+constexpr std::size_t kMenuFileCount = 128;
 constexpr std::size_t kMenuFilenameSize = 80;
+
+// File pickers are foreground-only and never nested. Keep one shared BSS union
+// so the PROGRAMS name list and DIRECTORY metadata never occupy SRAM together.
+union MenuFileScratch {
+    char names[kMenuFileCount][kMenuFilenameSize];
+    storage::DirectoryEntry entries[kMenuFileCount];
+};
+MenuFileScratch menu_file_scratch = {};
 
 constexpr int kKeyEnter = 0x0a;
 constexpr int kKeyCarriageReturn = 0x0d;
@@ -90,8 +110,6 @@ constexpr int kKeyDown = 0xb6;
 constexpr int kKeyRight = 0xb7;
 constexpr int kKeyHome = 0xd2;
 constexpr int kKeyDelete = 0xd4;
-constexpr int kKeyPageUp = 0xd6;
-constexpr int kKeyPageDown = 0xd7;
 
 char ascii_upper(char c) {
     if (c >= 'a' && c <= 'z') {
@@ -221,6 +239,38 @@ void print_storage_error() {
 
 bool key_is_enter(int key) {
     return key == kKeyEnter || key == kKeyCarriageReturn;
+}
+
+bool handle_menu_scroll_key(
+    int key,
+    menu_scroll::State& state,
+    int count,
+    int visible
+) {
+    menu_scroll::Move direction = menu_scroll::Move::Up;
+    if (!menu_scroll::decode_move_key(
+            key, platform::shift_held(), direction)) {
+        return false;
+    }
+    (void)menu_scroll::move(state, direction, count, visible);
+    return true;
+}
+
+int poll_menu_key(std::uint32_t timeout_ms) {
+    const std::uint32_t start = platform::monotonic_millis();
+    while (static_cast<std::uint32_t>(
+               platform::monotonic_millis() - start) < timeout_ms) {
+        const auto result = platform::poll_runtime_key();
+        if (result.type == platform::RuntimeKeyType::Key) {
+            platform::audio_key_click();
+            return result.code;
+        }
+        if (result.type == platform::RuntimeKeyType::Break) {
+            return kKeyEscape;
+        }
+        platform::sleep_millis(10);
+    }
+    return -1;
 }
 
 bool is_leap_year(int year) {
@@ -435,6 +485,21 @@ void sort_file_names(
     }
 }
 
+void sort_directory_entries(
+    storage::DirectoryEntry* entries,
+    std::size_t count
+) {
+    for (std::size_t i = 0; i < count; ++i) {
+        for (std::size_t j = i + 1; j < count; ++j) {
+            if (std::strcmp(entries[j].name, entries[i].name) < 0) {
+                const storage::DirectoryEntry temp = entries[i];
+                entries[i] = entries[j];
+                entries[j] = temp;
+            }
+        }
+    }
+}
+
 } // namespace
 
 void Repl::set_current_filename(const char* filename, bool dirty) {
@@ -554,7 +619,14 @@ void Repl::load_settings() {
         if (ci_equal(line, "cpu_mhz")) {
             // CPU profiles are session-only. Ignore legacy persisted values so
             // every reboot has a guaranteed 150 MHz recovery path.
-            settings_.cpu_mhz = 150;
+            settings_.cpu_mhz = system_controls::safe_boot_cpu_mhz(
+                static_cast<std::uint32_t>(std::strtoul(eq, nullptr, 10)));
+            continue;
+        }
+
+        if (ci_equal(line, "board_led")) {
+            settings_.board_led =
+                system_controls::board_led_mode_from_setting(eq);
             continue;
         }
 
@@ -597,6 +669,20 @@ void Repl::load_settings() {
             settings_.audio_volume = static_cast<std::uint8_t>(value);
             continue;
         }
+        if (ci_equal(line, "wav_volume")) {
+            int value = std::atoi(eq);
+            value = std::max(10, std::min(100, value));
+            value = ((value + 5) / 10) * 10;
+            settings_.wav_volume = static_cast<std::uint8_t>(value);
+            continue;
+        }
+        if (ci_equal(line, "play_volume")) {
+            int value = std::atoi(eq);
+            value = std::max(0, std::min(100, value));
+            value = ((value + 5) / 10) * 10;
+            settings_.play_volume = static_cast<std::uint8_t>(value);
+            continue;
+        }
         if (ci_equal(line, "key_click")) {
             settings_.key_click = audio::key_click_from_setting(eq);
             continue;
@@ -605,6 +691,12 @@ void Repl::load_settings() {
             settings_.startup_wav =
                 ci_equal(eq, "on") || ci_equal(eq, "yes") ||
                 ci_equal(eq, "true") || std::strcmp(eq, "1") == 0;
+            continue;
+        }
+        if (ci_equal(line, "keyboard_layout")) {
+            settings_.bluetooth_keyboard_layout = ci_equal(eq, "US")
+                ? bluetooth_hid::KeyboardLayout::Us
+                : bluetooth_hid::KeyboardLayout::Jis;
             continue;
         }
 
@@ -700,6 +792,7 @@ void Repl::save_settings() {
         "program_storage=%s\n"
         "status=%s\n"
         "backlight=%u\n"
+        "board_led=%s\n"
         "theme=%u\n"
         "console_fg=%06lX\n"
         "console_bg=%06lX\n"
@@ -709,8 +802,12 @@ void Repl::save_settings() {
         "rtc_address=0x%02X\n"
         "\n[audio]\n"
         "audio_volume=%u\n"
+        "wav_volume=%u\n"
+        "play_volume=%u\n"
         "key_click=%s\n"
         "startup_wav=%s\n"
+        "\n[bluetooth]\n"
+        "keyboard_layout=%s\n"
         "\n[wifi]\n"
         "wifi_enabled=%s\n"
         "wifi_ssid=%s\n"
@@ -723,6 +820,7 @@ void Repl::save_settings() {
             settings_.storage_mode == ProgramStorageMode::InternalRam ? "RAM" : "AUTO",
         settings_.status_enabled ? "on" : "off",
         static_cast<unsigned>(settings_.backlight),
+        system_controls::board_led_mode_setting(settings_.board_led),
         static_cast<unsigned>(settings_.theme),
         static_cast<unsigned long>(settings_.console_foreground),
         static_cast<unsigned long>(settings_.console_background),
@@ -730,8 +828,12 @@ void Repl::save_settings() {
         platform::rtc_source_name(),
         static_cast<unsigned>(platform::rtc_address()),
         static_cast<unsigned>(settings_.audio_volume),
+        static_cast<unsigned>(settings_.wav_volume),
+        static_cast<unsigned>(settings_.play_volume),
         audio::key_click_name(settings_.key_click),
         settings_.startup_wav ? "on" : "off",
+        bluetooth_hid::keyboard_layout_name(
+            settings_.bluetooth_keyboard_layout),
         "off",
         settings_.wifi_ssid,
         settings_.wifi_password,
@@ -798,7 +900,13 @@ void Repl::apply_settings() {
     );
     platform::set_console_mode(settings_.console_mode);
     platform::audio_set_volume(settings_.audio_volume);
+    platform::audio_set_wav_volume(settings_.wav_volume);
+    platform::audio_set_play_volume(settings_.play_volume);
     platform::audio_set_key_click(settings_.key_click);
+    if (!wireless::set_board_led_mode(settings_.board_led)) {
+        settings_.board_led = system_controls::BoardLedMode::Off;
+    }
+    bluetooth_hid::set_layout(settings_.bluetooth_keyboard_layout);
 }
 
 void Repl::render_status() {
@@ -909,9 +1017,8 @@ void Repl::render_status() {
 
     // Read the actual clock: a failed profile switch must not mislabel it.
     const auto cpu_mhz = platform::system_clock_hz() / 1000000u;
-    const char* profile = cpu_mhz == 150 ? "FULL" :
-                          cpu_mhz == 100 ? "NORMAL" :
-                          cpu_mhz == 75 ? "ECO" : "?";
+    const char* profile =
+        system_controls::cpu_profile_status_name(cpu_mhz);
     char line3[80] = {};
     std::snprintf(
         line3, sizeof(line3), "CPU:%s %luMHz CON:%s %s",
@@ -1268,6 +1375,11 @@ void Repl::process_line(char* line) {
         return;
     }
 
+    if (command_equals(input, "EDIT")) {
+        open_full_screen_editor();
+        return;
+    }
+
     if (char* arg = command_argument(input, "PROFILE")) {
         command_profile(arg);
         return;
@@ -1478,7 +1590,7 @@ void Repl::process_line(char* line) {
         platform::put_string("ALT+, / ALT+. - LCD brightness down/up\r\n");
         platform::put_string("ALT+SPACE - keyboard backlight cycle\r\n");
         platform::put_string("POWER or ALT+P - standby / any key wake\r\n");
-        platform::put_string("LIST / NEW / RUN / CLS / MENU / STANDBY\r\n");
+        platform::put_string("LIST / NEW / RUN / EDIT / CLS / MENU / STANDBY\r\n");
         platform::put_string("PAUSE - wait for a key / INKEY - poll key code\r\n");
         platform::put_string("FILES - list BASIC programs\r\n");
         platform::put_string("DIR   - list SD card files\r\n");
@@ -1493,8 +1605,7 @@ void Repl::process_line(char* line) {
         platform::put_string("SCREENSHOT [name] - save LCD as BMP\r\n");
         platform::put_string("SERIAL [ON|OFF|ONLY]\r\n");
         platform::put_string("CONSOLE LCD|BOTH|SERIAL\r\n");
-        platform::put_string("Bluetooth Console: Control Center -> Bluetooth -> Console ON\r\n");
-        platform::put_string("Bluetooth X/YMODEM: enter XRECV/XSEND/YRECV/YSEND over SPP\r\n");
+        platform::put_string("Bluetooth Keyboard: Control Center -> Bluetooth\r\n");
         platform::put_string("CLEAR - clear direct-mode variables\r\n");
         return;
     }
@@ -1807,7 +1918,7 @@ bool Repl::pick_program_file(
     if (!output || capacity == 0) return false;
     output[0] = '\0';
 
-    char files[kMenuFileCount][kMenuFilenameSize] = {};
+    auto& files = menu_file_scratch.names;
     const std::size_t count = storage::collect_program_files(
         &files[0][0],
         kMenuFileCount,
@@ -1830,66 +1941,62 @@ bool Repl::pick_program_file(
 
     sort_file_names(files, count);
 
-    int selected = 0;
-    int offset = 0;
     constexpr int visible = 27;
+    menu_scroll::State scroll;
+    menu_scroll::normalize(
+        scroll, static_cast<int>(count), visible);
 
     while (true) {
         draw_menu_header(
             "SELECT BASIC FILE",
-            "UP/DOWN SELECT  ENTER OK  ESC CANCEL"
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER USE  ESC"
         );
 
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        const int first_row = top + 3;
+        const int first_row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
 
-        if (selected < offset) offset = selected;
-        if (selected >= offset + visible) {
-            offset = selected - visible + 1;
-        }
+        menu_scroll::normalize(
+            scroll, static_cast<int>(count), visible);
 
-        for (int i = 0; i < visible; ++i) {
-            const int index = offset + i;
+        for (int row_index = 0; row_index < visible; ++row_index) {
+            const int index = scroll.offset + row_index;
             if (index >= static_cast<int>(count)) {
-                draw_menu_option(first_row + i, "", false);
+                draw_menu_option(first_row + row_index, "", false);
                 continue;
             }
-
             char row[96] = {};
             std::snprintf(
-                row,
-                sizeof(row),
-                "%2d  %-46.46s",
-                index + 1,
-                files[index]
-            );
+                row, sizeof(row), "%2d  %-46.46s",
+                index + 1, files[index]);
             draw_menu_option(
-                first_row + i,
+                first_row + row_index,
                 row,
-                index == selected
+                index == scroll.selected
             );
         }
 
+        char position[48] = {};
+        std::snprintf(
+            position, sizeof(position),
+            "%d-%d / %u",
+            scroll.offset + 1,
+            menu_scroll::last_exclusive(
+                scroll, static_cast<int>(count), visible),
+            static_cast<unsigned>(count)
+        );
+        draw_menu_message(first_row + visible, position);
+
         const int key = platform::get_char();
-        if (key == kKeyUp && selected > 0) {
-            --selected;
-        } else if (key == kKeyDown &&
-                   selected + 1 < static_cast<int>(count)) {
-            ++selected;
-        } else if (key == kKeyPageUp) {
-            selected -= visible;
-            if (selected < 0) selected = 0;
-        } else if (key == kKeyPageDown) {
-            selected += visible;
-            if (selected >= static_cast<int>(count)) {
-                selected = static_cast<int>(count) - 1;
-            }
-        } else if (key_is_enter(key)) {
-            std::snprintf(output, capacity, "%s", files[selected]);
-            return true;
-        } else if (key == kKeyEscape || key == 0x1b) {
-            return false;
+        if (handle_menu_scroll_key(
+                key, scroll, static_cast<int>(count), visible)) {
+            continue;
         }
+        if (key_is_enter(key)) {
+            std::snprintf(
+                output, capacity, "%s", files[scroll.selected]);
+            return true;
+        }
+        if (key == kKeyEscape || key == 0x1b) return false;
     }
 }
 
@@ -1901,7 +2008,7 @@ bool Repl::pick_transfer_file(
     if (!output || capacity == 0) return false;
     output[0] = '\0';
 
-    char files[kMenuFileCount][kMenuFilenameSize] = {};
+    auto& files = menu_file_scratch.names;
     const std::size_t count = storage::collect_transfer_files(
         &files[0][0], kMenuFileCount, kMenuFilenameSize);
 
@@ -1917,140 +2024,424 @@ bool Repl::pick_transfer_file(
     }
 
     sort_file_names(files, count);
-    int selected = 0;
-    int offset = 0;
     constexpr int visible = 27;
+    menu_scroll::State scroll;
+    menu_scroll::normalize(
+        scroll, static_cast<int>(count), visible);
+
     while (true) {
-        draw_menu_header(title, "UP/DOWN SELECT  ENTER SEND  ESC CANCEL");
+        draw_menu_header(
+            title,
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER SEND  ESC"
+        );
         const int first_row =
             (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
-        if (selected < offset) offset = selected;
-        if (selected >= offset + visible) offset = selected - visible + 1;
 
-        for (int i = 0; i < visible; ++i) {
-            const int index = offset + i;
+        menu_scroll::normalize(
+            scroll, static_cast<int>(count), visible);
+
+        for (int row_index = 0; row_index < visible; ++row_index) {
+            const int index = scroll.offset + row_index;
             if (index >= static_cast<int>(count)) {
-                draw_menu_option(first_row + i, "", false);
+                draw_menu_option(first_row + row_index, "", false);
                 continue;
             }
             char row[96] = {};
-            std::snprintf(row, sizeof(row), "%2d  %-46.46s", index + 1, files[index]);
-            draw_menu_option(first_row + i, row, index == selected);
+            std::snprintf(
+                row, sizeof(row), "%2d  %-46.46s",
+                index + 1, files[index]);
+            draw_menu_option(
+                first_row + row_index,
+                row,
+                index == scroll.selected);
         }
 
+        char position[48] = {};
+        std::snprintf(
+            position, sizeof(position),
+            "%d-%d / %u",
+            scroll.offset + 1,
+            menu_scroll::last_exclusive(
+                scroll, static_cast<int>(count), visible),
+            static_cast<unsigned>(count)
+        );
+        draw_menu_message(first_row + visible, position);
+
         const int key = platform::get_char();
-        if (key == kKeyUp && selected > 0) --selected;
-        else if (key == kKeyDown && selected + 1 < static_cast<int>(count)) ++selected;
-        else if (key == kKeyPageUp) {
-            selected -= visible;
-            if (selected < 0) selected = 0;
-        } else if (key == kKeyPageDown) {
-            selected += visible;
-            if (selected >= static_cast<int>(count)) selected = static_cast<int>(count) - 1;
-        } else if (key_is_enter(key)) {
-            std::snprintf(output, capacity, "%s", files[selected]);
-            return true;
-        } else if (key == kKeyEscape || key == 0x1b) {
-            return false;
+        if (handle_menu_scroll_key(
+                key, scroll, static_cast<int>(count), visible)) {
+            continue;
         }
+        if (key_is_enter(key)) {
+            std::snprintf(
+                output, capacity, "%s", files[scroll.selected]);
+            return true;
+        }
+        if (key == kKeyEscape || key == 0x1b) return false;
     }
 }
 
 bool Repl::menu_files() {
-    char files[kMenuFileCount][kMenuFilenameSize] = {};
-    const std::size_t count = storage::collect_program_files(
-        &files[0][0],
-        kMenuFileCount,
-        kMenuFilenameSize
-    );
+    enum class Mode { Programs, Directory };
+    Mode mode = Mode::Programs;
+    constexpr int visible = 24;
+    menu_scroll::State scroll;
+    bool info_visible = false;
+    storage::DirectoryEntry inline_info;
+    char playing_name[kMenuFilenameSize] = {};
+    std::size_t count = 0;
+    bool scan_ok = true;
+    bool scan_requested = true;
 
-    if (count == 0) {
-        draw_menu_header("FILES", "ESC BACK");
-        draw_menu_message(
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 4,
-            storage::available() ? "(NO .BAS FILES)" : storage::last_error()
-        );
+    auto show_error = [&](const char* title, const char* message) {
+        draw_menu_header(title, "PRESS ANY KEY");
+        const int top = settings_.status_enabled
+            ? console_layout::status_rows : 0;
+        draw_menu_message(top + 5, message ? message : "FILE OPERATION FAILED");
+        (void)platform::get_char();
+    };
+
+    auto confirm_delete = [&](const char* name) {
+        int selected = 0; // Safe default: Cancel.
         while (true) {
+            draw_menu_header(
+                "DELETE FILE?",
+                "UP/DOWN SELECT  ENTER OK  ESC CANCEL"
+            );
+            const int top = settings_.status_enabled
+                ? console_layout::status_rows : 0;
+            draw_menu_message(top + 4, name);
+            draw_menu_option(top + 7, "Cancel", selected == 0);
+            draw_menu_option(top + 8, "Delete", selected == 1);
             const int key = platform::get_char();
-            if (key == kKeyEscape || key == 0x1b || key_is_enter(key)) {
+            if (key == kKeyUp || key == kKeyDown) {
+                selected = 1 - selected;
+            } else if (key_is_enter(key)) {
+                return selected == 1;
+            } else if (key == kKeyEscape || key == 0x1b) {
                 return false;
             }
         }
-    }
-
-    sort_file_names(files, count);
-
-    int selected = 0;
-    int offset = 0;
-    constexpr int visible = 27;
+    };
 
     while (true) {
+        if (playing_name[0] && !platform::audio_playing()) {
+            playing_name[0] = '\0';
+            scan_requested = true;
+        }
+        if (scan_requested) {
+            if (mode == Mode::Programs) {
+                auto& names = menu_file_scratch.names;
+                count = storage::collect_program_files(
+                    &names[0][0], kMenuFileCount, kMenuFilenameSize);
+                sort_file_names(names, count);
+            } else {
+                auto& entries = menu_file_scratch.entries;
+                count = storage::collect_root_entries(entries, kMenuFileCount);
+                sort_directory_entries(entries, count);
+            }
+            scan_ok = std::strcmp(storage::last_error(), "OK") == 0;
+            scan_requested = false;
+        }
+        menu_scroll::normalize(scroll, static_cast<int>(count), visible);
+
         draw_menu_header(
-            "FILES",
-            "ENTER LOAD  R RUN  F1-F10 ASSIGN  ESC BACK"
+            mode == Mode::Programs ? "FILES [PROGRAMS]" : "FILES [DIRECTORY]",
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  LEFT/RIGHT MODE"
         );
 
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        const int first_row = top + 3;
+        const int first_row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
 
-        if (selected < offset) offset = selected;
-        if (selected >= offset + visible) {
-            offset = selected - visible + 1;
-        }
-
-        for (int i = 0; i < visible; ++i) {
-            const int index = offset + i;
+        for (int row_index = 0; row_index < visible; ++row_index) {
+            const int index = scroll.offset + row_index;
             if (index >= static_cast<int>(count)) {
-                draw_menu_option(first_row + i, "", false);
+                draw_menu_option(
+                    first_row + row_index,
+                    row_index == 0 && count == 0
+                        ? (scan_ok
+                            ? (mode == Mode::Programs
+                                ? "(NO .BAS FILES)" : "(NO FILES)")
+                            : storage::last_error())
+                        : "",
+                    false
+                );
                 continue;
             }
 
             char row[96] = {};
-            std::snprintf(
-                row,
-                sizeof(row),
-                "%2d  %-46.46s",
-                index + 1,
-                files[index]
-            );
+            if (mode == Mode::Programs) {
+                std::snprintf(
+                    row, sizeof(row), "%2d  %-46.46s",
+                    index + 1, menu_file_scratch.names[index]);
+            } else {
+                const auto& entry = menu_file_scratch.entries[index];
+                if (entry.directory) {
+                    std::snprintf(
+                        row, sizeof(row), "%2d  %-38.38s <DIR>",
+                        index + 1, entry.name);
+                } else {
+                    std::snprintf(
+                        row, sizeof(row), "%2d  %-36.36s %9lu",
+                        index + 1, entry.name,
+                        static_cast<unsigned long>(entry.size));
+                }
+            }
             draw_menu_option(
-                first_row + i,
+                first_row + row_index,
                 row,
-                index == selected
+                index == scroll.selected
             );
         }
 
-        const int key = platform::get_char();
-        if (key == kKeyUp && selected > 0) {
-            --selected;
-        } else if (key == kKeyDown &&
-                   selected + 1 < static_cast<int>(count)) {
-            ++selected;
-        } else if (key == kKeyPageUp) {
-            selected -= visible;
-            if (selected < 0) selected = 0;
-        } else if (key == kKeyPageDown) {
-            selected += visible;
-            if (selected >= static_cast<int>(count)) {
-                selected = static_cast<int>(count) - 1;
+        char position[80] = {};
+        if (count != 0) {
+            std::snprintf(
+                position, sizeof(position),
+                "%d-%d / %u",
+                scroll.offset + 1,
+                menu_scroll::last_exclusive(
+                    scroll, static_cast<int>(count), visible),
+                static_cast<unsigned>(count)
+            );
+        }
+        draw_menu_message(first_row + visible, position);
+        draw_menu_message(
+            first_row + visible + 1,
+            mode == Mode::Programs
+                ? "ENTER LOAD  R RUN  E EDIT  N RENAME"
+                : "P PLAY/STOP  N RENAME  DEL DELETE"
+        );
+        draw_menu_message(
+            first_row + visible + 2,
+            mode == Mode::Programs
+                ? "DEL DELETE  I INFO  F REFRESH  ESC BACK"
+                : "I INFO  F REFRESH  LEFT/RIGHT  ESC"
+        );
+
+        char info_row[112] = {};
+        if (info_visible) {
+            std::snprintf(
+                info_row, sizeof(info_row), "Info: %s", inline_info.name);
+            draw_menu_message(first_row + visible + 4, info_row);
+            std::snprintf(
+                info_row, sizeof(info_row), "Type: %s",
+                inline_info.directory ? "DIRECTORY" :
+                audio::has_extension_ci(inline_info.name, ".BAS")
+                    ? "BASIC PROGRAM" :
+                audio::has_extension_ci(inline_info.name, ".WAV")
+                    ? "WAV AUDIO" :
+                audio::has_extension_ci(inline_info.name, ".MP3")
+                    ? "MP3 AUDIO" : "FILE");
+            draw_menu_message(first_row + visible + 5, info_row);
+            if (!inline_info.directory) {
+                std::snprintf(
+                    info_row, sizeof(info_row), "Size: %lu bytes",
+                    static_cast<unsigned long>(inline_info.size));
+                draw_menu_message(first_row + visible + 6, info_row);
+            } else {
+                draw_menu_message(first_row + visible + 6, "");
             }
-        } else if (key_is_enter(key)) {
-            leave_menu_screen();
-            load_named_program(files[selected], false);
-            return true;
-        } else if (key == 'r' || key == 'R') {
-            leave_menu_screen();
-            load_named_program(files[selected], true);
-            return true;
-        } else if (key == kKeyEscape || key == 0x1b) {
-            return false;
         } else {
-            const int quick = function_key_index(key);
-            if (quick >= 0) {
-                bool run = true;
-                if (choose_quick_mode(run)) {
-                    assign_quick_key(quick, files[selected], run);
+            if (playing_name[0]) {
+                std::snprintf(
+                    info_row, sizeof(info_row),
+                    "Playing: %.70s", playing_name);
+                draw_menu_message(first_row + visible + 4, info_row);
+            } else {
+                draw_menu_message(first_row + visible + 4, "");
+            }
+            draw_menu_message(first_row + visible + 5, "");
+            draw_menu_message(first_row + visible + 6, "");
+        }
+
+        const int key = platform::get_char();
+        if (key == kKeyLeft || key == kKeyRight) {
+            if (playing_name[0]) {
+                platform::audio_stop();
+                playing_name[0] = '\0';
+            }
+            mode = mode == Mode::Programs ? Mode::Directory : Mode::Programs;
+            scroll = menu_scroll::State{};
+            info_visible = false;
+            scan_requested = true;
+            continue;
+        }
+        if (handle_menu_scroll_key(
+                key, scroll, static_cast<int>(count), visible)) {
+            info_visible = false;
+            continue;
+        }
+        if (key == 'f' || key == 'F') {
+            if (playing_name[0]) {
+                platform::audio_stop();
+                playing_name[0] = '\0';
+            }
+            info_visible = false;
+            scan_requested = true;
+            continue;
+        }
+        if (key == 3 && playing_name[0]) {
+            platform::audio_stop();
+            playing_name[0] = '\0';
+            info_visible = false;
+            continue;
+        }
+        if (key == kKeyEscape || key == 0x1b) {
+            if (playing_name[0]) platform::audio_stop();
+            return false;
+        }
+        if (count == 0) continue;
+
+        const char* selected_name = mode == Mode::Programs
+            ? menu_file_scratch.names[scroll.selected]
+            : menu_file_scratch.entries[scroll.selected].name;
+        const bool selected_directory = mode == Mode::Directory &&
+            menu_file_scratch.entries[scroll.selected].directory;
+
+        if ((key == 'p' || key == 'P') &&
+            mode == Mode::Directory && !selected_directory) {
+            if (!audio::playable_audio_filename(selected_name)) {
+                show_error("AUDIO", "SELECT A WAV OR MP3 FILE");
+                continue;
+            }
+            if (playing_name[0] && ci_equal(playing_name, selected_name)) {
+                platform::audio_stop();
+                playing_name[0] = '\0';
+            } else if (platform::audio_wavplay(selected_name)) {
+                std::snprintf(
+                    playing_name, sizeof(playing_name), "%s", selected_name);
+            } else {
+                show_error("AUDIO", platform::audio_last_error());
+            }
+            info_visible = false;
+            continue;
+        }
+
+        if (key_is_enter(key) && mode == Mode::Programs) {
+            char filename[kMenuFilenameSize] = {};
+            std::snprintf(filename, sizeof(filename), "%s", selected_name);
+            leave_menu_screen();
+            load_named_program(filename, false);
+            return true;
+        }
+        if ((key == 'r' || key == 'R') && mode == Mode::Programs) {
+            char filename[kMenuFilenameSize] = {};
+            std::snprintf(filename, sizeof(filename), "%s", selected_name);
+            leave_menu_screen();
+            load_named_program(filename, true);
+            return true;
+        }
+        if ((key == 'e' || key == 'E') && mode == Mode::Programs) {
+            char filename[kMenuFilenameSize] = {};
+            std::snprintf(filename, sizeof(filename), "%s", selected_name);
+            if (!storage::load_program(filename, program_)) {
+                show_error("EDIT", storage::last_error());
+                continue;
+            }
+            set_current_filename(program_.filename(), false);
+            leave_menu_screen();
+            open_full_screen_editor();
+            return true;
+        }
+
+        if (key == 'i' || key == 'I') {
+            if (mode == Mode::Directory) {
+                inline_info = menu_file_scratch.entries[scroll.selected];
+            } else if (!storage::root_entry_info(
+                           selected_name, inline_info)) {
+                show_error("FILE INFO", storage::last_error());
+                info_visible = false;
+                continue;
+            }
+            info_visible = true;
+            continue;
+        }
+
+        if (key == 'n' || key == 'N') {
+            if (playing_name[0]) {
+                platform::audio_stop();
+                playing_name[0] = '\0';
+            }
+            if (selected_directory) {
+                show_error("RENAME", "DIRECTORY RENAME NOT AVAILABLE");
+                continue;
+            }
+            char prompt[128] = {};
+            std::snprintf(
+                prompt, sizeof(prompt), "RENAME\r\n\r\nOld: %s\r\nNew: ",
+                selected_name);
+            char new_name[kMenuFilenameSize] = {};
+            if (!prompt_text(
+                    prompt, new_name, sizeof(new_name), selected_name)) {
+                continue;
+            }
+            char normalized_name[kMenuFilenameSize] = {};
+            const char* rename_target = new_name;
+            if (mode == Mode::Programs) {
+                if (!file_management::normalize_program_name(
+                        new_name, normalized_name, sizeof(normalized_name))) {
+                    show_error("RENAME FAILED", "BAD FILENAME");
+                    continue;
                 }
+                rename_target = normalized_name;
+            }
+            const bool renaming_current =
+                program_files::equal(selected_name, current_filename_);
+            if (!storage::rename_root_file(
+                    selected_name, rename_target, current_filename_)) {
+                show_error("RENAME FAILED", storage::last_error());
+            } else if (renaming_current &&
+                       !program_.note_source_renamed(
+                           selected_name, rename_target)) {
+                char session_error[96] = {};
+                std::snprintf(
+                    session_error, sizeof(session_error), "%s",
+                    program_.error());
+                if (!storage::rename_root_file(
+                        rename_target, selected_name,
+                        selected_name, true)) {
+                    show_error(
+                        "RENAME RECOVERY FAILED",
+                        "CHECK SOURCE FILE AND SESSION");
+                } else {
+                    show_error("RENAME FAILED", session_error);
+                }
+            } else if (renaming_current) {
+                set_current_filename(
+                    program_.filename(), program_.is_dirty());
+            }
+            info_visible = false;
+            scan_requested = true;
+            continue;
+        }
+
+        if (key == kKeyDelete) {
+            if (playing_name[0]) {
+                platform::audio_stop();
+                playing_name[0] = '\0';
+            }
+            if (selected_directory) {
+                show_error("DELETE", "DIRECTORY DELETE NOT AVAILABLE");
+                continue;
+            }
+            char filename[kMenuFilenameSize] = {};
+            std::snprintf(filename, sizeof(filename), "%s", selected_name);
+            if (!confirm_delete(filename)) continue;
+            if (!storage::delete_root_file(filename, current_filename_)) {
+                show_error("DELETE FAILED", storage::last_error());
+            }
+            info_visible = false;
+            scan_requested = true;
+            continue;
+        }
+
+        const int quick = mode == Mode::Programs
+            ? function_key_index(key) : -1;
+        if (quick >= 0) {
+            bool run = true;
+            if (choose_quick_mode(run)) {
+                assign_quick_key(quick, selected_name, run);
             }
         }
     }
@@ -2397,20 +2788,70 @@ void Repl::menu_firmware() {
 }
 
 void Repl::menu_power() {
-    static const std::uint16_t profiles[] = {150, 100, 75};
+    static const std::uint16_t profiles[] = {200, 150, 100, 75};
     static const char* names[] = {
+        "EXP     200 MHz  [EXPERIMENTAL]",
         "FULL    150 MHz",
         "NORMAL  100 MHz",
         "ECO      75 MHz"
     };
 
-    int selected = 0;
-    for (int i = 0; i < 3; ++i) {
-        if (settings_.cpu_mhz == profiles[i]) {
+    int selected = 1;
+    const auto current_mhz =
+        platform::system_clock_hz() / 1000000u;
+    for (int i = 0; i < 4; ++i) {
+        if (current_mhz == profiles[i]) {
             selected = i;
             break;
         }
     }
+
+    const auto apply_cpu_profile = [&](std::uint16_t requested) {
+        const bool pll_transition =
+            (requested == 200u &&
+             platform::full_cpu_clock_hz() < 200000000u) ||
+            (requested != 200u &&
+             platform::full_cpu_clock_hz() > 150000000u);
+        if (!pll_transition || !wireless::initialized()) {
+            return platform::set_cpu_clock_mhz(requested);
+        }
+
+        // Reprogramming PLL_SYS while CYW43 PIO is live is unsafe. Stop and
+        // restore the affected services internally so the user does not need
+        // to reboot or manually disable the board LED and radios.
+        const bool wifi_initialized = network::initialized();
+        const bool wifi_connected = network::connected();
+        const bool bluetooth_enabled = bluetooth_manager::enabled();
+        const bool file_server_running = network::file_server_running();
+        const auto led_mode = wireless::board_led_mode();
+
+        if (bluetooth_enabled) bluetooth_manager::disable();
+        if (wifi_initialized) network::shutdown();
+        wireless::deinit();
+
+        const bool changed = platform::set_cpu_clock_mhz(requested);
+
+        bool wifi_restored = true;
+        if (wifi_initialized) {
+            wifi_restored = network::init();
+            if (wifi_restored && wifi_connected) {
+                wifi_restored = network::connect(
+                    settings_.wifi_ssid, settings_.wifi_password);
+                settings_.wifi_enabled = wifi_restored;
+            }
+        }
+        if (bluetooth_enabled) {
+            (void)bluetooth_manager::enable();
+        }
+        if (led_mode != system_controls::BoardLedMode::Off) {
+            (void)wireless::set_board_led_mode(led_mode);
+        }
+        if (file_server_running && wifi_restored &&
+            network::connected()) {
+            (void)network::file_server_start();
+        }
+        return changed;
+    };
 
     while (true) {
         draw_menu_header(
@@ -2432,54 +2873,56 @@ void Repl::menu_power() {
         );
         draw_menu_message(first_row, row);
 
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 4; ++i) {
             char option[64] = {};
             std::snprintf(
                 option,
                 sizeof(option),
                 "%s%s",
                 names[i],
-                settings_.cpu_mhz == profiles[i] ? "  *" : ""
+                (platform::system_clock_hz() / 1000000u) == profiles[i]
+                    ? "  *" : ""
             );
-            draw_menu_option(
-                first_row + 2 + i,
-                option,
-                selected == i
-            );
+            draw_menu_option(first_row + 2 + i, option, selected == i);
         }
 
-        draw_menu_option(
-            first_row + 6,
-            "STANDBY NOW",
-            selected == 3
-        );
-
+        draw_menu_option(first_row + 7, "STANDBY NOW", selected == 4);
         draw_menu_message(
             first_row + 10,
-            "CPU profile changes clk_sys only; peripheral clocks stay stable."
+            "200 MHz is session-only and applies immediately."
         );
         draw_menu_message(
             first_row + 11,
-            "STANDBY preserves RAM and uses RP2350 low-power sleep."
+            "Wi-Fi/Bluetooth are restarted automatically if needed."
         );
 
         const int key = platform::get_char();
         if (key == kKeyUp && selected > 0) {
             --selected;
-        } else if (key == kKeyDown && selected < 3) {
+        } else if (key == kKeyDown && selected < 4) {
             ++selected;
         } else if (key == kKeyEscape || key == 0x1b) {
             return;
         } else if (key_is_enter(key)) {
-            if (selected < 3) {
-                if (platform::set_cpu_clock_mhz(profiles[selected])) {
-                    settings_.cpu_mhz = profiles[selected];
+            if (selected < 4) {
+                const std::uint16_t requested = profiles[selected];
+                if (usb_msc::active()) {
+                    draw_menu_message(
+                        first_row + 13,
+                        "EJECT USB STORAGE BEFORE CPU CHANGE"
+                    );
+                    platform::sleep_millis(1000);
+                    continue;
+                }
+
+                if (apply_cpu_profile(requested)) {
+                    settings_.cpu_mhz = requested;
                 } else {
                     draw_menu_message(
                         first_row + 13,
                         "CPU CLOCK CHANGE FAILED"
                     );
-                    platform::sleep_millis(700);
+                    platform::sleep_millis(900);
                 }
             } else {
                 if (!storage::firmware_owns_card()) {
@@ -2543,7 +2986,8 @@ void Repl::menu_console() {
 bool Repl::prompt_text(
     const char* prompt,
     char* output,
-    std::size_t capacity
+    std::size_t capacity,
+    const char* initial
 ) {
     if (!output || capacity == 0) return false;
 
@@ -2561,7 +3005,8 @@ bool Repl::prompt_text(
     // selected BASIC console theme. Restore the console colors afterwards.
     platform::set_text_color(0xffffff, 0x000000);
     platform::put_string(prompt ? prompt : "");
-    const std::size_t length = LineEditor::read(output, capacity);
+    const std::size_t length = LineEditor::read(
+        output, capacity, nullptr, initial);
     platform::set_text_color(
         settings_.console_foreground,
         settings_.console_background
@@ -2596,26 +3041,22 @@ bool Repl::pick_wifi_network(
         return false;
     }
 
-    int selected = 0;
     constexpr int visible = 18;
+    menu_scroll::State scroll;
+    menu_scroll::normalize(scroll, count, visible);
 
     while (true) {
         draw_menu_header(
             "SELECT WIRELESS NETWORK",
-            "UP/DOWN SELECT  ENTER USE  ESC BACK"
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER USE  ESC"
         );
 
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        const int first_row = top + 3;
-        int first = selected - visible + 1;
-        if (first < 0) first = 0;
-        if (first + visible > count) {
-            first = count - visible;
-            if (first < 0) first = 0;
-        }
+        const int first_row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        menu_scroll::normalize(scroll, count, visible);
 
         for (int row_index = 0; row_index < visible; ++row_index) {
-            const int i = first + row_index;
+            const int i = scroll.offset + row_index;
             char row[96] = {};
             if (i < count) {
                 std::snprintf(
@@ -2630,30 +3071,35 @@ bool Repl::pick_wifi_network(
             draw_menu_option(
                 first_row + row_index,
                 row,
-                i == selected
+                i == scroll.selected
             );
         }
 
-        draw_menu_message(
-            first_row + visible + 1,
-            "* = secured network"
+        char position[64] = {};
+        std::snprintf(
+            position, sizeof(position),
+            "* = secured   %d-%d / %d",
+            scroll.offset + 1,
+            menu_scroll::last_exclusive(scroll, count, visible),
+            count
         );
+        draw_menu_message(first_row + visible + 1, position);
 
         const int key = platform::get_char();
-        if (key == kKeyUp && selected > 0) {
-            --selected;
-        } else if (key == kKeyDown && selected + 1 < count) {
-            ++selected;
-        } else if (key == kKeyEscape || key == 0x1b) {
+        if (handle_menu_scroll_key(key, scroll, count, visible)) {
+            continue;
+        }
+        if (key == kKeyEscape || key == 0x1b) {
             return false;
-        } else if (key_is_enter(key)) {
+        }
+        if (key_is_enter(key)) {
             std::snprintf(
                 ssid,
                 capacity,
                 "%s",
-                access_points[selected].ssid
+                access_points[scroll.selected].ssid
             );
-            secure = access_points[selected].secure;
+            secure = access_points[scroll.selected].secure;
             return true;
         }
     }
@@ -3062,8 +3508,114 @@ void Repl::menu_file_server() {
 }
 
 void Repl::menu_datetime() {
- int selected=0; while(true){platform::DateTime dt;platform::get_datetime(dt);draw_menu_header("RTC SETTINGS","UP/DOWN SELECT  ENTER CHANGE  ESC BACK");const int first=(settings_.status_enabled?console_layout::status_rows:0)+3;char row[80]={};std::snprintf(row,sizeof(row),"Source        %s",platform::rtc_source_name());draw_menu_option(first,row,selected==0);draw_menu_message(first+1,"Type          PCF8563");std::snprintf(row,sizeof(row),"Address       0x%02X (target)",static_cast<unsigned>(platform::rtc_address()));draw_menu_option(first+2,row,selected==1);draw_menu_message(first+4,"External SDA  GP4");draw_menu_message(first+5,"External SCL  GP5");draw_menu_message(first+6,"I2C Speed     100 kHz");draw_menu_option(first+8,"Probe RTC",selected==2);draw_menu_option(first+9,"Set date & time",selected==3);draw_menu_option(first+10,"Back",selected==4);const int key=platform::get_char();if(key==kKeyUp&&selected>0){--selected;continue;}if(key==kKeyDown&&selected<4){++selected;continue;}if(key==kKeyEscape||key==0x1b||(key_is_enter(key)&&selected==4))return;if(!key_is_enter(key))continue;if(selected==0){const int current=platform::rtc_source()==platform::RtcSource::Auto?0:platform::rtc_source()==platform::RtcSource::External?1:platform::rtc_source()==platform::RtcSource::Internal?2:3;platform::set_rtc_source(static_cast<platform::RtcSource>((current+1)%4));save_settings();}else if(selected==1){char input[16]={};if(prompt_text("RTC target address (08-77 hex): ",input,sizeof(input))){char* end=nullptr;const long address=std::strtol(input,&end,16);if(!platform::set_rtc_address(static_cast<std::uint8_t>(address)))platform::put_string("BAD I2C ADDRESS\r\n");else save_settings();}}else if(selected==2){const bool found=platform::probe_rtc();draw_menu_header("RTC PROBE","PRESS ANY KEY");if(found){std::snprintf(row,sizeof(row),"PCF8563 FOUND %s 0x%02X",platform::rtc_location(),static_cast<unsigned>(platform::rtc_address()));draw_menu_message(first+4,row);}else draw_menu_message(first+4,"RTC NOT FOUND");platform::get_char();}else {char input[48]={};if(prompt_text("SET YYYYMMDDHHMMSS: ",input,sizeof(input))){platform::DateTime value;if(parse_datetime_value(input,value)&&platform::set_datetime(value))platform::put_string("CLOCK UPDATED\r\n");else platform::put_string("INVALID DATE/TIME\r\n");}}}
+    int selected = 0;
+    while (true) {
+        platform::DateTime dt;
+        platform::get_datetime(dt);
+
+        draw_menu_header(
+            "RTC SETTINGS",
+            "UP/DOWN SELECT  ENTER CHANGE  ESC BACK"
+        );
+        const int first =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        char row[80] = {};
+
+        std::snprintf(
+            row, sizeof(row), "Source        %s",
+            platform::rtc_source_name());
+        draw_menu_option(first, row, selected == 0);
+
+        std::snprintf(
+            row, sizeof(row), "Type          %s",
+            platform::rtc_device_name());
+        draw_menu_message(first + 1, row);
+
+        std::snprintf(
+            row, sizeof(row), "Target        0x%02X",
+            static_cast<unsigned>(platform::rtc_address()));
+        draw_menu_option(first + 2, row, selected == 1);
+
+        std::snprintf(
+            row, sizeof(row), "Active        %s 0x%02X",
+            platform::rtc_location(),
+            static_cast<unsigned>(platform::rtc_active_address()));
+        draw_menu_message(first + 3, row);
+
+        draw_menu_message(first + 5, "External SDA  GP4");
+        draw_menu_message(first + 6, "External SCL  GP5");
+        draw_menu_message(first + 7, "I2C Speed     100 kHz");
+        draw_menu_option(first + 9, "Probe RTC", selected == 2);
+        draw_menu_option(first + 10, "Set date & time", selected == 3);
+        draw_menu_option(first + 11, "Back", selected == 4);
+
+        const int key = platform::get_char();
+        if (key == kKeyUp && selected > 0) {
+            --selected;
+            continue;
+        }
+        if (key == kKeyDown && selected < 4) {
+            ++selected;
+            continue;
+        }
+        if (key == kKeyEscape || key == 0x1b ||
+            (key_is_enter(key) && selected == 4)) {
+            return;
+        }
+        if (!key_is_enter(key)) continue;
+
+        if (selected == 0) {
+            const int current =
+                platform::rtc_source() == platform::RtcSource::Auto ? 0 :
+                platform::rtc_source() == platform::RtcSource::External ? 1 :
+                platform::rtc_source() == platform::RtcSource::Internal ? 2 : 3;
+            platform::set_rtc_source(
+                static_cast<platform::RtcSource>((current + 1) % 4));
+            save_settings();
+        } else if (selected == 1) {
+            char input[16] = {};
+            if (prompt_text(
+                    "RTC target address (08-77 hex): ",
+                    input, sizeof(input))) {
+                char* parse_end = nullptr;
+                const long address = std::strtol(input, &parse_end, 16);
+                if (!platform::set_rtc_address(
+                        static_cast<std::uint8_t>(address))) {
+                    platform::put_string("BAD I2C ADDRESS\r\n");
+                } else {
+                    save_settings();
+                }
+            }
+        } else if (selected == 2) {
+            const bool found = platform::probe_rtc();
+            draw_menu_header("RTC PROBE", "PRESS ANY KEY");
+            if (found) {
+                std::snprintf(
+                    row, sizeof(row), "%s FOUND %s 0x%02X",
+                    platform::rtc_device_name(),
+                    platform::rtc_location(),
+                    static_cast<unsigned>(platform::rtc_active_address()));
+                draw_menu_message(first + 4, row);
+            } else {
+                draw_menu_message(first + 4, "RTC NOT FOUND");
+            }
+            platform::get_char();
+        } else {
+            char input[48] = {};
+            if (prompt_text(
+                    "SET YYYYMMDDHHMMSS: ", input, sizeof(input))) {
+                platform::DateTime value;
+                if (parse_datetime_value(input, value) &&
+                    platform::set_datetime(value)) {
+                    platform::put_string("CLOCK UPDATED\r\n");
+                } else {
+                    platform::put_string("INVALID DATE/TIME\r\n");
+                }
+            }
+        }
+    }
 }
+
 void Repl::menu_audio() {
     int selected = 0;
     while (true) {
@@ -3074,28 +3626,46 @@ void Repl::menu_audio() {
         const int first =
             (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
         char row[64] = {};
-        std::snprintf(
-            row, sizeof(row), "Volume       %u%%",
-            static_cast<unsigned>(settings_.audio_volume)
-        );
+        if (settings_.audio_volume == 0) {
+            std::snprintf(row, sizeof(row), "Master       OFF");
+        } else {
+            std::snprintf(
+                row, sizeof(row), "Master       %u%%",
+                static_cast<unsigned>(settings_.audio_volume)
+            );
+        }
         draw_menu_option(first, row, selected == 0);
+        std::snprintf(
+            row, sizeof(row), "WAV/MP3      %u%%",
+            static_cast<unsigned>(settings_.wav_volume)
+        );
+        draw_menu_option(first + 1, row, selected == 1);
+        if (settings_.play_volume == 0) {
+            std::snprintf(row, sizeof(row), "PLAY         OFF");
+        } else {
+            std::snprintf(
+                row, sizeof(row), "PLAY         %u%%",
+                static_cast<unsigned>(settings_.play_volume)
+            );
+        }
+        draw_menu_option(first + 2, row, selected == 2);
         std::snprintf(
             row, sizeof(row), "Startup WAV  %s",
             settings_.startup_wav ? "ON" : "OFF"
         );
-        draw_menu_option(first + 1, row, selected == 1);
+        draw_menu_option(first + 3, row, selected == 3);
         std::snprintf(row, sizeof(row), "Key Click    %s",
                       audio::key_click_name(settings_.key_click));
-        draw_menu_option(first + 2, row, selected == 2);
-        draw_menu_option(first + 4, "Back", selected == 3);
+        draw_menu_option(first + 4, row, selected == 4);
+        draw_menu_option(first + 6, "Back", selected == 5);
 
         const int key = platform::get_char();
         if (key == kKeyUp && selected > 0) {
             --selected;
-        } else if (key == kKeyDown && selected < 3) {
+        } else if (key == kKeyDown && selected < 5) {
             ++selected;
         } else if (key == kKeyEscape || key == 0x1b ||
-                   (key_is_enter(key) && selected == 3)) {
+                   (key_is_enter(key) && selected == 5)) {
             return;
         } else if (key_is_enter(key) && selected == 0) {
             settings_.audio_volume =
@@ -3106,9 +3676,25 @@ void Repl::menu_audio() {
             platform::audio_set_volume(settings_.audio_volume);
             save_settings();
         } else if (key_is_enter(key) && selected == 1) {
-            settings_.startup_wav = !settings_.startup_wav;
+            settings_.wav_volume =
+                static_cast<std::uint8_t>(
+                    settings_.wav_volume >= 100
+                        ? 10 : settings_.wav_volume + 10
+                );
+            platform::audio_set_wav_volume(settings_.wav_volume);
             save_settings();
         } else if (key_is_enter(key) && selected == 2) {
+            settings_.play_volume =
+                static_cast<std::uint8_t>(
+                    settings_.play_volume >= 100
+                        ? 0 : settings_.play_volume + 10
+                );
+            platform::audio_set_play_volume(settings_.play_volume);
+            save_settings();
+        } else if (key_is_enter(key) && selected == 3) {
+            settings_.startup_wav = !settings_.startup_wav;
+            save_settings();
+        } else if (key_is_enter(key) && selected == 4) {
             settings_.key_click = static_cast<audio::KeyClickMode>(
                 (static_cast<unsigned>(settings_.key_click) + 1u) % 4u);
             platform::audio_set_key_click(settings_.key_click);
@@ -3247,6 +3833,68 @@ void Repl::menu_sd() {
     }
 }
 
+
+
+void Repl::menu_board_led() {
+    using system_controls::BoardLedMode;
+    static const BoardLedMode modes[] = {
+        BoardLedMode::Off,
+        BoardLedMode::On,
+        BoardLedMode::Heartbeat
+    };
+    static const char* names[] = {"OFF", "ON", "HEARTBEAT"};
+
+    int selected = static_cast<int>(settings_.board_led);
+    while (true) {
+        draw_menu_header(
+            "BOARD LED",
+            "UP/DOWN SELECT  ENTER APPLY  ESC BACK"
+        );
+        const int top =
+            settings_.status_enabled ? console_layout::status_rows : 0;
+        const int first_row = top + 4;
+
+        for (int i = 0; i < 3; ++i) {
+            char option[48] = {};
+            std::snprintf(
+                option,
+                sizeof(option),
+                "%-12s%s",
+                names[i],
+                settings_.board_led == modes[i] ? "*" : ""
+            );
+            draw_menu_option(first_row + i, option, selected == i);
+        }
+        draw_menu_message(
+            first_row + 6,
+            "Pico 2 W LED uses the shared CYW43 device."
+        );
+        draw_menu_message(
+            first_row + 7,
+            "HEARTBEAT: 120 ms pulse every second."
+        );
+
+        const int key = platform::get_char();
+        if (key == kKeyUp && selected > 0) {
+            --selected;
+        } else if (key == kKeyDown && selected < 2) {
+            ++selected;
+        } else if (key == kKeyEscape || key == 0x1b) {
+            return;
+        } else if (key_is_enter(key)) {
+            if (wireless::set_board_led_mode(modes[selected])) {
+                settings_.board_led = modes[selected];
+                // Persist immediately: Firmware -> Reboot can leave the
+                // Control Center without reaching its normal exit save.
+                save_settings();
+            } else {
+                draw_menu_message(first_row + 10, wireless::last_error());
+                platform::sleep_millis(900);
+            }
+        }
+    }
+}
+
 void Repl::menu_system_info() {
     while (true) {
         draw_menu_header(
@@ -3263,6 +3911,39 @@ void Repl::menu_system_info() {
             sizeof(text),
             "Cala's Pokecom BASIC  v%s",
             RMB_VERSION
+        );
+        draw_menu_message(row++, text);
+
+        const auto& psram_info = psram::info();
+        if (psram_info.available) {
+            std::snprintf(
+                text,
+                sizeof(text),
+                "PicoCalc PSRAM  %lu KiB / PIO1 SM%d / %lu MHz",
+                static_cast<unsigned long>(psram_info.size_bytes / 1024u),
+                psram_info.pio_state_machine,
+                static_cast<unsigned long>(
+                    psram_info.bus_clock_hz / 1000000u)
+            );
+        } else {
+            std::snprintf(
+                text,
+                sizeof(text),
+                "PicoCalc PSRAM  NOT AVAILABLE (%s)",
+                psram_info.error
+            );
+        }
+        draw_menu_message(row++, text);
+        const char* psram_owner = psram::owner() == psram::Client::EditorHistory
+            ? "EDITOR HISTORY"
+            : psram::owner() == psram::Client::Diagnostic
+                ? "DIAGNOSTIC" : "IDLE";
+        std::snprintf(
+            text,
+            sizeof(text),
+            "PSRAM runtime   %lu KiB / %s",
+            static_cast<unsigned long>(psram::used_bytes() / 1024u),
+            psram_owner
         );
         draw_menu_message(row++, text);
 
@@ -3398,6 +4079,209 @@ void Repl::menu_system_info() {
             key == kKeyHome) {
             return;
         }
+    }
+}
+
+void Repl::menu_psram_diagnostics() {
+    static const char* items[] = {
+        "Quick test (1 MiB)",
+        "Full detected capacity",
+        "Full stress (3 passes)",
+        "Re-run hardware probe",
+        "Back"
+    };
+    int selected = 0;
+    while (true) {
+        draw_menu_header(
+            "PICOCALC PSRAM DIAGNOSTICS",
+            "UP/DOWN SELECT  ENTER RUN  ESC BACK"
+        );
+        const int top = settings_.status_enabled
+            ? console_layout::status_rows : 0;
+        const int first_row = top + 4;
+        const auto& device = psram::info();
+        char text[80] = {};
+        if (device.available) {
+            std::snprintf(
+                text, sizeof(text),
+                "%lu KiB, profile %d, ID %02X %02X %02X, %lu MHz",
+                static_cast<unsigned long>(device.size_bytes / 1024u),
+                device.selected_probe_attempt + 1,
+                device.manufacturer_id,
+                device.known_good_die,
+                device.electronic_id,
+                static_cast<unsigned long>(device.bus_clock_hz / 1000000u));
+        } else {
+            std::snprintf(text, sizeof(text), "Unavailable: %s", device.error);
+        }
+        draw_menu_message(first_row, text);
+        draw_menu_message(
+            first_row + 1, "Probe: F=falling/fudge, N=normal, read=0B/03");
+        for (std::size_t i = 0; i < psram::kMaximumProbeAttempts; ++i) {
+            if (i >= device.probe_attempt_count) {
+                draw_menu_message(
+                    first_row + 2 + static_cast<int>(i), "");
+                continue;
+            }
+            const auto& attempt = device.probe_attempts[i];
+            std::snprintf(
+                text, sizeof(text),
+                "%c%lu %2luM %c %s I:%02X%02X%02X R:%02X%02X%02X%02X %s",
+                device.selected_probe_attempt == static_cast<int>(i) ? '*' : ' ',
+                static_cast<unsigned long>(i + 1),
+                static_cast<unsigned long>(attempt.bus_clock_hz / 1000000u),
+                attempt.falling_edge_fudge ? 'F' : 'N',
+                attempt.fast_read ? "0B" : "03",
+                attempt.manufacturer_id,
+                attempt.known_good_die,
+                attempt.electronic_id,
+                attempt.readback[0],
+                attempt.readback[1],
+                attempt.readback[2],
+                attempt.readback[3],
+                attempt.passed ? "PASS" : "FAIL");
+            draw_menu_message(
+                first_row + 2 + static_cast<int>(i), text);
+        }
+        const int option_row = first_row + 11;
+        for (int i = 0; i < 5; ++i)
+            draw_menu_option(option_row + i, items[i], selected == i);
+        draw_menu_message(
+            option_row + 6,
+            "Probe touches only the final 16 PSRAM bytes and restores them."
+        );
+
+        const int key = platform::get_char();
+        if (key == kKeyUp && selected > 0) { --selected; continue; }
+        if (key == kKeyDown && selected < 4) { ++selected; continue; }
+        if (key == kKeyEscape || key == 0x1b ||
+            (key_is_enter(key) && selected == 4)) return;
+        if (!key_is_enter(key)) continue;
+        if (selected == 3) {
+            draw_menu_message(option_row + 7, "Probing PicoCalc PSRAM...");
+            (void)psram::reprobe();
+            continue;
+        }
+        if (!device.available) {
+            draw_menu_message(option_row + 7, device.error);
+            platform::get_char();
+            continue;
+        }
+
+        draw_menu_header(
+            selected == 0 ? "RUN QUICK PSRAM TEST?" :
+            selected == 1 ? "RUN FULL PSRAM TEST?" :
+                            "RUN 3-PASS PSRAM STRESS?",
+            "ENTER CONFIRM  ESC CANCEL"
+        );
+        draw_menu_message(
+            first_row + 1,
+            "PSRAM contents will be overwritten with test patterns."
+        );
+        draw_menu_message(
+            first_row + 2,
+            selected == 0
+                ? "Range: first 1 MiB."
+                : "Range: all detected PSRAM; this can take a while."
+        );
+        if (!key_is_enter(platform::get_char())) continue;
+
+        platform::clear_lcd_color(0x000000);
+        platform::draw_text_row(
+            0, "PSRAM DIAGNOSTIC RUNNING", 0xffffff, 0x203060);
+        auto progress = [](
+            const char* stage,
+            std::uint32_t completed,
+            std::uint32_t total,
+            void*
+        ) {
+            char line[80] = {};
+            const unsigned percent = total == 0 ? 0 :
+                static_cast<unsigned>((
+                    static_cast<std::uint64_t>(completed) * 100u) / total);
+            std::snprintf(
+                line, sizeof(line), "%-20s %3u%%", stage, percent);
+            platform::draw_text_row(5, line, 0xffff80, 0x000000);
+        };
+        psram::DiagnosticResult result;
+        const std::uint32_t requested = selected == 0
+            ? 1024u * 1024u : device.size_bytes;
+        const int requested_passes = selected == 2 ? 3 : 1;
+        int completed_passes = 0;
+        for (; completed_passes < requested_passes; ++completed_passes) {
+            if (!psram::run_diagnostic(
+                    requested, result, progress, nullptr)) break;
+        }
+
+        platform::clear_lcd_color(0x000000);
+        platform::draw_text_row(
+            0,
+            result.passed ? "PSRAM DIAGNOSTIC: PASS"
+                          : "PSRAM DIAGNOSTIC: FAIL",
+            result.passed ? 0x80ff80 : 0xff8080,
+            0x203060);
+        std::snprintf(
+            text, sizeof(text), "Range           %lu KiB",
+            static_cast<unsigned long>(result.tested_bytes / 1024u));
+        platform::draw_text_row(4, text, 0xffffff, 0x000000);
+        std::snprintf(
+            text, sizeof(text), "Passes          %d / %d",
+            completed_passes, requested_passes);
+        platform::draw_text_row(5, text, 0xffffff, 0x000000);
+        std::snprintf(
+            text, sizeof(text), "Write           %lu KiB/s (%lu us)",
+            static_cast<unsigned long>(result.write_bytes_per_second / 1024u),
+            static_cast<unsigned long>(result.write_microseconds));
+        platform::draw_text_row(6, text, 0xffffff, 0x000000);
+        std::snprintf(
+            text, sizeof(text), "Read            %lu KiB/s (%lu us)",
+            static_cast<unsigned long>(result.read_bytes_per_second / 1024u),
+            static_cast<unsigned long>(result.read_microseconds));
+        platform::draw_text_row(7, text, 0xffffff, 0x000000);
+        std::snprintf(
+            text, sizeof(text), "CRC32           %08lX / %08lX",
+            static_cast<unsigned long>(result.expected_crc32),
+            static_cast<unsigned long>(result.actual_crc32));
+        platform::draw_text_row(8, text, 0xffffff, 0x000000);
+        std::snprintf(
+            text, sizeof(text), "Errors          %lu  Stage: %s",
+            static_cast<unsigned long>(result.error_count),
+            result.failed_stage);
+        platform::draw_text_row(9, text, 0xffffff, 0x000000);
+        if (!result.passed && result.error_count != 0) {
+            std::snprintf(
+                text, sizeof(text), "First failure   0x%06lX",
+                static_cast<unsigned long>(result.first_failure));
+            platform::draw_text_row(10, text, 0xffffff, 0x000000);
+        }
+        platform::draw_text_row(
+            11, "Sequential benchmark (KiB/s):", 0xa0a0a0, 0x000000);
+        for (std::size_t i = 0; i < result.benchmark_count; ++i) {
+            const auto& sample = result.benchmarks[i];
+            std::snprintf(
+                text, sizeof(text), "%4lu KiB  W %7lu  R %7lu",
+                static_cast<unsigned long>(sample.bytes / 1024u),
+                static_cast<unsigned long>(
+                    sample.sequential_write_bytes_per_second / 1024u),
+                static_cast<unsigned long>(
+                    sample.sequential_read_bytes_per_second / 1024u));
+            platform::draw_text_row(
+                12 + static_cast<int>(i), text, 0xffffff, 0x000000);
+        }
+        if (result.benchmark_count != 0) {
+            const auto& sample =
+                result.benchmarks[result.benchmark_count - 1];
+            std::snprintf(
+                text, sizeof(text), "Random 4B ops/s  W %lu  R %lu",
+                static_cast<unsigned long>(
+                    sample.random_write_operations_per_second),
+                static_cast<unsigned long>(
+                    sample.random_read_operations_per_second));
+            platform::draw_text_row(18, text, 0xffffff, 0x000000);
+        }
+        platform::draw_text_row(
+            21, "PRESS ANY KEY", 0xa0a0a0, 0x000000);
+        platform::get_char();
     }
 }
 
@@ -3556,43 +4440,9 @@ void Repl::menu_save_program(bool save_as) {
 
 void Repl::service_background() {
     platform::audio_service();
+    wireless::service_board_led();
     network::file_server_poll();
-    bluetooth_serial::service();
-
-    const bool console_link=bluetooth_serial::console_enabled()&&bluetooth_serial::connected()&&!bluetooth_serial::test_terminal_active();
-    if(console_link&&!bluetooth_console_link_active_)bluetooth_serial::write_console_text("\r\nREADY\r\nBASIC> \x1b[s");
-    bluetooth_console_link_active_=console_link;
-
-    // Stage 1 terminal behavior is deliberately outside the transport core.
-    if (bluetooth_test_active_) {
-        if (!bluetooth_serial::connected()) {
-            bluetooth_test_banner_sent_ = false;
-        } else {
-            static constexpr char banner[] =
-                "CPB Bluetooth SPP Stage 1\r\n";
-            if (!bluetooth_test_banner_sent_ &&
-                bluetooth_serial::write_text(banner)) {
-                bluetooth_test_banner_sent_ = true;
-            }
-            for (int drained = 0; drained < 64; ++drained) {
-                const int value = bluetooth_serial::read_test();
-                if (value < 0) break;
-                ++bluetooth_test_rx_count_;
-                if (value >= 32 && value <= 126) {
-                    std::snprintf(bluetooth_test_last_rx_, sizeof(bluetooth_test_last_rx_),
-                                  "'%c' 0x%02X", value, static_cast<unsigned>(value));
-                } else {
-                    std::snprintf(bluetooth_test_last_rx_, sizeof(bluetooth_test_last_rx_),
-                                  "0x%02X", static_cast<unsigned>(value));
-                }
-                if (bluetooth_test_echo_) {
-                    const std::uint8_t byte = static_cast<std::uint8_t>(value);
-                    bluetooth_serial::write(&byte, 1);
-                }
-            }
-            bluetooth_serial::service();
-        }
-    }
+    bluetooth_manager::service();
 
     storage::poll();
 
@@ -3851,96 +4701,901 @@ void Repl::menu_usb_storage() {
 }
 
 
-void Repl::menu_bluetooth_test() {
-    if (!bluetooth_serial::enabled()) {
-        draw_menu_header("BLUETOOTH TEST TERMINAL", "PRESS ANY KEY");
-        const int row = (settings_.status_enabled ? console_layout::status_rows : 0) + 8;
-        draw_menu_message(row, "ENABLE BLUETOOTH FIRST");
-        platform::get_char();
+void Repl::menu_bluetooth_devices() {
+    // Reused by list/actions; keep 32-entry snapshots off the embedded stack.
+    static bluetooth_manager::PairedDeviceInfo current[32];
+    if (!bluetooth_manager::enabled()) {
+        draw_menu_header("PAIRED BLUETOOTH DEVICES", "ENTER / ESC BACK");
+        const int row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 5;
+        draw_menu_message(row, "Enable Bluetooth first.");
+        while (true) {
+            const int key = platform::get_char();
+            if (key_is_enter(key) || key == kKeyEscape ||
+                key == 0x1b || key == kKeyHome) return;
+        }
+    }
+
+    auto format_address = [](const std::uint8_t address[6],
+                             char* output, std::size_t capacity) {
+        std::snprintf(
+            output, capacity,
+            "%02X:%02X:%02X:%02X:%02X:%02X",
+            static_cast<unsigned>(address[0]),
+            static_cast<unsigned>(address[1]),
+            static_cast<unsigned>(address[2]),
+            static_cast<unsigned>(address[3]),
+            static_cast<unsigned>(address[4]),
+            static_cast<unsigned>(address[5])
+        );
+    };
+
+    auto confirm_forget = [&](const bluetooth_manager::PairedDeviceInfo& device) {
+        char address[24] = {};
+        format_address(device.address, address, sizeof(address));
+        int selected = 0; // Cancel by default.
+        while (true) {
+            draw_menu_header(
+                "FORGET BLUETOOTH DEVICE?",
+                "UP/DOWN SELECT  ENTER  ESC CANCEL"
+            );
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            draw_menu_message(top, address);
+            draw_menu_message(
+                top + 1,
+                "This device must be paired again."
+            );
+            draw_menu_option(top + 4, "Cancel", selected == 0);
+            draw_menu_option(top + 5, "Forget this device", selected == 1);
+
+            const int key = platform::get_char();
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
+                return false;
+            }
+            if (key == kKeyUp || key == kKeyDown) {
+                selected = 1 - selected;
+                continue;
+            }
+            if (key_is_enter(key)) return selected == 1;
+        }
+    };
+
+
+    auto forget = [&](const bluetooth_manager::PairedDeviceInfo& device) {
+        return device.profile == bluetooth::Profile::BleKeyboard
+            ? bluetooth_hid_ble::forget_paired_keyboard(device.address, device.address_type)
+            : bluetooth_manager::forget_paired_device(device.address);
+    };
+
+    auto wait_for_connect = [&](const bluetooth_manager::PairedDeviceInfo& device) {
+        const bool ble = device.profile == bluetooth::Profile::BleKeyboard;
+        const bool started = ble
+            ? bluetooth_hid_ble::connect_paired_keyboard(device.address, device.address_type, device.name)
+            : bluetooth_hid::connect_paired_keyboard(device.address);
+        if (!started) {
+            draw_menu_header("BLUETOOTH CONNECT", "ENTER / ESC BACK");
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 5;
+            draw_menu_message(
+                top,
+                ble ? bluetooth_hid_ble::last_error()
+                    : bluetooth_hid::last_error()
+            );
+            while (true) {
+                const int key = platform::get_char();
+                if (key_is_enter(key) || key == kKeyEscape ||
+                    key == 0x1b || key == kKeyHome) return false;
+            }
+        }
+
+        while (true) {
+            service_background();
+
+            const std::size_t count =
+                bluetooth_manager::paired_devices(current, 32);
+            bool connected_now = false;
+            for (std::size_t i = 0; i < count; ++i) {
+                if (current[i].address_type == device.address_type && std::memcmp(
+                        current[i].address,
+                        device.address,
+                        sizeof(device.address)) == 0) {
+                    connected_now = current[i].connected;
+                    break;
+                }
+            }
+
+            draw_menu_header("BLUETOOTH CONNECT", "ESC CANCEL");
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            char name[80] = {};
+            std::snprintf(
+                name, sizeof(name),
+                "Device: %s",
+                device.name[0] ? device.name : "(name unknown)"
+            );
+            draw_menu_message(top, name);
+            draw_menu_message(
+                top + 2,
+                connected_now ? "CONNECTED" :
+                                "WAITING FOR SELECTED DEVICE..."
+            );
+            if (!connected_now) {
+                draw_menu_message(
+                    top + 3,
+                    "Waiting for the keyboard HID link."
+                );
+            }
+
+            if (connected_now) {
+                platform::sleep_millis(500);
+                return true;
+            }
+
+            if (ble && bluetooth_hid_ble::pairing_code_available()) {
+                char code[64];
+                std::snprintf(code, sizeof(code), "TYPE ON KEYBOARD: %06lu THEN ENTER",
+                              static_cast<unsigned long>(bluetooth_hid_ble::pairing_code()));
+                draw_menu_message(top + 4, code);
+            }
+            const bool active = ble ? bluetooth_hid_ble::connect_active()
+                                    : bluetooth_hid::connect_active();
+            if (!active) {
+                draw_menu_message(top + 2, "CONNECT WAIT ENDED");
+                draw_menu_message(
+                    top + 3,
+                    ble ? bluetooth_hid_ble::last_error()
+                        : bluetooth_hid::last_error()
+                );
+                (void)platform::get_char();
+                return false;
+            }
+
+            const int key = poll_menu_key(200);
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
+                if (ble) bluetooth_hid_ble::cancel_connect();
+                else bluetooth_hid::cancel_connect();
+                return false;
+            }
+        }
+    };
+
+    constexpr std::size_t capacity = 32;
+    constexpr int visible = 20;
+    static bluetooth_manager::PairedDeviceInfo devices[capacity];
+    menu_scroll::State scroll;
+
+    while (true) {
+        service_background();
+        std::memset(devices, 0, sizeof(devices));
+        const std::size_t count =
+            bluetooth_manager::paired_devices(devices, capacity);
+
+        draw_menu_header(
+            "PAIRED BLUETOOTH DEVICES",
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER ACTION"
+        );
+        const int first_row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+
+        if (count == 0) {
+            draw_menu_message(first_row + 2, "(NO STORED PAIRINGS)");
+            draw_menu_message(
+                first_row + 4,
+                "Use Bluetooth -> Pair Keyboard first."
+            );
+            draw_menu_message(
+                first_row + 5,
+                "ESC/HOME: back"
+            );
+            const int key = platform::get_char();
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome) return;
+            continue;
+        }
+
+        menu_scroll::normalize(
+            scroll, static_cast<int>(count), visible);
+
+        for (int row_index = 0; row_index < visible; ++row_index) {
+            const int index = scroll.offset + row_index;
+            if (index >= static_cast<int>(count)) {
+                draw_menu_option(first_row + row_index, "", false);
+                continue;
+            }
+
+            char address[24] = {};
+            format_address(
+                devices[index].address, address, sizeof(address));
+            const char* name = devices[index].name[0]
+                ? devices[index].name : "(name unknown)";
+            char row[96] = {};
+            std::snprintf(
+                row, sizeof(row),
+                "%2d %-18.18s %-8s %-17s %s",
+                index + 1,
+                name,
+                bluetooth::profile_name(devices[index].profile),
+                address,
+                devices[index].connected ? "ON" : "OFF"
+            );
+            draw_menu_option(
+                first_row + row_index,
+                row,
+                index == scroll.selected
+            );
+        }
+
+        char position[64] = {};
+        std::snprintf(
+            position, sizeof(position),
+            "%d-%d / %u   Stored Pairings",
+            scroll.offset + 1,
+            menu_scroll::last_exclusive(
+                scroll, static_cast<int>(count), visible),
+            static_cast<unsigned>(count)
+        );
+        draw_menu_message(first_row + visible + 1, position);
+
+        const int key = poll_menu_key(500);
+        if (handle_menu_scroll_key(
+                key, scroll, static_cast<int>(count), visible)) {
+            continue;
+        }
+        if (key == kKeyEscape || key == 0x1b || key == kKeyHome) return;
+
+        auto& device = devices[scroll.selected];
+
+        if (key == kKeyDelete) {
+            if (confirm_forget(device)) {
+                forget(device);
+                scroll.selected = 0;
+                scroll.offset = 0;
+            }
+            continue;
+        }
+
+        if (!key_is_enter(key)) continue;
+
+        char address[24] = {};
+        format_address(device.address, address, sizeof(address));
+        int action = 0;
+        while (true) {
+            service_background();
+            const auto current_count = bluetooth_manager::paired_devices(current, capacity);
+            device.connected = false;
+            for (std::size_t i = 0; i < current_count; ++i) {
+                if (current[i].address_type == device.address_type &&
+                    std::memcmp(current[i].address, device.address, sizeof(device.address)) == 0) {
+                    device.connected = current[i].connected;
+                    break;
+                }
+            }
+            draw_menu_header(
+                "BLUETOOTH DEVICE",
+                "UP/DOWN SELECT  ENTER ACTION  ESC BACK"
+            );
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            char name_row[80] = {};
+            std::snprintf(
+                name_row, sizeof(name_row),
+                "Name   : %s",
+                device.name[0] ? device.name : "(name unknown)"
+            );
+            draw_menu_message(top, name_row);
+            char address_row[80] = {};
+            std::snprintf(
+                address_row, sizeof(address_row),
+                "Address: %s", address
+            );
+            draw_menu_message(top + 1, address_row);
+            draw_menu_message(
+                top + 2,
+                device.connected ? "Connection: ON" :
+                                   "Connection: OFF"
+            );
+            char profile_row[48] = {};
+            std::snprintf(
+                profile_row, sizeof(profile_row),
+                "Profile: %s", bluetooth::profile_name(device.profile));
+            draw_menu_message(top + 3, profile_row);
+            if (!device.connected) {
+                draw_menu_message(
+                    top + 4,
+                    "CPB will connect to this keyboard."
+                );
+                draw_menu_option(
+                    top + 6,
+                    "Connect Keyboard",
+                    action == 0);
+                draw_menu_option(
+                    top + 7, "Forget this device", action == 1);
+                draw_menu_option(top + 8, "Back", action == 2);
+            } else {
+                draw_menu_option(
+                    top + 6, "Disconnect", action == 0);
+                draw_menu_option(
+                    top + 7, "Forget this device", action == 1);
+                draw_menu_option(top + 8, "Back", action == 2);
+            }
+
+            const int action_count = 3;
+            const int action_key = poll_menu_key(500);
+            if (action_key == kKeyUp && action > 0) {
+                --action;
+                continue;
+            }
+            if (action_key == kKeyDown && action + 1 < action_count) {
+                ++action;
+                continue;
+            }
+            if (action_key == kKeyEscape || action_key == 0x1b ||
+                action_key == kKeyHome) {
+                break;
+            }
+            if (!key_is_enter(action_key)) continue;
+
+            if (device.connected) {
+                if (action == 0) {
+                    if (device.profile == bluetooth::Profile::BleKeyboard) {
+                        bluetooth_hid_ble::disconnect();
+                    } else if (device.profile == bluetooth::Profile::HidKeyboard) {
+                        bluetooth_hid::disconnect();
+                    }
+                    break;
+                }
+                if (action == 1) {
+                    if (confirm_forget(device)) {
+                        forget(device);
+                        scroll.selected = 0;
+                        scroll.offset = 0;
+                    }
+                    break;
+                }
+                break;
+            }
+
+            if (action == 0) {
+                wait_for_connect(device);
+                break;
+            }
+            if (action == 1) {
+                if (confirm_forget(device)) {
+                    forget(device);
+                    scroll.selected = 0;
+                    scroll.offset = 0;
+                }
+                break;
+            }
+            break;
+        }
+    }
+}
+
+
+void Repl::menu_bluetooth_keyboard() {
+    if (!bluetooth_manager::enabled()) {
+        draw_menu_header("PAIR KEYBOARD", "ENTER / ESC BACK");
+        const int row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 5;
+        draw_menu_message(row, "Bluetooth is OFF.");
+        draw_menu_message(row + 1, "Enable Bluetooth first.");
+        (void)platform::get_char();
         return;
     }
 
-    bluetooth_serial::set_test_terminal_active(true);
-    bluetooth_test_active_ = true;
-    bluetooth_test_echo_ = true;
-    bluetooth_test_banner_sent_ = false;
-    bluetooth_test_rx_count_ = 0;
-    std::snprintf(bluetooth_test_last_rx_, sizeof(bluetooth_test_last_rx_), "-");
+    auto format_address = [](const std::uint8_t address[6],
+                             char* output, std::size_t capacity) {
+        std::snprintf(
+            output, capacity,
+            "%02X:%02X:%02X:%02X:%02X:%02X",
+            static_cast<unsigned>(address[0]),
+            static_cast<unsigned>(address[1]),
+            static_cast<unsigned>(address[2]),
+            static_cast<unsigned>(address[3]),
+            static_cast<unsigned>(address[4]),
+            static_cast<unsigned>(address[5])
+        );
+    };
+
+    auto wait_for_keyboard = [&]() {
+        while (true) {
+            service_background();
+            draw_menu_header(
+                "PAIRING KEYBOARD",
+                "TYPE CODE ON KEYBOARD / ESC CANCEL"
+            );
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            char row[96] = {};
+            std::snprintf(
+                row, sizeof(row), "Status: %s", bluetooth_hid::status());
+            draw_menu_message(top, row);
+            const char* name = bluetooth_hid::connected_name();
+            std::snprintf(
+                row, sizeof(row), "Device: %s",
+                name && *name ? name : "(discovering)"
+            );
+            draw_menu_message(top + 1, row);
+
+            if (bluetooth_hid::pairing_code_available()) {
+                std::snprintf(
+                    row, sizeof(row),
+                    "Enter this code on keyboard: %06lu",
+                    static_cast<unsigned long>(
+                        bluetooth_hid::pairing_code())
+                );
+                draw_menu_message(top + 3, row);
+                draw_menu_message(top + 4, "Then press ENTER on the keyboard.");
+            } else {
+                draw_menu_message(top + 3, bluetooth_hid::last_error());
+            }
+
+            if (bluetooth_hid::connected()) {
+                draw_menu_message(top + 6, "KEYBOARD CONNECTED");
+                platform::sleep_millis(700);
+                return true;
+            }
+            if (!bluetooth_hid::connect_active()) {
+                draw_menu_message(top + 6, "CONNECTION ENDED");
+                draw_menu_message(top + 7, bluetooth_hid::last_error());
+                (void)platform::get_char();
+                return false;
+            }
+
+            const int key = poll_menu_key(200);
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
+                bluetooth_hid::cancel_connect();
+                return false;
+            }
+        }
+    };
+
+    // 0: back/cancel, 1: connected, 2: rescan after a completed failure.
+    auto wait_for_ble_keyboard = [&]() {
+        while (true) {
+            service_background();
+            draw_menu_header(
+                "PAIRING BLE KEYBOARD",
+                bluetooth_hid_ble::pairing_code_available()
+                    ? "TYPE CODE ON KEYBOARD / ESC CANCEL" : "ESC CANCEL"
+            );
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            char row[96] = {};
+            std::snprintf(
+                row, sizeof(row), "Status: %s",
+                bluetooth_hid_ble::status());
+            draw_menu_message(top, row);
+            const char* name = bluetooth_hid_ble::connected_name();
+            std::snprintf(
+                row, sizeof(row), "Device: %s",
+                name && *name ? name : "(selected BLE device)"
+            );
+            draw_menu_message(top + 1, row);
+
+            if (bluetooth_hid_ble::pairing_code_available()) {
+                std::snprintf(
+                    row, sizeof(row),
+                    "Enter this code on keyboard: %06lu",
+                    static_cast<unsigned long>(
+                        bluetooth_hid_ble::pairing_code())
+                );
+                draw_menu_message(top + 3, row);
+                draw_menu_message(top + 4, "Then press ENTER on the keyboard.");
+            } else {
+                draw_menu_message(
+                    top + 3, bluetooth_hid_ble::last_error());
+            }
+
+            if (bluetooth_hid_ble::connected()) {
+                draw_menu_message(top + 6, "BLE KEYBOARD CONNECTED");
+                platform::sleep_millis(700);
+                return 1;
+            }
+            if (!bluetooth_hid_ble::connect_active()) {
+                draw_menu_message(top + 6, "CONNECTION ENDED");
+                draw_menu_message(
+                    top + 7, bluetooth_hid_ble::last_error());
+                draw_menu_message(top + 9, "Put keyboard back in pairing mode.");
+                draw_menu_message(top + 10, "No advertisement? Restart keyboard.");
+                draw_menu_message(top + 12, "ENTER RESCAN / ESC BACK");
+                while (true) {
+                    service_background();
+                    const int key = poll_menu_key(150);
+                    if (key_is_enter(key)) return 2;
+                    if (key == kKeyEscape || key == 0x1b ||
+                        key == kKeyHome) return 0;
+                }
+            }
+
+            const int key = poll_menu_key(200);
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
+                bluetooth_hid_ble::cancel_connect();
+                return 0;
+            }
+        }
+    };
+
+    auto scan_and_pair = [&]() {
+        const bool ble_scan = bluetooth_hid_ble::start_scan();
+        const bool classic_scan = bluetooth_hid::start_scan();
+        if (!ble_scan && !classic_scan) {
+            draw_menu_header("PAIR KEYBOARD", "ENTER / ESC BACK");
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 5;
+            draw_menu_message(top, "COULD NOT START KEYBOARD SCAN");
+            draw_menu_message(
+                top + 2, bluetooth_hid_ble::last_error());
+            (void)platform::get_char();
+            return;
+        }
+
+        auto same_identity = [](
+            const bluetooth_hid_ble::DiscoveredDevice& lhs,
+            const bluetooth_hid_ble::DiscoveredDevice& rhs
+        ) {
+            return lhs.address_type == rhs.address_type &&
+                   std::memcmp(lhs.address, rhs.address, 6) == 0;
+        };
+        auto same_display_data = [&](
+            const bluetooth_hid_ble::DiscoveredDevice& lhs,
+            const bluetooth_hid_ble::DiscoveredDevice& rhs
+        ) {
+            // RSSI changes on nearly every advertisement. Do not repaint a
+            // row for RSSI alone; repaint when its name or HID classification
+            // becomes known.
+            return same_identity(lhs, rhs) &&
+                   lhs.hid_hint == rhs.hid_hint &&
+                   std::strcmp(lhs.name, rhs.name) == 0;
+        };
+        auto draw_device_row = [&](
+            int row,
+            const bluetooth_hid_ble::DiscoveredDevice* device,
+            bool selected
+        ) {
+            if (!device) {
+                draw_menu_option(row, "", false);
+                return;
+            }
+            char address[24] = {};
+            format_address(device->address, address, sizeof(address));
+            char text[96] = {};
+            std::snprintf(
+                text, sizeof(text),
+                "%-20.20s %-6s %4d %s %s",
+                device->name[0]
+                    ? device->name : "(name unknown)",
+                device->address_type == 0xff ? "CLASSIC" : "BLE",
+                static_cast<int>(device->rssi),
+                device->address_type == 0xff ? "BT" : device->address_type == 0 ? "PUB" : "RND",
+                address
+            );
+            draw_menu_option(row, text, selected);
+        };
+
+        constexpr std::size_t combined_capacity =
+            bluetooth_hid_ble::kMaxDiscoveredDevices + bluetooth_hid::kMaxDiscoveredDevices;
+        static bluetooth_hid::DiscoveredDevice classic_found[bluetooth_hid::kMaxDiscoveredDevices];
+        auto collect = [&](bluetooth_hid_ble::DiscoveredDevice* output) {
+            std::size_t count = bluetooth_hid_ble::discovered_devices(output, bluetooth_hid_ble::kMaxDiscoveredDevices);
+            const auto classic_count = bluetooth_hid::discovered_devices(classic_found, bluetooth_hid::kMaxDiscoveredDevices);
+            for (std::size_t i = 0; i < classic_count && count < combined_capacity; ++i) {
+                auto& entry = output[count++];
+                entry = bluetooth_hid_ble::DiscoveredDevice{};
+                std::memcpy(entry.address, classic_found[i].address, sizeof(entry.address));
+                entry.address_type = 0xff;
+                std::snprintf(entry.name, sizeof(entry.name), "%s", classic_found[i].name);
+                entry.hid_hint = classic_found[i].keyboard_hint;
+                entry.rssi = classic_found[i].rssi;
+            }
+            return count;
+        };
+        auto stop_scans = [&]() {
+            bluetooth_hid_ble::cancel_scan();
+            bluetooth_hid::cancel_scan();
+        };
+        menu_scroll::State scroll;
+        constexpr int visible = 18;
+        static bluetooth_hid_ble::DiscoveredDevice
+            shown[combined_capacity];
+        static bluetooth_hid_ble::DiscoveredDevice
+            found[combined_capacity];
+        std::memset(shown, 0, sizeof(shown));
+        std::memset(found, 0, sizeof(found));
+        std::size_t shown_count = 0;
+        int shown_selected = -1;
+        int shown_offset = -1;
+        bool shown_full = false;
+        bool first_draw = true;
+
+        draw_menu_header(
+            "KEYBOARDS / LIVE SCAN",
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER CONNECT"
+        );
+        const int first =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+
+        while (bluetooth_hid_ble::scanning() || bluetooth_hid::scanning()) {
+            service_background();
+
+            // Keep selection on the same address/type when the visible list changes.
+            bluetooth_hid_ble::DiscoveredDevice selected_before = {};
+            const bool had_selection =
+                shown_count > 0 &&
+                scroll.selected >= 0 &&
+                scroll.selected < static_cast<int>(shown_count);
+            if (had_selection) {
+                selected_before = shown[scroll.selected];
+            }
+
+            std::memset(found, 0, sizeof(found));
+            const std::size_t count = collect(found);
+            const bool capacity_reached =
+                bluetooth_hid_ble::discovery_capacity_reached();
+
+            if (had_selection) {
+                for (std::size_t i = 0; i < count; ++i) {
+                    if (same_identity(selected_before, found[i])) {
+                        scroll.selected = static_cast<int>(i);
+                        break;
+                    }
+                }
+            }
+            menu_scroll::normalize(
+                scroll, static_cast<int>(count), visible);
+
+            bool full_redraw =
+                first_draw ||
+                shown_count != count ||
+                shown_offset != scroll.offset;
+            if (!full_redraw) {
+                for (std::size_t i = 0; i < count; ++i) {
+                    if (!same_identity(shown[i], found[i])) {
+                        full_redraw = true;
+                        break;
+                    }
+                }
+            }
+
+            for (int row_index = 0; row_index < visible; ++row_index) {
+                const int index = scroll.offset + row_index;
+                const bool selected =
+                    index < static_cast<int>(count) &&
+                    index == scroll.selected;
+                bool redraw = full_redraw ||
+                    (shown_selected != scroll.selected &&
+                     (index == shown_selected || index == scroll.selected));
+                if (!redraw &&
+                    index < static_cast<int>(count) &&
+                    index < static_cast<int>(shown_count)) {
+                    redraw = !same_display_data(
+                        shown[index], found[index]);
+                }
+                if (!redraw) continue;
+
+                if (index < static_cast<int>(count)) {
+                    draw_device_row(
+                        first + row_index, &found[index], selected);
+                } else if (count == 0 && row_index == 0) {
+                    draw_menu_option(
+                        first + row_index,
+                        "(scanning... no keyboards yet)",
+                        false
+                    );
+                } else {
+                    draw_device_row(
+                        first + row_index, nullptr, false);
+                }
+            }
+
+            if (first_draw ||
+                shown_count != count ||
+                shown_offset != scroll.offset ||
+                shown_full != capacity_reached) {
+                char status[80] = {};
+                if (count > static_cast<std::size_t>(visible)) {
+                    std::snprintf(
+                        status, sizeof(status),
+                        "Scanning: %u%s keyboards  %d-%d / %u",
+                        static_cast<unsigned>(count),
+                        capacity_reached ? "+" : "",
+                        scroll.offset + 1,
+                        menu_scroll::last_exclusive(
+                            scroll,
+                            static_cast<int>(count),
+                            visible
+                        ),
+                        static_cast<unsigned>(count)
+                    );
+                } else {
+                    std::snprintf(
+                        status, sizeof(status),
+                        "Scanning: %u%s keyboard(s)",
+                        static_cast<unsigned>(count),
+                        capacity_reached ? "+" : ""
+                    );
+                }
+                draw_menu_message(first + visible, status);
+                draw_menu_message(
+                    first + visible + 1,
+                    capacity_reached
+                        ? "BLE list full; Classic scan continues."
+                        : "Put keyboard in pairing mode before ENTER."
+                );
+            }
+
+            std::memcpy(shown, found, sizeof(shown));
+            shown_count = count;
+            shown_selected =
+                count > 0 ? scroll.selected : -1;
+            shown_offset = scroll.offset;
+            shown_full = capacity_reached;
+            first_draw = false;
+
+            const int key = poll_menu_key(150);
+            if (handle_menu_scroll_key(
+                    key, scroll, static_cast<int>(count), visible)) {
+                continue;
+            }
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
+                stop_scans();
+                return;
+            }
+            if (!key_is_enter(key) || count == 0) continue;
+
+            const auto selected_device = found[scroll.selected];
+            stop_scans();
+            if (selected_device.address_type == 0xff) {
+                if (bluetooth_hid::connect_keyboard(selected_device.address)) wait_for_keyboard();
+                return;
+            }
+            if (bluetooth_hid_ble::connect_keyboard(
+                    selected_device.address,
+                    selected_device.address_type,
+                    selected_device.name)) {
+                const int outcome = wait_for_ble_keyboard();
+                if (outcome != 2) return;
+                // Failure UI is reached only after the pending ACL teardown.
+                const bool restarted_ble = bluetooth_hid_ble::start_scan();
+                const bool restarted_classic = bluetooth_hid::start_scan();
+                if (!restarted_ble && !restarted_classic) {
+                    draw_menu_message(first + visible,
+                                      bluetooth_hid_ble::last_error());
+                    (void)platform::get_char();
+                    return;
+                }
+                shown_count = 0;
+                shown_selected = -1;
+                shown_offset = -1;
+                first_draw = true;
+                draw_menu_header(
+                    "KEYBOARDS / LIVE SCAN",
+                    "UP/DOWN SELECT  ENTER CONNECT  ESC STOP");
+                continue;
+            }
+            draw_menu_message(first + visible,
+                              bluetooth_hid_ble::last_error());
+            (void)platform::get_char();
+            return;
+        }
+    };
+
+    scan_and_pair();
+}
+
+void Repl::menu_bluetooth() {
+    auto confirm_forget_pairings = [&]() {
+        int confirm_selected = 0;
+        while (true) {
+            service_background();
+            draw_menu_header(
+                "FORGET ALL BLUETOOTH PAIRINGS?",
+                "UP/DOWN SELECT  ENTER  ESC CANCEL"
+            );
+            const int top =
+                (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+            draw_menu_message(top, "Deletes all saved Bluetooth link keys.");
+            draw_menu_message(top + 1, "Each device must be paired again.");
+            draw_menu_option(top + 4, "Cancel", confirm_selected == 0);
+            draw_menu_option(
+                top + 5, "Forget all pairings", confirm_selected == 1);
+
+            const int key = platform::get_char();
+            if (key == kKeyEscape || key == 0x1b || key == kKeyHome)
+                return false;
+            if (key == kKeyUp || key == kKeyDown) {
+                confirm_selected = confirm_selected == 0 ? 1 : 0;
+                continue;
+            }
+            if (key_is_enter(key)) return confirm_selected == 1;
+        }
+    };
 
     int selected = 0;
     while (true) {
         service_background();
-        draw_menu_header("BLUETOOTH SPP TEST TERMINAL",
-                         "UP/DOWN SELECT  ENTER  ESC BACK");
-        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
-        char row[96] = {};
-        std::snprintf(row, sizeof(row), "Status      %s", bluetooth_serial::status());
-        draw_menu_message(first, row);
-        std::snprintf(row, sizeof(row), "RX/Q/S  %lu / %lu / %lu",
-                      static_cast<unsigned long>(bluetooth_test_rx_count_),
-                      static_cast<unsigned long>(bluetooth_serial::tx_queued_bytes()),
-                      static_cast<unsigned long>(bluetooth_serial::tx_sent_bytes()));
-        draw_menu_message(first + 1, row);
-        std::snprintf(row, sizeof(row), "Last RX     %s", bluetooth_test_last_rx_);
-        draw_menu_message(first + 2, row);
-        draw_menu_message(first + 4,
-                          "PC input is echoed; press any PicoCalc key to refresh.");
 
-        draw_menu_option(first + 7, "Send Test Message", selected == 0);
-        std::snprintf(row, sizeof(row), "Echo              %s",
-                      bluetooth_test_echo_ ? "ON" : "OFF");
-        draw_menu_option(first + 8, row, selected == 1);
-        draw_menu_option(first + 9, "Back", selected == 2);
+        draw_menu_header(
+            "BLUETOOTH",
+            "UP/DOWN SELECT  ENTER ACTION  ESC BACK"
+        );
+        const int first =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        char row[96] = {};
+        std::snprintf(
+            row, sizeof(row), "Enabled     %s",
+            bluetooth_manager::enabled() ? "ON" : "OFF");
+        draw_menu_message(first, row);
+        std::snprintf(
+            row, sizeof(row), "Keyboard C  %s",
+            bluetooth_hid::status());
+        draw_menu_message(first + 1, row);
+        std::snprintf(
+            row, sizeof(row), "Keyboard LE %s",
+            bluetooth_hid_ble::status());
+        draw_menu_message(first + 2, row);
+
+        draw_menu_option(
+            first + 5,
+            bluetooth_manager::enabled()
+                ? "Disable Bluetooth" : "Enable Bluetooth",
+            selected == 0
+        );
+        draw_menu_option(
+            first + 6, "Pair Keyboard...", selected == 1);
+        draw_menu_option(
+            first + 7, "Paired Devices...", selected == 2);
+        std::snprintf(
+            row, sizeof(row), "Keyboard Layout: %s",
+            bluetooth_hid::keyboard_layout_name(
+                settings_.bluetooth_keyboard_layout)
+        );
+        draw_menu_option(first + 8, row, selected == 3);
+        draw_menu_option(
+            first + 9, "Forget All Paired Devices", selected == 4);
+        draw_menu_option(first + 10, "Back", selected == 5);
 
         const int key = platform::get_char();
+        if (key < 0) continue;
         if (key == kKeyUp && selected > 0) --selected;
-        else if (key == kKeyDown && selected < 2) ++selected;
+        else if (key == kKeyDown && selected < 5) ++selected;
         else if (key == kKeyEscape || key == 0x1b ||
-                 (key_is_enter(key) && selected == 2)) break;
-        else if (key_is_enter(key) && selected == 0) {
-            static constexpr char message[] = "CPB-PicoCalc test message\r\n";
-            if (bluetooth_serial::write_text(message)) {
-                bluetooth_serial::service();
+                 (key_is_enter(key) && selected == 5)) {
+            return;
+        } else if (key_is_enter(key) && selected == 0) {
+            if (bluetooth_manager::enabled()) {
+                bluetooth_manager::disable();
+            } else {
+                bluetooth_manager::enable();
             }
         } else if (key_is_enter(key) && selected == 1) {
-            bluetooth_test_echo_ = !bluetooth_test_echo_;
+            menu_bluetooth_keyboard();
+        } else if (key_is_enter(key) && selected == 2) {
+            menu_bluetooth_devices();
+        } else if (key_is_enter(key) && selected == 3) {
+            settings_.bluetooth_keyboard_layout =
+                settings_.bluetooth_keyboard_layout ==
+                    bluetooth_hid::KeyboardLayout::Jis
+                ? bluetooth_hid::KeyboardLayout::Us
+                : bluetooth_hid::KeyboardLayout::Jis;
+            bluetooth_hid::set_layout(
+                settings_.bluetooth_keyboard_layout);
+            bluetooth_hid_ble::set_layout(
+                settings_.bluetooth_keyboard_layout);
+        } else if (key_is_enter(key) && selected == 4) {
+            if (confirm_forget_pairings()) {
+                bluetooth_manager::forget_paired_devices();
+            }
         }
     }
-    bluetooth_test_active_ = false;
-    bluetooth_test_banner_sent_ = false;
-    bluetooth_serial::set_test_terminal_active(false);
 }
-
-void Repl::menu_bluetooth() {
- int selected=0;
- while(true){
-  service_background();draw_menu_header("BLUETOOTH CLASSIC SPP","UP/DOWN SELECT  ENTER ACTION  ESC BACK");
-  const int first=(settings_.status_enabled?console_layout::status_rows:0)+3;char row[96]={};
-  std::snprintf(row,sizeof(row),"Bluetooth   %s",bluetooth_serial::enabled()?"ON":"OFF");draw_menu_message(first,row);
-  std::snprintf(row,sizeof(row),"Status      %s",bluetooth_serial::status());draw_menu_message(first+1,row);
-  std::snprintf(row,sizeof(row),"Device      %s",bluetooth_serial::device_name());draw_menu_message(first+2,row);
-  std::snprintf(row,sizeof(row),"Console     %s",bluetooth_serial::console_enabled()?"ON":"OFF");draw_menu_message(first+3,row);
-  std::snprintf(row,sizeof(row),"Overflow    RX:%lu TX:%lu",static_cast<unsigned long>(bluetooth_serial::rx_overflow_count()),static_cast<unsigned long>(bluetooth_serial::tx_overflow_count()));draw_menu_message(first+4,row);
-  std::snprintf(row,sizeof(row),"Last status %.72s",bluetooth_serial::last_error());draw_menu_message(first+5,row);
-  draw_menu_option(first+8,bluetooth_serial::enabled()?"Disable Bluetooth":"Enable Bluetooth",selected==0);
-  draw_menu_option(first+9,bluetooth_serial::console_enabled()?"Console: ON":"Console: OFF",selected==1);
-  draw_menu_option(first+10,"Test Terminal",selected==2);draw_menu_option(first+11,"Back",selected==3);
-  const int key=platform::get_char();
-  if(key==kKeyUp&&selected>0)--selected;else if(key==kKeyDown&&selected<3)++selected;
-  else if(key==kKeyEscape||key==0x1b||(key_is_enter(key)&&selected==3))return;
-  else if(key_is_enter(key)&&selected==0){if(bluetooth_serial::enabled()){bluetooth_serial::set_console_enabled(false);bluetooth_serial::disable();bluetooth_console_link_active_=false;}else bluetooth_serial::enable();}
-  else if(key_is_enter(key)&&selected==1){if(bluetooth_serial::enabled()){bluetooth_serial::set_console_enabled(!bluetooth_serial::console_enabled());bluetooth_console_link_active_=false;}}
-  else if(key_is_enter(key)&&selected==2)menu_bluetooth_test();
- }
-}
-
 void Repl::show_system_menu() {
-    // Keep both channels available while inside the control center. The
-    // configured routing is restored when the menu closes.
     platform::set_console_mode(platform::ConsoleMode::Both);
 
     static const char* items[] = {
         "Files",
+        "Editor",
         "Save Program",
         "Save Program As...",
         "Quick Load Keys",
@@ -3956,39 +5611,63 @@ void Repl::show_system_menu() {
         "SD Card",
         "Firmware",
         "Power / CPU",
+        "Board LED",
         "System Information",
+        "PSRAM Diagnostics",
         "Program Storage",
         "Exit"
     };
 
     constexpr int item_count =
         static_cast<int>(sizeof(items) / sizeof(items[0]));
-
-    int selected = 0;
+    constexpr int visible = 27;
+    menu_scroll::State scroll;
+    menu_scroll::normalize(scroll, item_count, visible);
 
     while (true) {
         draw_menu_header(
-            "CALA\'S POKECOM BASIC CONTROL CENTER",
-            "UP/DOWN SELECT  ENTER OPEN  ESC/HOME EXIT"
+            "CALA'S POKECOM BASIC CONTROL CENTER",
+            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER OPEN"
         );
 
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        const int first_row = top + 3;
+        const int first_row =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        menu_scroll::normalize(scroll, item_count, visible);
 
-        for (int i = 0; i < item_count; ++i) {
+        for (int row_index = 0; row_index < visible; ++row_index) {
+            const int index = scroll.offset + row_index;
+            if (index >= item_count) {
+                draw_menu_option(first_row + row_index, "", false);
+                continue;
+            }
             char row[80] = {};
-            std::snprintf(row, sizeof(row), "  %s", items[i]);
-            draw_menu_option(first_row + i, row, i == selected);
+            std::snprintf(row, sizeof(row), "  %s", items[index]);
+            draw_menu_option(
+                first_row + row_index,
+                row,
+                index == scroll.selected
+            );
+        }
+
+        if (item_count > visible) {
+            char position[48] = {};
+            std::snprintf(
+                position, sizeof(position),
+                "%d-%d / %d",
+                scroll.offset + 1,
+                menu_scroll::last_exclusive(
+                    scroll, item_count, visible),
+                item_count
+            );
+            draw_menu_message(first_row + visible, position);
+        } else {
+            draw_menu_message(first_row + visible, "");
         }
 
         const int key = platform::get_char();
 
-        if (key == kKeyUp && selected > 0) {
-            --selected;
-            continue;
-        }
-        if (key == kKeyDown && selected + 1 < item_count) {
-            ++selected;
+        if (handle_menu_scroll_key(
+                key, scroll, item_count, visible)) {
             continue;
         }
         if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
@@ -3998,44 +5677,51 @@ void Repl::show_system_menu() {
             continue;
         }
 
+        const int selected = scroll.selected;
         if (selected == 0) {
             if (menu_files()) {
                 platform::set_console_mode(settings_.console_mode);
                 return;
             }
         } else if (selected == 1) {
-            menu_save_program(false);
+            open_full_screen_editor();
         } else if (selected == 2) {
-            menu_save_program(true);
+            menu_save_program(false);
         } else if (selected == 3) {
-            menu_quick_keys();
+            menu_save_program(true);
         } else if (selected == 4) {
-            menu_display();
+            menu_quick_keys();
         } else if (selected == 5) {
-            menu_console();
+            menu_display();
         } else if (selected == 6) {
-            menu_datetime();
+            menu_console();
         } else if (selected == 7) {
-            menu_audio();
+            menu_datetime();
         } else if (selected == 8) {
-            menu_wifi();
+            menu_audio();
         } else if (selected == 9) {
-            menu_bluetooth();
+            menu_wifi();
         } else if (selected == 10) {
-            menu_file_server();
+            menu_bluetooth();
         } else if (selected == 11) {
-            menu_file_transfer();
+            menu_file_server();
         } else if (selected == 12) {
-            menu_usb_storage();
+            menu_file_transfer();
         } else if (selected == 13) {
-            menu_sd();
+            menu_usb_storage();
         } else if (selected == 14) {
-            menu_firmware();
+            menu_sd();
         } else if (selected == 15) {
-            menu_power();
+            menu_firmware();
         } else if (selected == 16) {
-            menu_system_info();
+            menu_power();
         } else if (selected == 17) {
+            menu_board_led();
+        } else if (selected == 18) {
+            menu_system_info();
+        } else if (selected == 19) {
+            menu_psram_diagnostics();
+        } else if (selected == 20) {
             menu_program_storage();
         } else {
             break;
@@ -4045,6 +5731,27 @@ void Repl::show_system_menu() {
     save_settings();
     leave_menu_screen();
     platform::set_console_mode(settings_.console_mode);
+}
+
+void Repl::open_full_screen_editor() {
+    void* memory = std::malloc(sizeof(FullScreenEditor));
+    if (!memory) {
+        platform::put_string("?OUT OF MEMORY\r\n");
+        return;
+    }
+    auto* editor = new(memory) FullScreenEditor(
+        program_, current_filename_, sizeof(current_filename_), program_dirty_);
+    full_screen_editor_active_ = true;
+    const bool ok = editor->run();
+    full_screen_editor_active_ = false;
+    editor->~FullScreenEditor();
+    std::free(memory);
+    if (!ok) {
+        platform::put_char('?');
+        platform::put_string(program_.error());
+        platform::put_string("\r\n");
+    }
+    leave_menu_screen();
 }
 
 void Repl::menu_file_transfer() {
@@ -4060,13 +5767,12 @@ void Repl::menu_file_transfer() {
         case platform::SerialTransferRoute::Auto: return "AUTO";
         case platform::SerialTransferRoute::Usb: return "USB CDC";
         case platform::SerialTransferRoute::Uart: return "UART0";
-        case platform::SerialTransferRoute::Bluetooth: return "Bluetooth SPP";
         }
         return "AUTO";
     };
     auto cycle_route = [](platform::SerialTransferRoute route, int direction) {
         int value = static_cast<int>(route);
-        value = (value + direction + 4) % 4;
+        value = (value + direction + 3) % 3;
         return static_cast<platform::SerialTransferRoute>(value);
     };
 
@@ -4487,6 +6193,7 @@ void Repl::run() {
     platform::set_status_refresh_callback(
         [](void* context) {
             auto* repl = static_cast<Repl*>(context);
+            if (repl->full_screen_editor_active_) return;
             repl->render_status();
             repl->render_function_keys();
         },
@@ -4505,12 +6212,12 @@ void Repl::run() {
         [](void*) {
             platform::audio_stop();
             network::file_server_stop();
-            bluetooth_serial::disable();
+            bluetooth_manager::disable();
         },
         nullptr
     );
 
-    bluetooth_serial::init(); // Lazy: leaves CYW43 Bluetooth powered OFF.
+    bluetooth_manager::init(); // Lazy: leaves CYW43 Bluetooth powered OFF.
     storage::init();
     load_settings();
     apply_settings();
@@ -4542,7 +6249,7 @@ void Repl::run() {
 
     while (true) {
         print_prompt();
-        LineEditor::read(input, sizeof(input));
+        LineEditor::read(input, sizeof(input), &command_history_);
 
         const int special = LineEditor::last_special_key();
         if (special == kKeyHome) {
@@ -4560,3 +6267,4 @@ void Repl::run() {
 }
 
 } // namespace rmb
+

@@ -1,11 +1,17 @@
 #include "platform.hpp"
+#include "psram.hpp"
 #include "picocalc_display.hpp"
 #include "picocalc_keyboard.hpp"
+#include "unified_keyboard.hpp"
 #include "external_i2c.hpp"
+#include "system_controls.hpp"
+#include "usb_msc.hpp"
+#include "wireless.hpp"
 #include "graphics_text.hpp"
-#include "bluetooth_serial.hpp"
+#include "bluetooth_manager.hpp"
 #include "serial_transfer.hpp"
 #include "serial_crlf_filter.hpp"
+#include "rtc_codec.hpp"
 
 #include "hardware/clocks.h"
 #include "hardware/watchdog.h"
@@ -47,6 +53,8 @@ RtcSource configured_rtc_source = RtcSource::Auto;
 std::uint8_t configured_rtc_address = 0x51;
 enum class ActiveRtc : std::uint8_t { None, External, Internal };
 ActiveRtc active_rtc = ActiveRtc::None;
+RtcDevice active_rtc_device = RtcDevice::None;
+std::uint8_t active_rtc_address = 0;
 std::uint32_t cpu_clock_source_hz = 0;
 bool peripheral_clock_isolated = false;
 
@@ -65,11 +73,11 @@ char runtime_serial_sequence[6] = {};
 std::size_t runtime_serial_length = 0;
 std::uint32_t runtime_serial_deadline_ms = 0;
 detail::SerialCrLfFilter serial_crlf_filter;
-detail::SerialCrLfFilter bluetooth_crlf_filter;
-enum class CommandInputSource : std::uint8_t { None, Local, Serial, Bluetooth };
+enum class CommandInputSource : std::uint8_t { None, Local, Serial };
 CommandInputSource command_input_source = CommandInputSource::None;
 bool command_input_active = false;
-enum class RuntimeTerminalSource : std::uint8_t { None, Serial, Bluetooth };
+int pending_command_key = -1;
+enum class RuntimeTerminalSource : std::uint8_t { None, Serial };
 RuntimeTerminalSource runtime_terminal_source = RuntimeTerminalSource::None;
 
 RuntimeKeyResult no_runtime_key() {
@@ -180,7 +188,7 @@ void init() {
     // the PLL remain untouched.
     cpu_clock_source_hz = clock_get_hz(clk_sys);
 
-    picocalc::keyboard::init();
+    unified_keyboard::init();
     picocalc::keyboard::set_lcd_backlight(160);
 
     picocalc::display::init();
@@ -201,7 +209,7 @@ void clear_screen() {
         picocalc::display::clear(console_background_color);
     }
 
-    if (console_uses_serial() || bluetooth_serial::console_enabled()) {
+    if (console_uses_serial()) {
         // ANSI clear-screen + home for terminal consoles.
         serial_put_string_raw("\x1b[2J\x1b[H");
     }
@@ -213,7 +221,6 @@ void screen_put_char(char c) {
 
 void serial_put_char_raw(char c) {
     if (!serial_transfer_active() && console_uses_serial()) putchar_raw(c);
-    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_char(c);
 }
 
 void serial_put_string_raw(const char* text) {
@@ -221,15 +228,13 @@ void serial_put_string_raw(const char* text) {
     if (!serial_transfer_active() && console_uses_serial()) {
         const char* p=text; while (*p) putchar_raw(*p++);
     }
-    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_text(text);
 }
 
-bool terminal_console_enabled(){return console_uses_serial()||bluetooth_serial::console_enabled();}
+bool terminal_console_enabled(){return console_uses_serial();}
 void begin_command_input(){command_input_active=true;command_input_source=CommandInputSource::None;}
 void end_command_input(){
  command_input_active=false;
  if(command_input_source==CommandInputSource::Local)console_local_input();
- else if(command_input_source==CommandInputSource::Bluetooth)console_bluetooth_input();
  command_input_source=CommandInputSource::None;
 }
 
@@ -299,6 +304,8 @@ void sleep_millis(std::uint32_t milliseconds) {
 }
 
 void enter_sleep_mode(bool refresh_status) {
+    const bool bluetooth_was_enabled = bluetooth_manager::enabled();
+    wireless::suspend_board_led();
     if (sleep_prepare_callback) sleep_prepare_callback(sleep_prepare_context);
     unsigned char lcd_level = 160;
     unsigned char keyboard_level = 0;
@@ -321,7 +328,7 @@ void enter_sleep_mode(bool refresh_status) {
     sleep_ms(180);
 
     while (true) {
-        const int key = picocalc::keyboard::read_key();
+        const int key = unified_keyboard::read_key();
         if (key >= 0) {
             console_local_input();
             break;
@@ -352,6 +359,12 @@ void enter_sleep_mode(bool refresh_status) {
         picocalc::keyboard::set_keyboard_backlight(keyboard_level);
     }
 
+    wireless::resume_board_led();
+
+    // STANDBY intentionally cannot wake from Bluetooth, but the pre-sleep
+    // radio state is restored and paired keyboards may reconnect.
+    if (bluetooth_was_enabled) bluetooth_manager::enable();
+
     if (refresh_status && status_area_enabled() && status_refresh_callback) {
         status_refresh_callback(status_refresh_context);
     }
@@ -360,6 +373,7 @@ void enter_sleep_mode(bool refresh_status) {
 }
 
 void enter_bootsel() {
+    wireless::suspend_board_led();
     if (sleep_prepare_callback) {
         sleep_prepare_callback(sleep_prepare_context);
     }
@@ -373,6 +387,7 @@ void enter_bootsel() {
 }
 
 void reboot_system() {
+    wireless::suspend_board_led();
     if (sleep_prepare_callback) {
         sleep_prepare_callback(sleep_prepare_context);
     }
@@ -393,40 +408,290 @@ void draw_text_row(
     picocalc::display::draw_text_row(row, text, foreground, background);
 }
 
+void draw_text_span(
+    int row,
+    int first_column,
+    const char* text,
+    int columns,
+    std::uint32_t foreground,
+    std::uint32_t background
+) {
+    picocalc::display::draw_text_span(
+        row, first_column, text, columns, foreground, background);
+}
+
 bool get_battery_status(int& percent, bool& charging) {
     return picocalc::keyboard::read_battery(percent, charging);
 }
 
 bool caps_lock_enabled() {
-    return picocalc::keyboard::caps_lock_enabled();
+    return unified_keyboard::caps_lock_enabled();
 }
 
 bool shift_held() {
-    return picocalc::keyboard::shift_held();
+    return unified_keyboard::shift_held();
 }
 
 namespace {
-std::uint8_t bcd(std::uint8_t v){return static_cast<std::uint8_t>((v>>4)*10+(v&15));}
-std::uint8_t tobcd(int v){return static_cast<std::uint8_t>(((v/10)<<4)|(v%10));}
-bool external_rtc_read(DateTime& out){std::uint8_t d[7]={};if(picocalc::external_i2c::read_registers(configured_rtc_address,2,d,7)!=picocalc::external_i2c::Result::Ok)return false;DateTime x{2000+bcd(d[6]),bcd(d[5]&31),bcd(d[3]&63),bcd(d[2]&63),bcd(d[1]&127),bcd(d[0]&127)};if(x.month<1||x.month>12||x.day<1||x.day>31||x.hour>23||x.minute>59||x.second>59)return false;out=x;return true;}
-bool external_rtc_write(const DateTime& v){const std::uint8_t d[10]={0,0,0,tobcd(v.second),tobcd(v.minute),tobcd(v.hour),tobcd(v.day),1,tobcd(v.month),tobcd(v.year-2000)};return picocalc::external_i2c::write_bytes(configured_rtc_address,d,10)==picocalc::external_i2c::Result::Ok;}
-bool probe_selected(DateTime& out){hardware_rtc_probed=true;hardware_rtc_ok=false;active_rtc=ActiveRtc::None;if(configured_rtc_source!=RtcSource::Off&&configured_rtc_source!=RtcSource::Internal&&external_rtc_read(out)){active_rtc=ActiveRtc::External;hardware_rtc_ok=true;return true;}picocalc::keyboard::RtcDateTime k;if(configured_rtc_source!=RtcSource::Off&&configured_rtc_source!=RtcSource::External&&picocalc::keyboard::read_rtc(k,configured_rtc_address)){out={k.year,k.month,k.day,k.hour,k.minute,k.second};active_rtc=ActiveRtc::Internal;hardware_rtc_ok=true;return true;}return false;}
+
+RtcDevice device_for_address(std::uint8_t address) {
+    return address == rtc::default_address(RtcDevice::Ds3231)
+        ? RtcDevice::Ds3231 : RtcDevice::Pcf8563;
 }
-void set_rtc_source(RtcSource source){configured_rtc_source=source;next_hardware_rtc_probe_us=0;hardware_rtc_probed=false;hardware_rtc_ok=false;active_rtc=ActiveRtc::None;}
-RtcSource rtc_source(){return configured_rtc_source;}
-const char* rtc_source_name(){switch(configured_rtc_source){case RtcSource::Auto:return "AUTO";case RtcSource::External:return "EXTERNAL";case RtcSource::Internal:return "INTERNAL";case RtcSource::Off:return "OFF";}return "AUTO";}
-bool set_rtc_address(std::uint8_t v){if(v<8||v>0x77)return false;configured_rtc_address=v;set_rtc_source(configured_rtc_source);return true;}
-std::uint8_t rtc_address(){return configured_rtc_address;}
-bool probe_rtc(){DateTime d;const bool ok=probe_selected(d);if(ok){set_software_clock(d);next_hardware_rtc_probe_us=to_us_since_boot(get_absolute_time())+60000000u;}return ok;}
-const char* rtc_location(){return active_rtc==ActiveRtc::External?"EXT":active_rtc==ActiveRtc::Internal?"INT":"OFF";}
-I2cResult external_i2c_read(std::uint8_t a,std::uint8_t r,std::uint8_t& v){return static_cast<I2cResult>(picocalc::external_i2c::read_register(a,r,v));}
-I2cResult external_i2c_write(std::uint8_t a,std::uint8_t r,std::uint8_t v){return static_cast<I2cResult>(picocalc::external_i2c::write_register(a,r,v));}
-int external_i2c_scan(std::uint8_t* a,int cap){int count=0;picocalc::external_i2c::scan(a,cap,count);return count;}
-const char* i2c_result_text(I2cResult x){switch(x){case I2cResult::Ok:return "OK";case I2cResult::Nack:return "I2C NACK";case I2cResult::Timeout:return "I2C TIMEOUT";case I2cResult::Busy:return "I2C BUSY";case I2cResult::BadAddress:return "BAD I2C ADDRESS";}return "I2C ERROR";}
-bool get_datetime(DateTime& out){const uint64_t now=to_us_since_boot(get_absolute_time());if(now>=next_hardware_rtc_probe_us){if(probe_selected(out)){set_software_clock(out);next_hardware_rtc_probe_us=now+60000000u;return true;}next_hardware_rtc_probe_us=now+60000000u;}return read_software_clock(out);}
-bool set_datetime(const DateTime& v){set_software_clock(v);if(!hardware_rtc_available())return true;bool ok=false;if(active_rtc==ActiveRtc::External)ok=external_rtc_write(v);else if(active_rtc==ActiveRtc::Internal){picocalc::keyboard::RtcDateTime k{v.year,v.month,v.day,v.hour,v.minute,v.second};ok=picocalc::keyboard::write_rtc(k,configured_rtc_address);}hardware_rtc_ok=ok;return true;}
-bool hardware_rtc_available(){return hardware_rtc_probed&&hardware_rtc_ok;}
-const char* datetime_last_error(){return hardware_rtc_available()?"NONE":"RTC NOT FOUND";}
+
+bool external_rtc_read_at(
+    RtcDevice device,
+    std::uint8_t address,
+    DateTime& out
+) {
+    std::uint8_t data[7] = {};
+    if (picocalc::external_i2c::read_registers(
+            address,
+            rtc::first_register(device),
+            data,
+            sizeof(data)
+        ) != picocalc::external_i2c::Result::Ok) {
+        return false;
+    }
+    return rtc::decode(device, data, sizeof(data), out);
+}
+
+bool external_rtc_read(DateTime& out) {
+    struct Candidate {
+        RtcDevice device;
+        std::uint8_t address;
+    };
+    const Candidate candidates[] = {
+        {device_for_address(configured_rtc_address), configured_rtc_address},
+        {RtcDevice::Pcf8563, rtc::default_address(RtcDevice::Pcf8563)},
+        {RtcDevice::Ds3231, rtc::default_address(RtcDevice::Ds3231)}
+    };
+
+    for (std::size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); ++i) {
+        bool duplicate = false;
+        for (std::size_t j = 0; j < i; ++j) {
+            if (candidates[j].device == candidates[i].device &&
+                candidates[j].address == candidates[i].address) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+
+        DateTime candidate;
+        if (!external_rtc_read_at(
+                candidates[i].device,
+                candidates[i].address,
+                candidate)) {
+            continue;
+        }
+        out = candidate;
+        active_rtc_device = candidates[i].device;
+        active_rtc_address = candidates[i].address;
+        return true;
+    }
+    return false;
+}
+
+bool external_rtc_write(const DateTime& value) {
+    if (active_rtc_device == RtcDevice::None || active_rtc_address == 0)
+        return false;
+
+    std::uint8_t payload[7] = {};
+    if (!rtc::encode(
+            active_rtc_device, value, payload, sizeof(payload))) {
+        return false;
+    }
+
+    std::uint8_t packet[8] = {};
+    packet[0] = rtc::first_register(active_rtc_device);
+    for (std::size_t i = 0; i < sizeof(payload); ++i)
+        packet[i + 1] = payload[i];
+
+    if (picocalc::external_i2c::write_bytes(
+            active_rtc_address,
+            packet,
+            sizeof(packet)
+        ) != picocalc::external_i2c::Result::Ok) {
+        return false;
+    }
+
+    DateTime verify;
+    return external_rtc_read_at(
+        active_rtc_device, active_rtc_address, verify);
+}
+
+bool probe_selected(DateTime& out) {
+    hardware_rtc_probed = true;
+    hardware_rtc_ok = false;
+    active_rtc = ActiveRtc::None;
+    active_rtc_device = RtcDevice::None;
+    active_rtc_address = 0;
+
+    if (configured_rtc_source != RtcSource::Off &&
+        configured_rtc_source != RtcSource::Internal &&
+        external_rtc_read(out)) {
+        active_rtc = ActiveRtc::External;
+        hardware_rtc_ok = true;
+        return true;
+    }
+
+    picocalc::keyboard::RtcDateTime keyboard_time;
+    if (configured_rtc_source != RtcSource::Off &&
+        configured_rtc_source != RtcSource::External &&
+        picocalc::keyboard::read_rtc(
+            keyboard_time, configured_rtc_address)) {
+        out = {
+            keyboard_time.year,
+            keyboard_time.month,
+            keyboard_time.day,
+            keyboard_time.hour,
+            keyboard_time.minute,
+            keyboard_time.second
+        };
+        active_rtc = ActiveRtc::Internal;
+        active_rtc_device = RtcDevice::Pcf8563;
+        active_rtc_address = configured_rtc_address;
+        hardware_rtc_ok = true;
+        return true;
+    }
+    return false;
+}
+
+} // namespace
+
+void set_rtc_source(RtcSource source) {
+    configured_rtc_source = source;
+    next_hardware_rtc_probe_us = 0;
+    hardware_rtc_probed = false;
+    hardware_rtc_ok = false;
+    active_rtc = ActiveRtc::None;
+    active_rtc_device = RtcDevice::None;
+    active_rtc_address = 0;
+}
+
+RtcSource rtc_source() { return configured_rtc_source; }
+
+const char* rtc_source_name() {
+    switch (configured_rtc_source) {
+    case RtcSource::Auto: return "AUTO";
+    case RtcSource::External: return "EXTERNAL";
+    case RtcSource::Internal: return "INTERNAL";
+    case RtcSource::Off: return "OFF";
+    }
+    return "AUTO";
+}
+
+bool set_rtc_address(std::uint8_t value) {
+    if (value < 8 || value > 0x77) return false;
+    configured_rtc_address = value;
+    set_rtc_source(configured_rtc_source);
+    return true;
+}
+
+std::uint8_t rtc_address() { return configured_rtc_address; }
+
+bool probe_rtc() {
+    DateTime value;
+    const bool ok = probe_selected(value);
+    if (ok) {
+        set_software_clock(value);
+        next_hardware_rtc_probe_us =
+            to_us_since_boot(get_absolute_time()) + 60000000u;
+    }
+    return ok;
+}
+
+const char* rtc_location() {
+    return active_rtc == ActiveRtc::External ? "EXT" :
+           active_rtc == ActiveRtc::Internal ? "INT" : "OFF";
+}
+
+RtcDevice rtc_device() { return active_rtc_device; }
+
+const char* rtc_device_name() {
+    return rtc::device_name(active_rtc_device);
+}
+
+std::uint8_t rtc_active_address() {
+    return active_rtc_address ? active_rtc_address : configured_rtc_address;
+}
+
+I2cResult external_i2c_read(
+    std::uint8_t address,
+    std::uint8_t reg,
+    std::uint8_t& value
+) {
+    return static_cast<I2cResult>(
+        picocalc::external_i2c::read_register(address, reg, value));
+}
+
+I2cResult external_i2c_write(
+    std::uint8_t address,
+    std::uint8_t reg,
+    std::uint8_t value
+) {
+    return static_cast<I2cResult>(
+        picocalc::external_i2c::write_register(address, reg, value));
+}
+
+int external_i2c_scan(std::uint8_t* addresses, int capacity) {
+    int count = 0;
+    picocalc::external_i2c::scan(addresses, capacity, count);
+    return count;
+}
+
+const char* i2c_result_text(I2cResult result) {
+    switch (result) {
+    case I2cResult::Ok: return "OK";
+    case I2cResult::Nack: return "I2C NACK";
+    case I2cResult::Timeout: return "I2C TIMEOUT";
+    case I2cResult::Busy: return "I2C BUSY";
+    case I2cResult::BadAddress: return "BAD I2C ADDRESS";
+    }
+    return "I2C ERROR";
+}
+
+bool get_datetime(DateTime& out) {
+    const uint64_t now = to_us_since_boot(get_absolute_time());
+    if (now >= next_hardware_rtc_probe_us) {
+        if (probe_selected(out)) {
+            set_software_clock(out);
+            next_hardware_rtc_probe_us = now + 60000000u;
+            return true;
+        }
+        next_hardware_rtc_probe_us = now + 60000000u;
+    }
+    return read_software_clock(out);
+}
+
+bool set_datetime(const DateTime& value) {
+    set_software_clock(value);
+    if (!hardware_rtc_available()) return true;
+
+    bool ok = false;
+    if (active_rtc == ActiveRtc::External) {
+        ok = external_rtc_write(value);
+    } else if (active_rtc == ActiveRtc::Internal) {
+        picocalc::keyboard::RtcDateTime keyboard_time{
+            value.year, value.month, value.day,
+            value.hour, value.minute, value.second
+        };
+        ok = picocalc::keyboard::write_rtc(
+            keyboard_time, active_rtc_address);
+    }
+    hardware_rtc_ok = ok;
+    return true;
+}
+
+bool hardware_rtc_available() {
+    return hardware_rtc_probed && hardware_rtc_ok;
+}
+
+const char* datetime_last_error() {
+    return hardware_rtc_available() ? "NONE" : "RTC NOT FOUND";
+}
+
 bool set_lcd_backlight(std::uint8_t value) {
     return picocalc::keyboard::set_lcd_backlight(value);
 }
@@ -448,7 +713,6 @@ void put_char(char c) {
     if (console_uses_serial()) {
         putchar_raw(c);
     }
-    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_char(c);
 }
 
 void put_string(const char* text) {
@@ -464,7 +728,6 @@ void put_string(const char* text) {
             putchar_raw(*p++);
         }
     }
-    if (bluetooth_serial::console_enabled()) bluetooth_serial::write_console_text(text);
 }
 
 void clear_to_eol() {
@@ -472,7 +735,7 @@ void clear_to_eol() {
         picocalc::display::clear_to_eol();
     }
 
-    if (console_uses_serial() || bluetooth_serial::console_enabled()) {
+    if (console_uses_serial()) {
         // ANSI erase from cursor to end of line.
         serial_put_string_raw("\x1b[K");
     }
@@ -493,6 +756,10 @@ int text_columns() {
 int text_rows() {
     return picocalc::display::text_rows -
         (picocalc::display::function_key_bar_enabled() ? 1 : 0);
+}
+
+void set_cursor_visible(bool visible) {
+    picocalc::display::set_cursor_visible(visible);
 }
 
 void set_cursor_position(int column, int row) {
@@ -618,6 +885,10 @@ std::uint32_t monotonic_millis() {
     return to_ms_since_boot(get_absolute_time());
 }
 
+std::uint64_t monotonic_micros() {
+    return to_us_since_boot(get_absolute_time());
+}
+
 std::uint32_t system_clock_hz() {
     return clock_get_hz(clk_sys);
 }
@@ -629,7 +900,13 @@ std::uint32_t full_cpu_clock_hz() {
 }
 
 bool set_cpu_clock_mhz(std::uint32_t mhz) {
-    if (mhz != 150u && mhz != 100u && mhz != 75u) {
+    if (!system_controls::cpu_profile_supported(mhz)) {
+        return false;
+    }
+    if (rmb::psram::busy()) {
+        return false;
+    }
+    if (usb_msc::active()) {
         return false;
     }
 
@@ -637,16 +914,122 @@ bool set_cpu_clock_mhz(std::uint32_t mhz) {
         cpu_clock_source_hz = clock_get_hz(clk_sys);
     }
 
+    // Once the experimental profile has changed PLL_SYS to 200 MHz, do not
+    // leave that PLL configuration behind for the rated profiles. In
+    // particular, deriving 75 MHz from 200 MHz requires a fractional 8/3
+    // clk_sys divider and has been observed to stop the PicoCalc display.
+    // Restore the rated 150 MHz PLL first; 150, 100, and 75 MHz then use the
+    // same proven source/divider combinations as a fresh boot.
+    if (mhz != 200u && cpu_clock_source_hz > 150000000u) {
+        // Reprogramming PLL_SYS after CYW43's PIO transport has been
+        // initialized is unsafe. Fail the requested change rather than
+        // risking a system or display lockup; reboot remains the recovery
+        // path and starts at 150 MHz.
+        if (wireless::initialized()) {
+            return false;
+        }
+
+        const std::uint32_t previous_source_hz = cpu_clock_source_hz;
+        const std::uint32_t usb_pll_hz = clock_get_hz(clk_usb);
+
+        clock_configure_undivided(
+            clk_peri,
+            0,
+            CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
+            usb_pll_hz
+        );
+
+        if (!set_sys_clock_khz(150000u, false)) {
+            clock_configure_undivided(
+                clk_peri,
+                0,
+                CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
+                previous_source_hz
+            );
+            return false;
+        }
+
+        cpu_clock_source_hz = clock_get_hz(clk_sys);
+        if (cpu_clock_source_hz != 150000000u) {
+            return false;
+        }
+
+        clock_configure_undivided(
+            clk_peri,
+            0,
+            CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
+            cpu_clock_source_hz
+        );
+        peripheral_clock_isolated = true;
+    }
+
+    // Entering 200 MHz is the only transition that raises PLL_SYS.
+    // Never do that after CYW43 has been initialized: its PIO transport was
+    // configured against the previous clk_sys. Select 200 MHz first, then
+    // enable the board LED, Wi-Fi, or Bluetooth.
+    if (mhz == 200u && cpu_clock_source_hz < 200000000u) {
+        if (wireless::initialized()) {
+            return false;
+        }
+
+        uint vco_hz = 0;
+        uint post_div1 = 0;
+        uint post_div2 = 0;
+        if (!check_sys_clock_khz(
+                200000u, &vco_hz, &post_div1, &post_div2)) {
+            return false;
+        }
+
+        const std::uint32_t previous_source_hz = cpu_clock_source_hz;
+        const std::uint32_t usb_pll_hz = clock_get_hz(clk_usb);
+
+        // Keep peripheral clocks alive while PLL_SYS is reprogrammed. No
+        // storage or CYW43 transaction is allowed across this short window.
+        clock_configure_undivided(
+            clk_peri,
+            0,
+            CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_USB,
+            usb_pll_hz
+        );
+
+        // The SDK chooses the validated PLL parameters. VREG is deliberately
+        // left untouched: 200 MHz remains an experimental session-only mode.
+        if (!set_sys_clock_khz(200000u, false)) {
+            clock_configure_undivided(
+                clk_peri,
+                0,
+                CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
+                previous_source_hz
+            );
+            return false;
+        }
+
+        cpu_clock_source_hz = clock_get_hz(clk_sys);
+        if (cpu_clock_source_hz < 200000000u) {
+            return false;
+        }
+
+        // LCD/SD SPI and UART were initialized from a 150 MHz peripheral
+        // clock. RP2350's 16-bit fractional divider keeps clk_peri at the same
+        // reported rate while PLL_SYS supplies 200 MHz to clk_sys.
+        if (!clock_configure(
+                clk_peri,
+                0,
+                CLOCKS_CLK_PERI_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
+                cpu_clock_source_hz,
+                150000000u)) {
+            return false;
+        }
+        peripheral_clock_isolated = true;
+    }
+
     const std::uint32_t source_mhz = cpu_clock_source_hz / 1000000u;
     if (source_mhz < mhz || source_mhz == 0) {
         return false;
     }
 
-    // At reset clk_peri normally follows clk_sys. If clk_sys is divided
-    // without first separating clk_peri, UART/SPI baud rates silently scale
-    // with the CPU clock even though their SDK divisors still assume the old
-    // frequency. Pin clk_peri directly to PLL_SYS once, at the same 150 MHz
-    // boot frequency, so UART, LCD SPI and SD SPI remain stable.
+    // Before the first overclock request, retain the existing 150 MHz PLL and
+    // isolate clk_peri from later clk_sys division.
     if (!peripheral_clock_isolated) {
         clock_configure_undivided(
             clk_peri,
@@ -657,24 +1040,21 @@ bool set_cpu_clock_mhz(std::uint32_t mhz) {
         peripheral_clock_isolated = true;
     }
 
-    const bool ok = clock_configure_mhz(
-        clk_sys,
-        CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLKSRC_CLK_SYS_AUX,
-        CLOCKS_CLK_SYS_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
-        source_mhz,
-        mhz
-    );
-    if (!ok) {
+    if (!clock_configure_mhz(
+            clk_sys,
+            CLOCKS_CLK_SYS_CTRL_SRC_VALUE_CLKSRC_CLK_SYS_AUX,
+            CLOCKS_CLK_SYS_CTRL_AUXSRC_VALUE_CLKSRC_PLL_SYS,
+            source_mhz,
+            mhz)) {
         return false;
     }
 
-    // I2C is clocked from clk_sys on RP2350 rather than clk_peri. Recompute
-    // its timing registers after every CPU clock change. This keeps the
-    // PicoCalc keyboard/RTC bus at its requested 10 kHz and, importantly,
-    // keeps transactions within the existing 5 ms timeout at 75 MHz.
+    // RP2350 I2C and PWM audio timing follow clk_sys. Recompute their SDK
+    // divisors after every profile change; clk_usb and clk_peri remain stable.
     picocalc::keyboard::reconfigure_bus_clock();
     picocalc::external_i2c::reconfigure_bus_clock();
     audio_reconfigure_clock();
+    psram::clock_changed();
 
     return true;
 }
@@ -683,14 +1063,8 @@ namespace {
 
 int poll_runtime_terminal_byte(){
  if(runtime_terminal_source==RuntimeTerminalSource::Serial)return console_uses_serial()?console_serial_read(0,true):-1;
- if(runtime_terminal_source==RuntimeTerminalSource::Bluetooth){
-  if(!bluetooth_serial::console_enabled()||!bluetooth_serial::connected()){runtime_terminal_source=RuntimeTerminalSource::None;runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;return -1;}
-  return bluetooth_serial::read_console();
- }
  int v=console_uses_serial()?console_serial_read(0):-1;
  if(v>=0){runtime_terminal_source=RuntimeTerminalSource::Serial;return v;}
- v=bluetooth_serial::console_enabled()?bluetooth_serial::read_console():-1;
- if(v>=0)runtime_terminal_source=RuntimeTerminalSource::Bluetooth;
  return v;
 }
 RuntimeKeyResult poll_runtime_terminal(){
@@ -700,7 +1074,7 @@ RuntimeKeyResult poll_runtime_terminal(){
   if(runtime_serial_state==RuntimeSerialState::Escape&&static_cast<std::int32_t>(now-runtime_serial_deadline_ms)>=0){runtime_serial_state=RuntimeSerialState::Idle;runtime_serial_length=0;runtime_terminal_source=RuntimeTerminalSource::None;return runtime_break();}
   return no_runtime_key();
  }
- auto& filter=runtime_terminal_source==RuntimeTerminalSource::Bluetooth?bluetooth_crlf_filter:serial_crlf_filter;
+ auto& filter=serial_crlf_filter;
  if(runtime_serial_state==RuntimeSerialState::Idle){
   if(filter.should_ignore(c)){runtime_terminal_source=RuntimeTerminalSource::None;return no_runtime_key();}
   if(c==0x03){runtime_terminal_source=RuntimeTerminalSource::None;return runtime_break();}
@@ -743,7 +1117,7 @@ RuntimeKeyResult poll_runtime_source() {
 
     next_runtime_keyboard_poll_ms = now + 200;
 
-    const int key = picocalc::keyboard::read_key();
+    const int key = unified_keyboard::read_key();
     // read_key() updates modifier/Caps state internally. Runtime input does
     // not redraw the status area because a full-screen graphics program may
     // be paused underneath it; the REPL refreshes status after RUN returns.
@@ -810,8 +1184,7 @@ bool break_requested() {
 
 int read_command_source(CommandInputSource source,unsigned timeout_us){
  if(source==CommandInputSource::Serial)return console_uses_serial()?console_serial_read(timeout_us,true):-1;
- if(source!=CommandInputSource::Bluetooth||!bluetooth_serial::console_enabled()||!bluetooth_serial::connected())return -1;
- const auto deadline=make_timeout_time_us(timeout_us);do{const int v=bluetooth_serial::read_console();if(v>=0)return v;if(timeout_us)sleep_us(50);}while(!time_reached(deadline));return -1;
+ return -1;
 }
 int decode_terminal_key(int c,CommandInputSource source){
  if(c==0x7f)c=0x08;if(c!=0x1b)return c;
@@ -820,24 +1193,59 @@ int decode_terminal_key(int c,CommandInputSource source){
  if(c2!='[')return 0x1b;const int c3=read_command_source(source,30000);
  if(c3=='A')return 0xb5;if(c3=='B')return 0xb6;if(c3=='C')return 0xb7;if(c3=='D')return 0xb4;if(c3=='H')return 0xd2;if(c3=='F')return 0xd5;
  if(c3=='3')return read_command_source(source,30000)=='~'?0xd4:0x1b;
+ if(c3=='5')return read_command_source(source,30000)=='~'?0xd6:0x1b;
+ if(c3=='6')return read_command_source(source,30000)=='~'?0xd7:0x1b;
  if(c3=='1'||c3=='2'){const int c4=read_command_source(source,30000),c5=read_command_source(source,30000);if(c4>='0'&&c4<='9'&&c5=='~'){const int code=(c3-'0')*10+(c4-'0');if(code==15)return 0x85;if(code==17)return 0x86;if(code==18)return 0x87;if(code==19)return 0x88;if(code==20)return 0x89;if(code==21)return 0x90;}}
  return 0x1b;
 }
+void collect_navigation_burst(
+    int key,
+    NavigationStepCallback callback,
+    void* context
+) {
+    if (!callback || !picocalc::keyboard::navigation_key_held(key)) return;
+
+    bool saw_repeat = false;
+    std::uint32_t last_activity = to_ms_since_boot(get_absolute_time());
+    while (picocalc::keyboard::navigation_key_held(key)) {
+        if (background_service_callback) {
+            background_service_callback(background_service_context);
+        }
+
+        const int next = unified_keyboard::read_key();
+        if (next == key) {
+            callback(next, context);
+            saw_repeat = true;
+            last_activity = to_ms_since_boot(get_absolute_time());
+        } else if (next >= 0) {
+            // Preserve a key pressed during the navigation burst. The matching
+            // release normally ends the loop before the following key is read.
+            if (pending_command_key < 0) pending_command_key = next;
+            break;
+        }
+
+        const std::uint32_t now = to_ms_since_boot(get_absolute_time());
+        const std::uint32_t idle_limit_ms = saw_repeat ? 200u : 700u;
+        if (static_cast<std::uint32_t>(now - last_activity) >= idle_limit_ms) {
+            break;
+        }
+        sleep_ms(1);
+    }
+}
+
 int get_char(){
  if(serial_transfer_active())return -1;constexpr uint32_t blink_ms=500;bool cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);uint32_t next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;static bool last_shift_held=false;
  while(true){
   if(background_service_callback)background_service_callback(background_service_context);
-  if(command_input_source==CommandInputSource::Bluetooth&&(!bluetooth_serial::console_enabled()||!bluetooth_serial::connected()))command_input_source=CommandInputSource::None;
-  int key=-1;if(command_input_source==CommandInputSource::None||command_input_source==CommandInputSource::Local)key=picocalc::keyboard::read_key();
-  const bool shift=picocalc::keyboard::shift_held();if(shift!=last_shift_held){last_shift_held=shift;if(status_refresh_callback)status_refresh_callback(status_refresh_context);}
+  int key=-1;if(pending_command_key>=0){key=pending_command_key;pending_command_key=-1;}else if(command_input_source==CommandInputSource::None||command_input_source==CommandInputSource::Local)key=unified_keyboard::read_key();
+  const bool shift=unified_keyboard::shift_held();if(shift!=last_shift_held){last_shift_held=shift;if(status_refresh_callback)status_refresh_callback(status_refresh_context);}
   if(key==picocalc::keyboard::key_hotkey_screenshot){if(screenshot_callback)screenshot_callback(screenshot_context);continue;}
   if(key==picocalc::keyboard::key_hotkey_sleep){if(console_uses_lcd())picocalc::display::set_cursor_visible(false);enter_sleep_mode();cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;continue;}
   if(key==0xc1){if(status_refresh_callback)status_refresh_callback(status_refresh_context);continue;}
   if(key>=0){audio_key_click();if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=CommandInputSource::Local;if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return key;}
   int c=-1;CommandInputSource source=command_input_source;
   if(source==CommandInputSource::None||source==CommandInputSource::Serial){c=console_uses_serial()?console_serial_read(0,source==CommandInputSource::Serial):-1;if(c>=0)source=CommandInputSource::Serial;}
-  if(c<0&&(command_input_source==CommandInputSource::None||command_input_source==CommandInputSource::Bluetooth)){c=bluetooth_serial::console_enabled()?bluetooth_serial::read_console():-1;if(c>=0)source=CommandInputSource::Bluetooth;}
-  if(c>=0){auto& filter=source==CommandInputSource::Bluetooth?bluetooth_crlf_filter:serial_crlf_filter;if(filter.should_ignore(c))continue;if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=source;c=decode_terminal_key(c,source);if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return c;}
+  if(c>=0){auto& filter=serial_crlf_filter;if(filter.should_ignore(c))continue;if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=source;c=decode_terminal_key(c,source);if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return c;}
   const uint32_t now=to_ms_since_boot(get_absolute_time());if(static_cast<int32_t>(now-next_blink)>=0){cursor_visible=!cursor_visible;if(console_uses_lcd())picocalc::display::set_cursor_visible(cursor_visible);next_blink=now+blink_ms;}sleep_ms(4);
  }
 }

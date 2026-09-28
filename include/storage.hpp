@@ -7,6 +7,12 @@
 
 namespace rmb::storage {
 
+struct DirectoryEntry {
+    char name[80] = {};
+    std::uint32_t size = 0;
+    bool directory = false;
+};
+
 enum class Owner : std::uint8_t { Firmware, UsbHost, Transition, Unavailable };
 enum class UsbEvent : std::uint8_t { None, ReturnedToFirmware, UnsafeDisconnect, CardRemoved, IoError };
 
@@ -59,6 +65,18 @@ std::size_t collect_transfer_files(
     std::size_t max_files,
     std::size_t slot_size
 );
+std::size_t collect_root_entries(
+    DirectoryEntry* output,
+    std::size_t max_entries
+);
+bool root_entry_info(const char* name, DirectoryEntry& output);
+bool rename_root_file(
+    const char* old_name,
+    const char* new_name,
+    const char* current_file,
+    bool recovery = false
+);
+bool delete_root_file(const char* name, const char* current_file);
 
 bool read_root_text(
     const char* filename,

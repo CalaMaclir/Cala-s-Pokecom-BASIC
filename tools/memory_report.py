@@ -25,6 +25,6 @@ print('\nARM object sizes (bytes):')
 print('\n'.join(line for line in run('arm-none-eabi-nm', '-S', '--size-sort', '--radix=d', str(build / 'memory_sizes.o')).splitlines() if 'memory_size_' in line))
 print('\nCompiler stack usage:')
 for path in build.rglob('*.su'):
-    if any(name in path.name for name in ('vm.cpp', 'basic_compiler.cpp', 'repl.cpp', 'xmodem.cpp', 'ymodem.cpp', 'serial_transfer.cpp', 'program_store.cpp', 'storage.cpp', 'usb_msc.cpp')):
+    if any(name in path.name for name in ('vm.cpp', 'basic_compiler.cpp', 'repl.cpp', 'editor_model.cpp', 'full_screen_editor.cpp', 'xmodem.cpp', 'ymodem.cpp', 'serial_transfer.cpp', 'program_store.cpp', 'storage.cpp', 'usb_msc.cpp')):
         print(path.name)
         print(path.read_text())

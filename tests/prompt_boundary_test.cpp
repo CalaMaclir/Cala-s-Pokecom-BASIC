@@ -30,4 +30,10 @@ int main(){
   output="BASIC> ";key=f;rmb::LineEditor::read(input,sizeof(input));
   assert(rmb::LineEditor::last_special_key()==f);assert(output=="BASIC> ");
  }
+
+ // Rename-style text entry starts with editable text already in the buffer.
+ output="New: ";key=0x0a;
+ assert(rmb::LineEditor::read(input,sizeof(input),nullptr,"OLD.BAS")==7);
+ assert(std::string(input)=="OLD.BAS");
+ assert(output=="New: \r\n");
 }

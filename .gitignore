@@ -1,6 +1,4 @@
 build/
-tmp/
-output/
 .vscode/
 .idea/
 *.uf2

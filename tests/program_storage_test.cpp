@@ -1,5 +1,6 @@
 #include "program_store.hpp"
 #include "program_file_guard.hpp"
+#include "file_management.hpp"
 #include "transfer_file.hpp"
 #include "basic_compiler.hpp"
 #include <cassert>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <chrono>
 #include <unistd.h>
 namespace {
@@ -59,6 +61,22 @@ std::string listing(const ProgramStore& p) {
     }
     return out;
 }
+struct VisitedLine {
+    std::size_t index;
+    std::int32_t number;
+    std::string body;
+};
+bool capture_line(
+    std::size_t index,
+    std::int32_t number,
+    const char* body,
+    std::size_t length,
+    void* context
+) {
+    auto* lines=static_cast<std::vector<VisitedLine>*>(context);
+    lines->push_back({index,number,std::string(body,length)});
+    return true;
+}
 std::string make_body(std::size_t length,const std::string& tail={}) {
     assert(length>=tail.size());
     return std::string(length-tail.size(),'X')+tail;
@@ -90,6 +108,17 @@ int main(int argc,char** argv) {
         // makes SAVE available without silently migrating the live backend.
         if(scenario==3) card=mounted=true;
         assert(current.set_line(10,"PRINT 1"));
+        std::int32_t metadata_number=0;
+        std::size_t metadata_length=0;
+        assert(current.read_line_metadata(
+            0,metadata_number,metadata_length));
+        assert(metadata_number==10&&metadata_length==7);
+        assert(!current.read_line_metadata(
+            1,metadata_number,metadata_length));
+        std::vector<VisitedLine> visited;
+        assert(current.visit_line_range(0,33,capture_line,&visited));
+        assert(visited.size()==1&&visited[0].index==0&&
+               visited[0].number==10&&visited[0].body=="PRINT 1");
         char name[24];std::snprintf(name,sizeof(name),"MODE%d",scenario);
         assert(current.save(name));
         assert(current.filename()[0] && !current.is_dirty());
@@ -100,12 +129,73 @@ int main(int argc,char** argv) {
     }
     card=mounted=true;
     {
+        ProgramStore spaced;spaced.set_root(root.c_str());
+        assert(spaced.initialize(ProgramStorageMode::InternalRam));
+        assert(spaced.set_line(10,"PRINT \"SPACE\""));
+        assert(spaced.save("MY PROGRAM"));
+        assert(!std::strcmp(spaced.filename(),"MY PROGRAM.BAS"));
+        assert(read(root+"MY PROGRAM.BAS")=="10 PRINT \"SPACE\"\n");
+        assert(spaced.clear());
+        assert(spaced.load("MY PROGRAM.BAS"));
+        assert(listing(spaced)=="10 PRINT \"SPACE\"\n");
+    }
+    {
+        write(root+"OLD SOURCE.BAS","10 PRINT 41\n");
+        ProgramStore renamed;renamed.set_root(root.c_str());
+        assert(renamed.initialize(ProgramStorageMode::SdCard));
+        assert(renamed.load("OLD SOURCE.BAS"));
+        assert(file_management::rename_file(
+            root.c_str(),"OLD SOURCE.BAS","NEW SOURCE.BAS",
+            renamed.filename())==file_management::Result::Success);
+        assert(renamed.note_source_renamed(
+            "OLD SOURCE.BAS","NEW SOURCE.BAS"));
+        assert(!std::strcmp(renamed.filename(),"NEW SOURCE.BAS"));
+        assert(!std::filesystem::exists(root+"OLD SOURCE.BAS"));
+        assert(read(root+"NEW SOURCE.BAS")=="10 PRINT 41\n");
+    }
+    {
+        write(root+"ROLL BACK.BAS","10 PRINT 42\n");
+        ProgramStore rollback;rollback.set_root(root.c_str());
+        assert(rollback.initialize(ProgramStorageMode::SdCard));
+        assert(rollback.load("ROLL BACK.BAS"));
+        assert(file_management::rename_file(
+            root.c_str(),"ROLL BACK.BAS","ROLL FORWARD.BAS",
+            rollback.filename())==file_management::Result::Success);
+        locked=true;
+        assert(!rollback.note_source_renamed(
+            "ROLL BACK.BAS","ROLL FORWARD.BAS"));
+        locked=false;
+        assert(file_management::rename_file(
+            root.c_str(),"ROLL FORWARD.BAS","ROLL BACK.BAS",
+            rollback.filename(),file_management::Access::Allowed,true)==
+            file_management::Result::Success);
+        assert(!std::strcmp(rollback.filename(),"ROLL BACK.BAS"));
+        assert(std::filesystem::exists(root+"ROLL BACK.BAS"));
+        assert(!std::filesystem::exists(root+"ROLL FORWARD.BAS"));
+        assert(read(root+"ROLL BACK.BAS")=="10 PRINT 42\n");
+    }
+    {
         ProgramStore limits;limits.set_root(root.c_str());
         assert(limits.initialize(ProgramStorageMode::InternalRam));
         assert(limits.set_line(10,std::string(191,'R').c_str()));
+        std::int32_t maximum_number=0;
+        std::size_t maximum_length=0;
+        assert(limits.read_line_metadata(
+            0,maximum_number,maximum_length));
+        assert(maximum_number==10&&maximum_length==191);
+        std::int32_t borrowed_number=0;
+        const char* borrowed_body=nullptr;
+        std::size_t borrowed_length=0;
+        assert(limits.read_line_text(
+            0,borrowed_number,borrowed_body,borrowed_length));
+        const std::string borrowed_copy(borrowed_body,borrowed_length);
+        assert(limits.read_line_metadata(
+            0,maximum_number,maximum_length));
+        assert(std::string(borrowed_body,borrowed_length)==borrowed_copy);
         const auto kept=listing(limits);
         assert(!limits.set_line(20,std::string(192,'R').c_str()));
-        assert(!std::strcmp(limits.error(),"LINE TOO LONG"));
+        assert(!std::strcmp(
+            limits.error(), "LINE TOO LONG FOR RAM PROGRAM STORAGE"));
         assert(listing(limits)==kept);
         write(root+"RAM192.BAS","10 "+std::string(192,'R')+"\n");
         assert(!limits.load("RAM192"));
@@ -159,13 +249,76 @@ int main(int argc,char** argv) {
     card=false;assert(!p.clear());assert(p.suspended());assert(!p.switch_mode(ProgramStorageMode::InternalRam));
     assert(p.switch_mode(ProgramStorageMode::InternalRam,true));assert(p.size()==0);
     card=mounted=true;
-    // Transactional imports preserve sorting, duplicate replacement and deletion semantics.
+    // Transactional imports preserve sorting, duplicate replacement and
+    // persisted empty source lines. Direct-mode deletion is a REPL concern.
     write(root+"SORT.BAS","30 END\n10 PRINT 1\n20 PRINT 2\n10 PRINT 3\n20\n");
-    assert(p.load("SORT"));assert(listing(p)=="10 PRINT 3\n30 END\n");
-    assert(p.switch_mode(ProgramStorageMode::SdCard));assert(p.load("SORT"));assert(listing(p)=="10 PRINT 3\n30 END\n");
+    assert(p.load("SORT"));assert(listing(p)=="10 PRINT 3\n20 \n30 END\n");
+    assert(p.switch_mode(ProgramStorageMode::SdCard));assert(p.load("SORT"));assert(listing(p)=="10 PRINT 3\n20 \n30 END\n");
+
+    std::string range_program;
+    for(int i=1;i<=40;++i)
+        range_program+=std::to_string(i*10)+" PRINT "+std::to_string(i)+"\n";
+    write(root+"RANGE.BAS",range_program);
+    assert(p.load("RANGE"));
+    for(const std::size_t index:{0u,19u,39u}) {
+        std::int32_t number=0;
+        std::size_t length=0;
+        assert(p.read_line_metadata(index,number,length));
+        assert(number==static_cast<std::int32_t>((index+1)*10));
+        assert(length==std::string(
+            "PRINT "+std::to_string(index+1)).size());
+    }
+    std::int32_t borrowed_number=0;
+    const char* borrowed_body=nullptr;
+    std::size_t borrowed_length=0;
+    assert(p.read_line_text(
+        19,borrowed_number,borrowed_body,borrowed_length));
+    const std::string borrowed_copy(borrowed_body,borrowed_length);
+    std::int32_t metadata_number=0;
+    std::size_t metadata_length=0;
+    assert(p.read_line_metadata(
+        39,metadata_number,metadata_length));
+    assert(std::string(borrowed_body,borrowed_length)==borrowed_copy);
+    std::vector<VisitedLine> range_visited;
+    assert(p.visit_line_range(0,33,capture_line,&range_visited));
+    assert(range_visited.size()==33&&
+           range_visited.front().number==10&&
+           range_visited.back().number==330);
+    range_visited.clear();
+    assert(p.visit_line_range(35,33,capture_line,&range_visited));
+    assert(range_visited.size()==5&&
+           range_visited.front().number==360&&
+           range_visited.back().number==400);
+    locked=true;
+    range_visited.clear();
+    assert(!p.visit_line_range(
+        0,33,capture_line,&range_visited));
+    locked=false;
+    assert(!p.suspended());
+    card=false;
+    assert(!p.read_line_metadata(
+        0,metadata_number,metadata_length));
+    assert(p.suspended());
+    card=true;
+    assert(p.resume());
+
     auto before=listing(p);write(root+"BAD.BAS","10 PRINT 1\nBAD\n");assert(!p.load("BAD"));assert(listing(p)==before);
     // SD line boundaries are independent of ProgramLine/RAM capacity.
-    write(root+"EMPTY.BAS","10 \n");assert(p.load("EMPTY"));assert(p.size()==0);
+    write(root+"EMPTY.BAS","10 \n");assert(p.load("EMPTY"));
+    assert(p.size()==1&&listing(p)=="10 \n");
+    std::vector<VisitedLine> empty_visited;
+    assert(p.visit_line_range(0,33,capture_line,&empty_visited));
+    assert(empty_visited.size()==1&&empty_visited[0].number==10&&
+           empty_visited[0].body.empty());
+    std::int32_t empty_metadata_number=0;
+    std::size_t empty_metadata_length=99;
+    assert(p.read_line_metadata(
+        0,empty_metadata_number,empty_metadata_length));
+    assert(empty_metadata_number==10&&empty_metadata_length==0);
+    assert(!p.read_line_metadata(
+        1,empty_metadata_number,empty_metadata_length));
+    assert(p.save("EMPTYROUND"));assert(p.clear()&&p.load("EMPTYROUND"));
+    assert(p.size()==1&&listing(p)=="10 \n");
     for(const std::size_t length:{1u,190u,191u,192u,511u,1023u,2047u}) {
         const auto body=make_body(length);
         const auto name="BOUND"+std::to_string(length)+".BAS";
@@ -193,6 +346,31 @@ int main(int argc,char** argv) {
     write(root+"LONGOK.BAS",long_program);
     assert(p.load("LONGOK"));
     assert(listing(p)==long_program);
+    std::vector<VisitedLine> long_visited;
+    assert(p.visit_line_range(0,33,capture_line,&long_visited));
+    assert(long_visited.size()==2&&long_visited[0].number==10&&
+           long_visited[0].body==long_body&&
+           long_visited[1].number==20&&
+           long_visited[1].body=="PRINT 77");
+    // Stage 2 edits the complete SD line without routing it through the
+    // fixed 191-character ProgramLine representation.
+    std::string edited_long="REM "+std::string(2043,'X');edited_long[2000]='Z';
+    assert(p.set_line(10,edited_long.c_str()));
+    std::int32_t edit_number=0;const char* edit_text=nullptr;
+    std::size_t edit_length=0;
+    assert(p.read_line_text(0,edit_number,edit_text,edit_length));
+    assert(edit_number==10&&edit_length==2047&&
+           std::string(edit_text,edit_length)==edited_long);
+    assert(!p.set_line(10,(edited_long+"X").c_str()));
+    assert(!std::strcmp(p.error(),"SD LINE TOO LONG"));
+    assert(p.read_line_text(0,edit_number,edit_text,edit_length));
+    assert(std::string(edit_text,edit_length)==edited_long);
+    assert(p.save("LONGEDIT"));
+    assert(p.clear()&&p.load("LONGEDIT"));
+    assert(p.read_line_text(0,edit_number,edit_text,edit_length));
+    assert(edit_length==2047&&std::string(edit_text,edit_length)==edited_long);
+    assert(p.load("LONGOK"));
+    assert(listing(p)==long_program);
     static CompiledProgram long_il;BasicCompiler long_compiler;
     assert(long_compiler.compile(p,long_il).ok);
     assert(p.save("LONGROUND"));
@@ -212,7 +390,9 @@ int main(int argc,char** argv) {
     mutate.seekp(3+500);mutate.put('Z');mutate.close();
     std::int32_t hash_number=0;const char* hash_text=nullptr;
     std::size_t hash_length=0;
-    assert(!p.read_line_text(0,hash_number,hash_text,hash_length));
+    std::vector<VisitedLine> changed_visited;
+    assert(!p.visit_line_range(
+        0,2,capture_line,&changed_visited));
     assert(std::strstr(p.error(),"SD SOURCE CHANGED"));
     write(long_work,long_program);assert(p.resume());
     assert(listing(p)==long_program);

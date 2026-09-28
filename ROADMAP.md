@@ -55,6 +55,17 @@
 - SD Program Storage：1024 lines × 2047 body characters
 - 外向けartifactを`CPokecombasic`へ統一
 
+## Version 0.90 Stage 5（開発中）
+
+- Files一覧でWAV／MP3を選択し、`P`でbackground再生／停止
+- `WAVPLAY`をMP3へ拡張（44.1／48 kHz、mono／stereo、streaming decode）
+- MP3再生時の200 MHz自動選択と終了時restore。利用不可時は安全なrated clockへfallback
+- Power／CPU menuはCYW43 serviceを内部で再起動し、200 MHz切り替え時の手動rebootを不要化
+- `PLAY`の出力gain改善とvoice数によるpeak変動の抑制
+- Master、WAV／MP3、PLAYの3系統volumeを独立設定
+- WAV／MP3の基準出力を従来比2倍へ拡張
+- Files再生中はdirectory cacheを維持し、不要な`STORAGE BUSY`表示を防止
+
 ## Future candidates
 
 - 実機runtime heap／stack high-water measurement

@@ -23,13 +23,20 @@ bool equal_name(const char* a, const char* b) {
 SafeFileWriter::~SafeFileWriter() { abort(); }
 
 bool SafeFileWriter::valid_root_name(const char* name) {
-    if (!name || !*name || std::strlen(name) > 79 || name[0] == '.' ||
-        name[std::strlen(name) - 1] == '.') return false;
+    if (!name || !*name) return false;
+    const std::size_t length = std::strlen(name);
+    if (length > 79 || name[0] == '.' || name[0] == ' ' ||
+        name[length - 1] == '.' || name[length - 1] == ' ') return false;
     if (std::strstr(name, "..")) return false;
     for (const char* p = name; *p; ++p) {
         const unsigned char c = static_cast<unsigned char>(*p);
         if (c < 0x20 || c == 0x7f || c == '/' || c == '\\') return false;
-        if (!(std::isalnum(c) || c == '_' || c == '-' || c == '.')) return false;
+        const bool ascii_alphanumeric =
+            (c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z');
+        if (!(ascii_alphanumeric || c == '_' || c == '-' || c == '.' ||
+              c == ' ')) return false;
     }
     return true;
 }

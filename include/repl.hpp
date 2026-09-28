@@ -4,9 +4,12 @@
 #include <cstdint>
 
 #include "basic_compiler.hpp"
+#include "bluetooth_hid_keyboard_core.hpp"
+#include "command_history.hpp"
 #include "platform.hpp"
 #include "program_store.hpp"
 #include "serial_transfer.hpp"
+#include "system_controls.hpp"
 #include "vm.hpp"
 
 namespace rmb {
@@ -29,13 +32,19 @@ private:
         ProgramStorageMode storage_mode = ProgramStorageMode::Auto;
         std::uint8_t backlight = 160;
         std::uint8_t theme = 0;
-        std::uint16_t cpu_mhz = 150;
+        std::uint16_t cpu_mhz = system_controls::safe_boot_cpu_mhz();
+        system_controls::BoardLedMode board_led =
+            system_controls::BoardLedMode::Off;
         std::uint32_t console_foreground = 0xffffff;
         std::uint32_t console_background = 0x000000;
         platform::ConsoleMode console_mode = platform::ConsoleMode::Both;
         std::uint8_t audio_volume = 70;
-        audio::KeyClickMode key_click = audio::KeyClickMode::Classic;
+        std::uint8_t wav_volume = 50;
+        std::uint8_t play_volume = 100;
+        audio::KeyClickMode key_click = audio::KeyClickMode::Low;
         bool startup_wav = true;
+        bluetooth_hid::KeyboardLayout bluetooth_keyboard_layout =
+            bluetooth_hid::KeyboardLayout::Jis;
         bool wifi_enabled = false;
         bool wifi_auto_rtc = true;
         int wifi_timezone_minutes = 540;
@@ -55,19 +64,13 @@ private:
     // Execution stacks are already shared by VM::run_impl; only direct scalar
     // snapshots persist separately, as required by the existing direct mode.
     VM vm_;
+    CommandHistory command_history_;
 
     Settings settings_;
     char current_filename_[kFilenameSize] = "UNTITLED";
     bool program_dirty_ = false;
+    bool full_screen_editor_active_ = false;
     std::uint32_t last_run_ms_ = 0;
-
-    // Stage 1 SPP test state lives in the UI layer, never in the transport.
-    bool bluetooth_test_active_ = false;
-    bool bluetooth_test_echo_ = true;
-    bool bluetooth_test_banner_sent_ = false;
-    bool bluetooth_console_link_active_ = false;
-    std::uint32_t bluetooth_test_rx_count_ = 0;
-    char bluetooth_test_last_rx_[24] = "-";
 
     void print_banner();
     void print_prompt();
@@ -101,6 +104,7 @@ private:
     void ensure_body_cursor();
 
     void show_system_menu();
+    void open_full_screen_editor();
     bool menu_files();
     void menu_quick_keys();
     void menu_display();
@@ -109,7 +113,8 @@ private:
     void menu_audio();
     void menu_wifi();
     void menu_bluetooth();
-    void menu_bluetooth_test();
+    void menu_bluetooth_keyboard();
+    void menu_bluetooth_devices();
     void menu_file_server();
     void menu_file_transfer();
     void menu_usb_storage();
@@ -120,7 +125,9 @@ private:
     void service_background();
     void print_program_error();
     void menu_power();
+    void menu_board_led();
     void menu_system_info();
+    void menu_psram_diagnostics();
 
     bool pick_program_file(char* output, std::size_t capacity);
     bool pick_transfer_file(char* output, std::size_t capacity, const char* title);
@@ -145,7 +152,12 @@ private:
     void draw_menu_message(int row, const char* text);
     void leave_menu_screen();
 
-    bool prompt_text(const char* prompt, char* output, std::size_t capacity);
+    bool prompt_text(
+        const char* prompt,
+        char* output,
+        std::size_t capacity,
+        const char* initial = nullptr
+    );
     void command_sd(char* argument);
     void command_date(char* argument);
     void command_time(char* argument);

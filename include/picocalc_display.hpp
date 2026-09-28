@@ -26,6 +26,14 @@ void draw_text_row(
     uint32_t foreground,
     uint32_t background
 );
+void draw_text_span(
+    int row,
+    int first_column,
+    const char* text,
+    int columns,
+    uint32_t foreground,
+    uint32_t background
+);
 
 int cursor_column();
 int cursor_row();

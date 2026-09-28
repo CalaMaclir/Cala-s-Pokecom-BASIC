@@ -41,6 +41,14 @@ struct SdProgramStore {
 // The compiler/VM work space is independent of this persistent source owner.
 class ProgramStore {
 public:
+    using LineVisitor = bool (*)(
+        std::size_t index,
+        std::int32_t number,
+        const char* body,
+        std::size_t length,
+        void* context
+    );
+
     ProgramStore() = default;
     ~ProgramStore();
     ProgramStore(const ProgramStore&) = delete;
@@ -63,14 +71,29 @@ public:
     bool erase_line(std::int32_t number);
     bool clear();
     bool read_line(std::size_t index, ProgramLine& out) const;
+    bool read_line_metadata(
+        std::size_t index,
+        std::int32_t& number,
+        std::size_t& length
+    ) const;
     bool read_line_text(std::size_t index, std::int32_t& number,
                         const char*& text, std::size_t& length) const;
+    bool visit_line_range(
+        std::size_t first,
+        std::size_t count,
+        LineVisitor visitor,
+        void* context
+    ) const;
     bool load(const char* name);
     bool save(const char* name);
+    bool note_source_renamed(
+        const char* old_name,
+        const char* new_name
+    );
     std::size_t size() const { return count_; }
     std::size_t size_bytes() const { return bytes_; }
     bool is_dirty() const { return dirty_; }
-    void set_dirty(bool value) { dirty_ = value; }
+    bool set_dirty(bool value);
     bool suspended() const { return suspended_; }
     ProgramBackend backend_type() const { return backend_; }
     ProgramStorageMode mode() const { return mode_; }
@@ -80,6 +103,11 @@ public:
     // Root injection for host filesystem tests; firmware uses the SD root.
     void set_root(const char* root) { root_ = root; }
 private:
+    struct PendingEdit {
+        std::int32_t number = 0;
+        const char* text = nullptr;
+        std::size_t length = 0;
+    };
     RamProgramStore* ram_ = nullptr;
     SdProgramStore* sd_ = nullptr;
     std::size_t count_ = 0, bytes_ = 0;
@@ -96,7 +124,7 @@ private:
                             const char*& text, std::size_t& length) const;
     bool snapshot(const char* target, const ProgramStore& source,
                   SdProgramStore& index, std::size_t& count, std::size_t& bytes,
-                  const ProgramLine* edit = nullptr, bool remove = false);
+                  const PendingEdit* edit = nullptr, bool remove = false);
     bool scan(const char* name, SdProgramStore& index, std::size_t& count) const;
     bool verify(const SdProgramStore& index, std::size_t count) const;
     struct SessionMetadata {
@@ -112,7 +140,8 @@ private:
     bool cleanup_orphans_locked(const char* active_work,
                                 const char* session_work);
     bool new_work_name(char* name) const;
-    bool edit_sd(std::int32_t number, const char* text, bool remove);
+    bool edit_sd(std::int32_t number, const char* text,
+                 std::size_t length, bool remove);
     bool normalize(const char* input, char* output) const;
     void protect();
 };

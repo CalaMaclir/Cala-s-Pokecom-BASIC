@@ -30,7 +30,12 @@ bool shift_left_held = false;
 bool shift_right_held = false;
 bool alt_held = false;
 bool caps_lock = false;
+int held_navigation_key = -1;
 RtcError rtc_error = RtcError::None;
+
+bool navigation_repeatable(int key) {
+    return key == 0xb4 || key == 0xb5 || key == 0xb6 || key == 0xb7;
+}
 
 uint8_t bcd_to_bin(uint8_t value) {
     return static_cast<uint8_t>(((value >> 4) * 10u) + (value & 0x0fu));
@@ -86,6 +91,24 @@ bool write_u8_register(uint8_t reg_id, uint8_t value) {
     return true;
 }
 
+bool read_key_event(uint8_t& state, int& code) {
+    uint8_t reg = key_register;
+    if (i2c_write_timeout_us(bus, address, &reg, 1, false, 5000) < 0) {
+        return false;
+    }
+
+    sleep_ms(2);
+
+    uint8_t data[2] = {0, 0};
+    if (i2c_read_timeout_us(bus, address, data, 2, false, 5000) < 0) {
+        return false;
+    }
+
+    state = data[0];
+    code = data[1];
+    return true;
+}
+
 void flush_key_fifo() {
     // The keyboard MCU survives an RP2350 reset and its event FIFO can contain
     // stale modifier/Caps events from before the firmware restart. Drain only
@@ -124,6 +147,7 @@ void init() {
     shift_right_held = false;
     alt_held = false;
     ctrl_held = false;
+    held_navigation_key = -1;
     flush_key_fifo();
 }
 
@@ -198,10 +222,17 @@ bool caps_lock_enabled() {
     return caps_lock;
 }
 
+void set_caps_lock(bool enabled) {
+    caps_lock = enabled;
+}
+
 bool shift_held() {
     return shift_left_held || shift_right_held;
 }
 
+bool navigation_key_held(int key) {
+    return held_navigation_key == key;
+}
 
 bool read_rtc(RtcDateTime& value, unsigned char address) {
     if (!initialized) {
@@ -341,26 +372,10 @@ int read_key() {
         return -1;
     }
 
-    uint8_t reg = key_register;
-    const int wr = i2c_write_timeout_us(bus, address, &reg, 1, false, 5000);
-    if (wr < 0) {
-        return -1;
-    }
-
-    sleep_ms(2);
-
-    uint8_t data[2] = {0, 0};
-    const int rd = i2c_read_timeout_us(bus, address, data, 2, false, 5000);
-    if (rd < 0) {
-        return -1;
-    }
-
-    const uint8_t state = data[0];
-    int c = data[1];
-
-    if (state == 0 || c == 0) {
-        return -1;
-    }
+    uint8_t state = 0;
+    int c = 0;
+    if (!read_key_event(state, c)) return -1;
+    if (state == 0 || c == 0) return -1;
 
 
     // Modifier events are independent events in the official PicoCalc
@@ -394,9 +409,15 @@ int read_key() {
         return -1;
     }
 
-    if (state != 1) {
+    if (state == 3) {
+        if (held_navigation_key == c) held_navigation_key = -1;
         return -1;
     }
+    // State 2 is emitted by the keyboard MCU while a key is held. The editor
+    // drains these events without drawing and renders once after state 3.
+    if (state == 2) return navigation_repeatable(c) ? c : -1;
+    if (state != 1) return -1;
+    if (navigation_repeatable(c)) held_navigation_key = c;
 
     // The current PicoCalc keyboard firmware emits KEY_POWER on a short
     // press. Older firmware does not, so Alt+P is kept as a host-side

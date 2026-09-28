@@ -120,6 +120,31 @@ int main() {
         fs::remove_all(root);
     }
 
+    // Returning committed content to the saved state must clear both the
+    // in-memory dirty flag and the durable SD session metadata.
+    {
+        const auto root=make_root();
+        {
+            ProgramStore p;p.set_root(root.c_str());
+            assert(p.initialize(ProgramStorageMode::SdCard));
+            assert(p.set_line(10,"PRINT 1"));
+            assert(p.save("UNDOBASE"));
+            assert(p.set_line(10,"PRINT 2")&&p.is_dirty());
+            assert(p.set_line(10,"PRINT 1")&&p.is_dirty());
+            assert(p.set_dirty(false)&&!p.is_dirty());
+            assert(read_text(root+"RMBASIC.SES").find("dirty=0\n")!=
+                   std::string::npos);
+        }
+        {
+            ProgramStore p;p.set_root(root.c_str());
+            assert(p.initialize(ProgramStorageMode::SdCard));
+            assert(p.session_recovered()&&!p.is_dirty());
+            assert(!std::strcmp(p.filename(),"UNDOBASE.BAS"));
+            assert(listing(p)=="10 PRINT 1\n");
+        }
+        fs::remove_all(root);
+    }
+
     // UNTITLED has an empty session filename and is restored as dirty.
     {
         const auto root=make_root();

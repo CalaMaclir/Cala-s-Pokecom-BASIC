@@ -200,6 +200,16 @@ bool init() {
     return true;
 }
 
+void shutdown() {
+    file_server_stop();
+    if (wifi_initialized) {
+        cyw43_arch_disable_sta_mode();
+    }
+    wifi_initialized = false;
+    wifi_ssid[0] = '\0';
+    set_error("OFF");
+}
+
 bool initialized() {
     return wifi_initialized;
 }

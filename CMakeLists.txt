@@ -22,9 +22,10 @@ project(retrominibasic_picocalc C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(RMB_VERSION "0.85" CACHE STRING "Cala's Pokecom BASIC version")
+set(RMB_VERSION "0.90" CACHE STRING "Cala's Pokecom BASIC version")
 set(RMB_BUILD_NUMBER "local" CACHE STRING "Cala's Pokecom BASIC build number")
 option(RMB_ENABLE_LTO "Enable link-time optimization for release benchmarking" OFF)
+option(RMB_EDITOR_PERF "Enable editor latency counters and serial summary" OFF)
 
 pico_sdk_init()
 
@@ -47,10 +48,15 @@ endif()
 add_executable(retrominibasic_picocalc
     src/main.cpp
     src/core/line_editor.cpp
+    src/core/editor_model.cpp
+    src/core/psram_editor_history.cpp
+    src/core/full_screen_editor.cpp
+    src/core/file_management.cpp
     src/core/program_store.cpp
     src/core/il.cpp
     src/core/audio_engine.cpp
-    src/core/bluetooth_serial_core.cpp
+    src/core/bluetooth_hid_keyboard_core.cpp
+    src/core/bluetooth_device_registry.cpp
     src/core/basic_compiler.cpp
     src/core/vm.cpp
     src/core/graphics_text.cpp
@@ -61,6 +67,7 @@ add_executable(retrominibasic_picocalc
     src/core/http_file_server_core.cpp
     src/core/transfer_file.cpp
     src/platform/picocalc/platform.cpp
+    src/platform/picocalc/psram.cpp
     src/platform/picocalc/audio.cpp
     src/platform/picocalc/external_i2c.cpp
     src/platform/picocalc/serial_transfer.cpp
@@ -71,13 +78,18 @@ add_executable(retrominibasic_picocalc
     src/platform/picocalc/keyboard.cpp
     src/platform/picocalc/network.cpp
     src/platform/picocalc/wireless.cpp
-    src/platform/picocalc/bluetooth_serial.cpp
+    src/platform/picocalc/bluetooth_manager.cpp
+    src/platform/picocalc/bluetooth_hid_keyboard.cpp
+    src/platform/picocalc/bluetooth_hid_ble_keyboard.cpp
+    src/platform/picocalc/bluetooth_device_registry_storage.cpp
+    src/platform/picocalc/unified_keyboard.cpp
     src/platform/picocalc/file_server.cpp
     src/platform/picocalc/storage.cpp
 )
 
 target_include_directories(retrominibasic_picocalc PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}/include
+    ${CMAKE_CURRENT_LIST_DIR}/third_party/minimp3
 )
 
 # Keep reproducible SRAM and static stack evidence in CI artifacts.
@@ -103,6 +115,7 @@ target_compile_definitions(retrominibasic_picocalc PRIVATE
     PICO_VFS_MAX_MOUNTPOINT=2
     RMB_VERSION="${RMB_VERSION}"
     RMB_BUILD_NUMBER="${RMB_BUILD_NUMBER}"
+    $<$<BOOL:${RMB_EDITOR_PERF}>:RMB_EDITOR_PERF=1>
     # Keep the SDK's CDC driver, init, mutex and IRQ task. Only replace its
     # descriptors; tinyusb_device_unmarked remains owned by pico_stdio_usb.
     PICO_STDIO_USB_USE_DEFAULT_DESCRIPTORS=0
@@ -128,14 +141,21 @@ target_link_libraries(retrominibasic_picocalc
     hardware_spi
     hardware_i2c
     hardware_pwm
+    hardware_pio
     hardware_dma
     pico_cyw43_arch_lwip_threadsafe_background
     pico_btstack_cyw43
     pico_btstack_classic
+    pico_btstack_ble
     pico_rand
     blockdevice_sd
     filesystem_fat
     filesystem_vfs
+)
+
+pico_generate_pio_header(
+    retrominibasic_picocalc
+    ${CMAKE_CURRENT_LIST_DIR}/src/platform/picocalc/psram_spi.pio
 )
 
 # Keep USB/UART stdio enabled as a debug fallback during bring-up.
@@ -154,3 +174,4 @@ add_custom_command(TARGET retrominibasic_picocalc POST_BUILD
         "$<TARGET_FILE:retrominibasic_picocalc>"
         "${CMAKE_CURRENT_BINARY_DIR}/CPokecombasic.elf"
 )
+

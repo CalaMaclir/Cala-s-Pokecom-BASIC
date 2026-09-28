@@ -21,6 +21,7 @@ struct NetworkDateTime {
 };
 
 bool init();
+void shutdown();
 bool initialized();
 
 int scan(AccessPoint* results, int max_results);

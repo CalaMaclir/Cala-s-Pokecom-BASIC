@@ -21,6 +21,7 @@ struct DateTime {
 };
 
 enum class RtcSource : std::uint8_t { Auto, External, Internal, Off };
+enum class RtcDevice : std::uint8_t { None, Pcf8563, Ds3231 };
 enum class I2cResult : std::uint8_t { Ok, Nack, Timeout, Busy, BadAddress };
 I2cResult external_i2c_read(std::uint8_t address, std::uint8_t reg, std::uint8_t& value);
 I2cResult external_i2c_write(std::uint8_t address, std::uint8_t reg, std::uint8_t value);
@@ -42,6 +43,11 @@ bool audio_play_mml(const char* const* voices, int count);
 bool audio_wavplay(const char* filename);
 void audio_set_volume(int percent);
 int audio_volume();
+void audio_set_play_volume(int percent);
+int audio_play_volume();
+void audio_set_wav_volume(int percent);
+int audio_wav_volume();
+std::uint32_t audio_underruns();
 const char* audio_last_error();
 void set_rtc_source(RtcSource source);
 RtcSource rtc_source();
@@ -50,6 +56,9 @@ bool set_rtc_address(std::uint8_t address);
 std::uint8_t rtc_address();
 bool probe_rtc();
 const char* rtc_location();
+RtcDevice rtc_device();
+const char* rtc_device_name();
+std::uint8_t rtc_active_address();
 
 enum class RuntimeKeyType : std::uint8_t {
     None,
@@ -83,6 +92,7 @@ ConsoleMode get_console_mode();
 using StatusRefreshCallback = void (*)(void* context);
 using ScreenshotCallback = void (*)(void* context);
 using ServiceCallback = void (*)(void* context);
+using NavigationStepCallback = void (*)(int key, void* context);
 
 void set_text_color(std::uint32_t foreground, std::uint32_t background);
 void set_status_area_enabled(bool enabled);
@@ -109,6 +119,14 @@ void draw_text_row(
     std::uint32_t foreground,
     std::uint32_t background
 );
+void draw_text_span(
+    int row,
+    int first_column,
+    const char* text,
+    int columns,
+    std::uint32_t foreground,
+    std::uint32_t background
+);
 
 bool get_battery_status(int& percent, bool& charging);
 bool caps_lock_enabled();
@@ -126,6 +144,7 @@ RuntimeKeyResult wait_runtime_key();
 void reset_runtime_input();
 bool break_requested();
 std::uint32_t monotonic_millis();
+std::uint64_t monotonic_micros();
 std::uint32_t system_clock_hz();
 std::uint32_t full_cpu_clock_hz();
 bool set_cpu_clock_mhz(std::uint32_t mhz);
@@ -134,8 +153,14 @@ int cursor_column();
 int cursor_row();
 int text_columns();
 int text_rows();
+void set_cursor_visible(bool visible);
 void set_cursor_position(int column, int row);
 void scroll_text_rows(int rows);
+void collect_navigation_burst(
+    int key,
+    NavigationStepCallback callback,
+    void* context
+);
 
 void set_graphics_color(std::uint32_t rgb);
 std::uint32_t graphics_color();
@@ -160,3 +185,4 @@ bool graphics_palette_rgb24(int index, std::uint32_t rgb);
 void graphics_palette_reset();
 
 } // namespace rmb::platform
+
