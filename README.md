@@ -13,34 +13,36 @@
 ### Version 0.91の主な機能
 
 - 独立Full-Screen BASIC Editor（visual wrap、Find、Goto、PSRAM Undo／Redo）
-- `BASIC>`のsession-only command historyと、FilesのPROGRAMS／DIRECTORY管理
-- PicoCalc PSRAMの自動検出、128 KiB editor history、diagnostics
-- PCM WAV／MP3のbackground再生、3 voice MML、BEEP
-- Bluetooth Classic／BLE HID Keyboard（JIS／US layout、再接続・登録解除）
-- SD: 1,024行 × 2,047文字、RAM: 256行 × 191文字のProgram Storage
-- Storage Continuity、transactional save、USB Storage return recovery
-- XMODEM／YMODEM、USB CDC、UART0、USB Mass Storage、Wi-Fi HTTP File Server
+- `BASIC>` command historyとPROGRAMS／DIRECTORY file management
+- PSRAM multi-client architecture：Editor History、INTERNAL ProgramStore、SD Cache、DirectState、Compiled Cache
+- PSRAM利用時のINTERNAL／SDはいずれも最大1,024行 × 2,047文字
+- PSRAMなしのINTERNALは256行 × 191文字のSRAM fallback
+- USB CDC／UART0 file transferのbulk化、UART最大921600 bps、任意RX DMA
+- XMODEM／YMODEM、USB Mass Storage、Wi-Fi HTTP File Server
+- Bluetooth Classic／BLE HID Keyboard（JIS／US layout）
+- PCM WAV／MP3 background再生、3 voice MML、BEEP
+- `LIST`をBREAK／Esc／Ctrl-Cで停止可能
+- LOAD時の`LOADING... (filename)`、RUN開始時の`RUN...`
 - External RTC／I2C、Wi-Fi／NTP、Firmware menu、Windows用`flash-cpb.cmd`
 
 ### Download / Installation
 
-正式配布は[Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0)です。通常利用では次のassetを使用します。
+正式配布は[Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0)です。
 
-- `CPokecombasic-v0.91-build528-pico2w.zip`（完全build package。`flash-cpb.cmd`を同梱）
+- `CPokecombasic-v0.91-build<final-build>-pico2w.zip`（完全build package。Windows用`flash-cpb.cmd`を同梱）
 - `Cala-Pokecom-BASIC-v0.91-pico2w.uf2`
 - `Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf`
 - `Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf`
 - `Cala-Pokecom-BASIC-v0.91-Programming-Reference-ja.pdf`
-- `Cala-Pokecom-BASIC-v0.91-examples.zip`
 - `SHA256SUMS.txt`
 
-初回はPico 2 WをPicoCalcから取り外し、BOOTSELを押しながらPico 2 W側Micro-USBでPCへ接続し、RPI-RP2へUF2をコピーします。対応版の導入後は`Control Center → Firmware → Enter BOOTSEL`も利用できます。Windows用`flash-cpb.cmd`は完全build package ZIP内にあり、展開後の`build/CPokecombasic.uf2`との相対配置を維持して使用します。
+`flash-cpb.cmd`は単独assetではありません。完全build packageを展開し、`build/CPokecombasic.uf2`との相対配置を維持して使用します。
 
 ### Documentation
 
-- [導入マニュアル](docs/install-manual-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf)）
-- [システムマニュアル](docs/system-manual-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf)）
-- [プログラミング・リファレンス](docs/programming-reference-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.91-Programming-Reference-ja.pdf)）
+- [導入マニュアル](docs/install-manual-ja.md)
+- [システムマニュアル](docs/system-manual-ja.md)
+- [プログラミング・リファレンス](docs/programming-reference-ja.md)
 - [Version 0.91 Release Notes](docs/release/v0.91-release-notes.md)
 - [Roadmap](ROADMAP.md)
 
@@ -67,23 +69,24 @@ cmake --build build
 ### Version 0.91 highlights
 
 - Full-screen BASIC editor with visual wrapping, Find/Goto, and PSRAM-backed Undo/Redo
-- Session command history and expanded PROGRAMS/DIRECTORY file management
-- Optional PicoCalc PSRAM detection, a 128 KiB editor history, and diagnostics
-- Background PCM WAV/MP3 playback, three-voice MML, and BEEP
-- Bluetooth Classic and BLE HID keyboards with JIS/US layouts
-- Program Storage: 1,024 lines × 2,047 characters on SD; 256 × 191 in RAM
-- Storage Continuity, transactional saves, XMODEM/YMODEM, USB storage, and Wi-Fi file server
-- External RTC/I2C, Wi-Fi/NTP, firmware controls, and Windows `flash-cpb.cmd`
+- Multi-client PSRAM architecture for editor history, INTERNAL ProgramStore, SD cache, DirectState, and compiled cache
+- Up to 1,024 lines x 2,047 characters for SD and PSRAM-backed INTERNAL storage
+- 256 x 191 SRAM fallback when PSRAM is unavailable
+- Bulk USB CDC/UART file transfer, UART up to 921600 bps, optional RX DMA
+- XMODEM/YMODEM, USB Mass Storage, and Wi-Fi file server
+- Bluetooth Classic and BLE HID keyboards
+- Background WAV/MP3 playback, three-voice MML, and BEEP
+- Interruptible LIST and progress indication for LOAD/RUN
 
 ### Download / Installation
 
-The official distribution is the [Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0). Use `Cala-Pokecom-BASIC-v0.91-pico2w.uf2` for normal installation. The complete `CPokecombasic-v0.91-build528-pico2w.zip` package contains the verified CI build, examples, diagnostics, and the Windows `flash-cpb.cmd` helper. The helper is not distributed as a standalone asset.
-
-For the initial installation, remove the Pico 2 W from the PicoCalc, hold BOOTSEL while connecting its Micro-USB port to a PC, and copy the UF2 to RPI-RP2. Once a compatible version is installed, `Control Center → Firmware → Enter BOOTSEL` is also available. To use `flash-cpb.cmd`, extract the complete build package and preserve its relative path to `build/CPokecombasic.uf2`.
+The official distribution is the [Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0). The complete `CPokecombasic-v0.91-build<final-build>-pico2w.zip` package contains the verified CI build, examples, diagnostics, and the Windows `flash-cpb.cmd` helper. The helper is not distributed as a standalone asset.
 
 ### Documentation
 
-- [Japanese manuals index](docs/manual-ja.md)
+- [Install Manual (Japanese)](docs/install-manual-ja.md)
+- [System Manual (Japanese)](docs/system-manual-ja.md)
+- [Programming Reference (Japanese)](docs/programming-reference-ja.md)
 - [Version 0.91 Release Notes](docs/release/v0.91-release-notes.md)
 - [Roadmap](ROADMAP.md)
 
