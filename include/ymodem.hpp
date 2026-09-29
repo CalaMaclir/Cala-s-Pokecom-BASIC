@@ -28,6 +28,9 @@ struct IO {
     bool (*sink)(void*, const std::uint8_t*, std::size_t);
     bool (*finish)(void*);
     bool (*begin_receive)(void*, const char*, std::uint32_t);
+    int (*read_exact)(void*, std::uint8_t*, std::size_t, unsigned) = nullptr;
+    bool rx_bulk = false;
+    bool tx_packet_coalesce = false;
 };
 
 bool encode_header(const char* filename, std::uint32_t size,
