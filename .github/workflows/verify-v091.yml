@@ -35,7 +35,7 @@ jobs:
       - name: Assemble release package
         run: |
           mkdir -p package/build package/examples package/docs package/tools
-          cp build/CPokecombasic.uf2 build/CPokecombasic.elf build/*.map package/build/
+          cp build/CPokecombasic.uf2 build/CPokecombasic.elf build/CPokecombasic-editor-perf.uf2 build/*.map build/memory-report.txt package/build/
           cp flash-cpb.cmd package/
           cp examples/*.bas examples/RMBASIC.CFG package/examples/
           cp docs/install-manual-ja.md docs/system-manual-ja.md docs/programming-reference-ja.md package/docs/
