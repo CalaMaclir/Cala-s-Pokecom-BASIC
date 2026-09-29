@@ -27,11 +27,23 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DPICO_BOARD=pico2_w -DRMB_BUILD_NUMBER=664
           cmake --build build
+      - name: Build editor performance firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: |
+          cmake -S . -B build-editor-perf -G Ninja -DPICO_BOARD=pico2_w -DRMB_BUILD_NUMBER=664 -DRMB_EDITOR_PERF=ON
+          cmake --build build-editor-perf
+          cp build-editor-perf/CPokecombasic.uf2 build/CPokecombasic-editor-perf.uf2
+
       - name: Verify development UF2
         run: |
           echo "2f08f55d4198b91f65cf4813022fd743a22b3d1f7f151a4e85051c65d87cdcb6  build/CPokecombasic.uf2" | sha256sum -c -
-      - name: Generate manuals
-        run: python3 tools/generate_manual_pdfs.py
+
+      - name: Generate manuals and memory report
+        run: |
+          arm-none-eabi-g++ -std=c++17 -mcpu=cortex-m33 -mthumb -Iinclude -c tests/memory_sizes.cpp -o build/memory_sizes.o
+          python3 tools/memory_report.py build > build/memory-report.txt
+          python3 tools/generate_manual_pdfs.py
       - name: Assemble release package
         run: |
           mkdir -p package/build package/examples package/docs package/tools
