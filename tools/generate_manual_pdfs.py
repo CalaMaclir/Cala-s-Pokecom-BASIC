@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Version 0.90 Japanese CPB manuals from Markdown without network access."""
+"""Generate Version 0.91 Japanese CPB manuals from Markdown without network access."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.platypus import (
     HRFlowable, Image, KeepTogether, PageBreak, Paragraph, Preformatted,
@@ -27,25 +28,28 @@ MARGIN_X = 19 * mm
 BODY_W = PAGE_W - 2 * MARGIN_X
 MANUALS = (
     (ROOT / "docs/install-manual-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.90-Install-Manual-ja.pdf",
+     ROOT / "docs/Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf",
      "Install Manual / 導入マニュアル"),
     (ROOT / "docs/system-manual-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.90-System-Manual-ja.pdf",
+     ROOT / "docs/Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf",
      "System Manual / システムマニュアル"),
     (ROOT / "docs/programming-reference-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.90-Programming-Reference-ja.pdf",
+     ROOT / "docs/Cala-Pokecom-BASIC-v0.91-Programming-Reference-ja.pdf",
      "Programming Reference Manual / プログラミング・リファレンスマニュアル"),
 )
 FONT_NAME = "CpbNotoJP"
 
 
 def register_fonts(font_path):
-    if not font_path.is_file():
-        raise SystemExit(
-            "A Japanese TrueType font is required. "
-            "Pass --font /path/to/NotoSansJP.ttf or set CPB_JAPANESE_FONT."
-        )
-    pdfmetrics.registerFont(TTFont(FONT_NAME, str(font_path)))
+    global FONT_NAME
+    if font_path.is_file():
+        pdfmetrics.registerFont(TTFont(FONT_NAME, str(font_path)))
+        return
+
+    # Reproducible no-network fallback. ReportLab's Japanese CID font keeps
+    # PDF generation independent from a host-specific TTF installation.
+    FONT_NAME = "HeiseiKakuGo-W5"
+    pdfmetrics.registerFont(UnicodeCIDFont(FONT_NAME))
 
 
 def make_styles():
@@ -195,7 +199,7 @@ def cover(title, st):
         Spacer(1, 48 * mm),
         Paragraph("Cala's Pokecom BASIC System", st["title"]),
         Spacer(1, 9 * mm),
-        Paragraph("Version 0.90", st["subtitle"]),
+        Paragraph("Version 0.91", st["subtitle"]),
         Spacer(1, 18 * mm),
         HRFlowable(width="66%", thickness=1.5, color=colors.HexColor("#1C6A8D"), hAlign="CENTER"),
         Spacer(1, 12 * mm),
@@ -213,7 +217,7 @@ def page_decor(canvas, doc):
     canvas.line(MARGIN_X, PAGE_H - 12 * mm, PAGE_W - MARGIN_X, PAGE_H - 12 * mm)
     canvas.setFont(FONT_NAME, 7)
     canvas.setFillColor(colors.HexColor("#496779"))
-    canvas.drawString(MARGIN_X, PAGE_H - 9 * mm, "Cala's Pokecom BASIC System  Version 0.90")
+    canvas.drawString(MARGIN_X, PAGE_H - 9 * mm, "Cala's Pokecom BASIC System  Version 0.91")
     canvas.setFont(FONT_NAME, 7)
     canvas.drawRightString(PAGE_W - MARGIN_X, 10 * mm, f"{doc.title}  |  {canvas.getPageNumber()}")
     canvas.restoreState()
@@ -224,8 +228,8 @@ def build(source, output, title):
     doc = SimpleDocTemplate(
         str(output), pagesize=A4, leftMargin=MARGIN_X, rightMargin=MARGIN_X,
         topMargin=20 * mm, bottomMargin=18 * mm,
-        title=f"Cala's Pokecom BASIC System Version 0.90 - {title}",
-        author="Cala Maclir", subject="Cala's Pokecom BASIC System Version 0.90",
+        title=f"Cala's Pokecom BASIC System Version 0.91 - {title}",
+        author="Cala Maclir", subject="Cala's Pokecom BASIC System Version 0.91",
     )
     doc.build(cover(title, st) + markdown_story(source.read_text(encoding="utf-8"), st, source),
               onFirstPage=lambda canvas, document: None, onLaterPages=page_decor)
@@ -237,7 +241,7 @@ def main():
     parser.add_argument(
         "--font",
         default=os.environ.get("CPB_JAPANESE_FONT", ""),
-        help="Path to an embeddable Japanese TrueType font. Defaults to CPB_JAPANESE_FONT.",
+        help="Optional Japanese TrueType font. Without one, use ReportLab HeiseiKakuGo-W5 CID fallback.",
     )
     args = parser.parse_args()
     register_fonts(Path(args.font).expanduser())

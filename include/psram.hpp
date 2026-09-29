@@ -8,9 +8,22 @@ namespace rmb::psram {
 constexpr std::size_t kMaximumProbeAttempts = 8;
 
 enum class Client : std::uint8_t {
-    None,
+    None = 0,
     EditorHistory,
+    ProgramStore,
+    SdCache,
+    DirectState,
+    CompiledCache,
+    AudioCache,
     Diagnostic
+};
+
+constexpr std::size_t kAllocatableClientCount = 6;
+
+struct AllocationInfo {
+    bool active = false;
+    std::uint32_t base_address = 0;
+    std::uint32_t allocated_bytes = 0;
 };
 
 struct ProbeAttempt {
@@ -84,6 +97,9 @@ bool claim(
 );
 void release(Client client);
 Client owner();
+const char* client_name(Client client);
+std::size_t active_client_count();
+AllocationInfo allocation(Client client);
 std::uint32_t used_bytes();
 bool read(std::uint32_t address, void* destination, std::size_t length);
 bool write(std::uint32_t address, const void* source, std::size_t length);

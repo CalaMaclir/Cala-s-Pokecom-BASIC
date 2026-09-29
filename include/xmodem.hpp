@@ -15,6 +15,10 @@ struct IO {
     int (*source)(void*, std::uint8_t*, std::size_t);
     bool (*sink)(void*, const std::uint8_t*, std::size_t);
     bool (*finish)(void*);
+    // Optional bulk callback. It returns the requested byte count or one of
+    // timeout/cancelled/disconnected. Legacy tests and transports may omit it.
+    int (*read_exact)(void*, std::uint8_t*, std::size_t, unsigned) = nullptr;
+    bool rx_bulk = false;
 };
 std::uint16_t crc16(const std::uint8_t* data, std::size_t size);
 Result receive(IO& io);

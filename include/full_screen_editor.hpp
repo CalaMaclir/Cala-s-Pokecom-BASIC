@@ -16,9 +16,7 @@ public:
 
     std::size_t line_count() const override { return program_.size(); }
     std::size_t max_body_length() const override {
-        return program_.backend_type() == ProgramBackend::Sd
-            ? kMaxSdProgramLineLength - 1
-            : kMaxProgramLineLength - 1;
+        return program_.line_length_capacity();
     }
     bool line_metadata(
         std::size_t index,

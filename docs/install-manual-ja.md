@@ -1,8 +1,8 @@
 # Cala's Pokecom BASIC System
-## Version 0.90
+## Version 0.91
 ## Install Manual / 導入マニュアル
 
-本書は、ClockworkPi PicoCalc と Raspberry Pi Pico 2 W に Cala's Pokecom BASIC（CPB）v0.90 を導入・更新するための手順書です。
+本書は、ClockworkPi PicoCalc と Raspberry Pi Pico 2 W に Cala's Pokecom BASIC（CPB）v0.91 を導入・更新するための手順書です。
 
 ## 1. 対応ハードウェア
 
@@ -11,13 +11,15 @@
 - FAT32 の SD カード（推奨）
 - 初回書き込み用のデータ通信対応 Micro-USB ケーブル
 
-Pico、Pico W、Pico 2（非W）は v0.90 の配布対象ではありません。PicoCalc の PSRAM は任意機能です。搭載・検出されなくても通常機能は利用できますが、Full-Screen Editor の Undo / Redo は無効になります。
+Pico、Pico W、Pico 2（非W）は v0.91 の配布対象ではありません。PicoCalc の PSRAM は任意機能です。搭載・検出時はINTERNAL Program Storageが1,024行×2,047文字になり、Editor Undo / Redo、SD cache、DirectState、Compiled Program cacheにも利用されます。PSRAMが利用できない場合もINTERNALは256行×191文字のSRAM fallbackで動作します。
 
 ## 2. 配布物
 
-GitHub Actions の artifact `CPokecombasic-v0.90-build<run>-pico2w` を展開し、通常版の `build/CPokecombasic.uf2` を使用します。
+GitHub Actions の artifact `CPokecombasic-v0.91-build<run>-pico2w` を展開し、通常版の `build/CPokecombasic.uf2` を使用します。
 
 `CPokecombasic-editor-perf.uf2` が同梱される場合、それはエディタ性能測定用です。通常利用には使用しないでください。
+
+正式配布ではGitHub Actions artifact ZIPを完全パッケージとして使用します。Windows用`flash-cpb.cmd`はこのZIP内の`build\CPokecombasic.uf2`を参照するため、`flash-cpb.cmd`だけを単独で取り出して配布・運用しないでください。
 
 SD カードへ置く主なファイルは次のとおりです。
 
@@ -46,7 +48,7 @@ SD カードへ置く主なファイルは次のとおりです。
 3. PicoCalc の電源を切ってから SD カードを挿入します。
 4. 起動後、`Control Center → System Information` で `SD PRESENT / MOUNTED` を確認します。
 
-v0.90 の Files はルートディレクトリのみを表示します。ファイル名には内部の ASCII 空白を使用できますが、先頭・末尾の空白やドット、`..`、`/`、`\\`、制御文字、非ASCII文字は使用できません。最大長は79文字です。
+v0.91 の Files はルートディレクトリのみを表示します。ファイル名には内部の ASCII 空白を使用できますが、先頭・末尾の空白やドット、`..`、`/`、`\\`、制御文字、非ASCII文字は使用できません。最大長は79文字です。
 
 ## 5. 初回起動の確認
 
@@ -54,23 +56,27 @@ v0.90 の Files はルートディレクトリのみを表示します。ファ�
 
 確認項目:
 
-- `System Information` に `v0.90` と表示される
+- `System Information` に `v0.91` と表示される
 - CPU clock が安全な既定値 `150 MHz` で起動する
 - SD を使用する場合は `PRESENT / MOUNTED`
-- PSRAM 搭載機では容量、PIO、クロックが表示される
+- PSRAM 搭載機では容量、PIO、クロック、Program Store／Direct State／Compiled Cache等のruntime allocationが表示される
+- INTERNAL RAMを選んだ場合、PSRAM利用時はcapacityが1,024 lines / 2,047 charsになる
 - Wi-Fi は起動時 `OFF`（session-only）
 
 ## 6. v0.89以前からの更新
 
 プログラムと設定をバックアップしてから更新してください。通常は SD カード上の `*.BAS` と `RMBASIC.CFG` をそのまま引き継げます。
 
-v0.90 の主な互換上の注意:
+v0.91 の主な互換上の注意:
 
 - `WAVPLAY` は WAV に加えて MP3 を内容判定して再生します。
 - Audio 設定に `WAV/MP3` と `PLAY` の独立音量が追加されています。
 - CPU profile は再起動すると必ず 150 MHz に戻ります。
 - Files と Full-Screen Editor で内部空白を含むファイル名を扱えます。
 - Full-Screen Editor の Undo / Redo 履歴は session-only で、エディタ終了時に破棄されます。
+- INTERNAL Program Storage はPSRAM利用時に1,024行×2,047文字へ拡張されます。PSRAMなしでは256行×191文字です。
+- USB CDC／UART file transferはbulk化され、UARTは115200／230400／460800／921600 bpsと任意RX DMAを選択できます。
+- `LIST`はBREAK／Esc／Ctrl-Cで途中停止できます。`LOAD`時は`LOADING... (filename)`、`RUN`開始時は`RUN...`を表示します。
 
 ## 7. 本体メニューからの更新
 
@@ -117,7 +123,7 @@ v0.90 の主な互換上の注意:
 
 ### PSRAMがNOT AVAILABLEになる
 
-通常機能は継続できます。電源を入れ直し、装着状態を確認してください。診断を行う場合は、PSRAM 内容が上書きされる点に注意してください。BASIC プログラム自体は ProgramStore に保持されます。
+通常機能はSRAM fallbackで継続できます。電源を入れ直し、装着状態を確認してください。診断はPSRAM内容を上書きするため、INTERNAL ProgramStoreやDirectStateなどpersistent clientが使用中の場合は安全のため拒否されます。必要なprogramを先にSDへ保存してください。
 
 ### 更新後に設定が不自然
 
@@ -125,4 +131,4 @@ v0.90 の主な互換上の注意:
 
 ---
 
-操作全般は `system-manual-ja.md`、BASIC 言語は `programming-reference-ja.md`、v0.90 の変更点は `release/v0.90-release-notes.md` を参照してください。
+操作全般は `system-manual-ja.md`、BASIC 言語は `programming-reference-ja.md`、v0.91 の変更点は `release/v0.91-release-notes.md` を参照してください。

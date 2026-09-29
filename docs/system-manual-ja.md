@@ -1,8 +1,8 @@
 # Cala's Pokecom BASIC System
-## Version 0.90
+## Version 0.91
 ## System Manual / システムマニュアル
 
-本書は ClockworkPi PicoCalc 上の Cala's Pokecom BASIC（CPB）v0.90 の操作、設定、保存、通信、診断を説明します。BASIC 文法は `programming-reference-ja.md` を参照してください。
+本書は ClockworkPi PicoCalc 上の Cala's Pokecom BASIC（CPB）v0.91 の操作、設定、保存、通信、診断を説明します。BASIC 文法は `programming-reference-ja.md` を参照してください。
 
 ## 1. System Overview
 
@@ -28,58 +28,82 @@ CPB は PicoCalc 単体で BASIC プログラムを作成・実行・保存で�
 
 ## 3. Control Center
 
-現行メニューは次の順です。
+空の`BASIC>` promptでHOME（Shift+Tab）を押すとControl Centerを開きます。v0.91ではカテゴリ見出しと項目を同一画面に展開し、メニューlabelの`...`は使用しません。
 
-1. Files
-2. Editor
-3. Save Program
-4. Save Program As...
-5. Quick Load Keys
-6. Display
-7. Console
-8. Date / Time
-9. Audio
-10. Wireless LAN
-11. Bluetooth
-12. Wi-Fi File Server
-13. File Transfer
-14. USB Storage
-15. SD Card
-16. Firmware
-17. Power / CPU
-18. Board LED
-19. System Information
-20. PSRAM Diagnostics
-21. Program Storage
-22. Exit
+```text
+Files
+Editor
+Program
+    Save Program
+    Save Program As
+    Quick Load Keys
+    Program Storage
+Storage
+    SD Card
+    USB Storage
+Display & Audio
+    Display
+    Audio
+Network
+    Wireless LAN
+    Wi-Fi File Server
+    Bluetooth
+Serial
+    Console
+    Serial Config
+    File Transfer
+System
+    Date / Time
+    Power / CPU
+    Board LED
+    Firmware
+Diagnostics
+    System Information
+    PSRAM Diagnostics
+Exit
+```
 
-Up / Down で移動し、Enter で選択します。Shift+Up / Shift+Down は長い一覧を1画面移動します。
+表示はrow 37まで使用し、row 38を空行、row 39をFunction Key barとして確保します。項目が画面内に収まるため、通常は一覧全体を一度に確認できます。
+
+- Up / Down: selectable itemを移動
+- Shift+Up / Shift+Down: page移動が必要な一覧で使用
+- Enter: open / execute
+- Esc / HOME: back / exit
+
+Network、Serial、Diagnosticsを含む各カテゴリは階層化され、たとえば`Serial -> Serial Config`、`Serial -> File Transfer`のように移動します。
 
 ## 4. BASIC prompt
 
-行番号付きの入力は program へ登録され、行番号なしは direct mode で即時実行されます。
+`BASIC>`ではDirect modeの実行、line number付きprogram編集、REPL commandを行います。interactive入力は従来どおり191文字境界です。2,047文字logical lineはFull-Screen Editorまたは外部file経由で扱います。
 
-```basic
-10 PRINT "HELLO"
-20 GOTO 10
-RUN
-```
+主なcommand:
 
-空の行番号だけを入力すると、その行を削除します。`LIST`、`RUN`、`NEW`、`SAVE`、`LOAD` などの REPL command は Programming Reference を参照してください。
+- `LIST`: current programを表示。BREAK／Esc／Ctrl-Cで途中停止でき、`[LIST BREAK]`の後にpromptへ戻る
+- `RUN`: current programを実行。処理開始時に`RUN...`を表示する
+- `LOAD "name"`: 読み込み開始時に`LOADING... (filename)`、成功後に`LOADED filename`を表示する
+- `EDIT`: Full-Screen BASIC Editor
+- `NEW`: programとDirect stateをclear
+- `CLEAR`: Direct scalarだけをclear
 
-prompt の interactive line editor と direct mode は最大191文字です。SD ProgramStore の長い行は Full-Screen Editor または PC で編集します。
+長いprogramではLOADや初回RUNのcompileに時間がかかる場合があるため、v0.91では進捗表示を先に出して操作を受け付けたことが分かるようにしています。
 
 ## 5. Program Storage
 
-| Mode | 最大行数 | 1行本文 | 特徴 |
+Program StorageにはAUTO、SD CARD、INTERNAL RAMがあります。
+
+| backend | 最大行数 | 1行本文 | 特徴 |
 |---|---:|---:|---|
-| INTERNAL RAM | 256 | 191 characters | SDなしでも利用可能 |
-| SD CARD | 1,024 | 2,047 characters | 大規模program、長い行 |
-| AUTO | 選択backendに従う | 選択backendに従う | SD利用可ならSD、不可ならRAM |
+| INTERNAL RAM / PSRAM | 1,024 | 2,047 | SD不要、高速編集、電源断で消える |
+| INTERNAL RAM / SRAM fallback | 256 | 191 | PSRAMなし／claim不可時の互換mode |
+| SD CARD | 1,024 | 2,047 | 永続、transactional working source |
 
-本文長には行番号とその後の空白を含みません。上限を1文字でも超える入力は切り詰めず拒否します。
+PSRAM利用時のINTERNALはSDと同じsource容量です。約2 MiBのtext slot領域とcompact indexを使い、行挿入・削除時は本文全体ではなくindex metadataを移動します。
 
-191文字を超える行を含む SD program を RAM へ切り替えると `LINE TOO LONG FOR RAM` で拒否し、元の SD source は保持されます。
+SDの大規模programをINTERNALへ切り替える場合も、1,024行・2,047文字の範囲なら内容を保持したまま移行できます。実機では1,024行stress programと2,047文字行をSDからINTERNALへ移し、編集・RUNを確認しています。
+
+PSRAMが利用できなければ従来の256行×191文字SRAM backendへfallbackします。System Informationで現在のcapacityとPSRAM allocationを確認できます。
+
+Direct modeと通常promptの入力bufferは191文字のままです。source backendの2,047文字対応とは別の制限です。
 
 ## 6. Storage Continuity
 
@@ -96,7 +120,7 @@ Files には2つのmodeがあります。
 | PROGRAMS | BASIC program中心 | Enter LOAD、R RUN、E EDIT、N RENAME、Del DELETE、I INFO、F REFRESH |
 | DIRECTORY | root上の全対象file | P PLAY/STOP、N RENAME、Del DELETE、I INFO、F REFRESH |
 
-Left / Right でmodeを切り替えます。v0.90 は root-only で、directory navigation は行いません。
+Left / Right でmodeを切り替えます。v0.91 は root-only で、directory navigation は行いません。
 
 ### ファイル名
 
@@ -117,8 +141,6 @@ Rename と Delete は current program への影響を考慮して処理されま
 - Files PROGRAMS で対象を選び `E`
 
 Editor は program 全体の複製を作らず、現在行用の約2 KiB buffer と ProgramStore を使用します。長い logical line は 320×320 LCD の幅に合わせて折り返されます。行番号prefixを除く本文は1画面41文字幅が目安です。
-
-![Full-Screen Editorで長い行をvisual wrap表示](images/manual-v090/SCREEN0005.png)
 
 ### Editorキー
 
@@ -144,13 +166,13 @@ Enter は logical line を分割しません。新しい行を追加する場合
 
 ### Undo / Redo
 
-PicoCalc PSRAM が利用できる場合、Editor は128 KiBを履歴用に取得し、おおむね31件の coalesced Undo と31件の Redo を保持します。連続入力はまとめられる場合があります。履歴はエディタを閉じると破棄され、program本体はPSRAMへ移動しません。
+PicoCalc PSRAM が利用できる場合、Editor は128 KiBを履歴用に取得し、おおむね31件の coalesced Undo と31件の Redo を保持します。連続入力はまとめられる場合があります。Editor Historyはエディタを閉じると破棄されます。program本体の保存先はProgram Storage backendに従い、INTERNAL PSRAM modeではprogram source自体もPSRAM ProgramStoreに保持されます。
 
 PSRAMがない場合も編集と保存は利用できます。F4 / F9 は無効で、状態行に理由が表示されます。
 
 ### 性能
 
-v0.90 はカーソルだけの移動を部分再描画し、key repeat中の全画面描画を抑えます。SD viewport は1回の lease / open / close でまとめて読み出します。性能測定用 UF2 は通常利用向けではありません。
+v0.91 はカーソルだけの移動を部分再描画し、key repeat中の全画面描画を抑えます。SD viewport は1回の lease / open / close でまとめて読み出します。性能測定用 UF2 は通常利用向けではありません。
 
 ## 9. Quick Load Keys
 
@@ -180,7 +202,7 @@ RTC hardwareが見つからない場合は `RTC N/A` と表示されます。配
 
 ## 13. Audio Settings
 
-v0.90 のAudioは3層です。
+v0.91 のAudioは3層です。
 
 | 設定 | 範囲 / 既定 | 対象 |
 |---|---|---|
@@ -208,7 +230,7 @@ MP3開始時は必要に応じて200 MHzを自動要求し、停止後に元のc
 
 Bluetooth Classic HID / BLE HID Keyboard に対応します。Pair、Reconnect、Disconnect、Forget、JIS / US layoutを選択できます。Paired DevicesにはKeyboardとして登録された機器だけを表示します。
 
-v0.90のBluetoothはkeyboard入力用途です。旧版のClassic SPP file transferとは役割が異なります。
+v0.91のBluetoothはkeyboard入力用途です。旧版のClassic SPP file transferとは役割が異なります。
 
 ## 16. Wi-Fi File Server
 
@@ -218,14 +240,26 @@ Wi-Fi接続後、HTTP File Serverを開始すると同一LANのbrowserからSD r
 
 ## 17. File Transfer
 
+File TransferのtransportはAUTO、USB CDC、UART0です。Bluetooth SPP/RFCOMMはv0.89以降の現行構成には含まれません。
+
 | Protocol | Send | Receive |
 |---|---|---|
 | XMODEM | single-file | single-file |
 | YMODEM | single-file | single / multi-file batch |
 
-transportは AUTO、USB CDC、UART0 から選択します。AUTOはcommandの入力元を尊重し、本体から開始した場合は接続中USB CDC、なければUART0を選びます。
+v0.91 Stage 1ではtransfer hot pathを次のように最適化しています。
 
-YMODEM receiveはheaderのsizeを使用し、block paddingを保存しません。
+- YMODEM RX: header／payload／CRCをbulk exact-read
+- YMODEM TX: 133／1029-byte packetをcoalesceしてwrite
+- USB CDC: bulk read
+- UART RX ring: 4096-byte aligned SRAM buffer
+- UART baud: 115200／230400／460800／921600
+- UART RX mode: IRQまたはRP2350 RX-only DMA
+- cancel polling: 25 ms
+
+921600 bps・YMODEM DMAの実機測定では、PC→PicoCalc約33 KB/s、PicoCalc→PC約62 KB/sでした。IRQとDMAのthroughput差は小さく、DMAは主としてRX時のCPU負荷低減を目的とします。
+
+YMODEMはclassic stop-and-wait protocolなので、UARTそのものの理論速度よりACK、storage、sender gap等が律速になることがあります。
 
 ## 18. USB Storage
 
@@ -246,9 +280,7 @@ SDカードをPCへUSB Mass Storageとして公開します。開始前にprogra
 | FULL | 150 MHz | 起動時既定、通常利用 |
 | EXP | 200 MHz | 高負荷、MP3、実験的 |
 
-![Power / CPU profile選択](images/manual-v090/SCREEN0006.png)
-
-v0.90 はprofile切替時に必要ならCYW43関連のWi-Fi / Bluetooth / Board LED serviceを停止・再初期化します。利用者が先に手動停止する必要はありません。USB Mass Storage中、PSRAM診断や競合処理中は安全のため切替を拒否します。
+v0.91 はprofile切替時に必要ならCYW43関連のWi-Fi / Bluetooth / Board LED serviceを停止・再初期化します。利用者が先に手動停止する必要はありません。USB Mass Storage中、PSRAM診断や競合処理中は安全のため切替を拒否します。
 
 CPU profileは保存されず、再起動時は必ず150 MHzへ戻ります。
 
@@ -260,19 +292,20 @@ Pico 2 W のLEDはCYW43 deviceを共有します。OFF、ON、HEARTBEATを選べ
 
 表示項目:
 
-- CPB version
-- PicoCalc PSRAM容量、PIO state machine、bus clock
-- PSRAM runtime使用量とowner
-- Build番号
-- CPU clock、uptime
-- Current programとdirty marker
-- Program lines、line capacity
+- CPB version / Build
+- CPU clock、uptime、last RUN time
+- Current program、dirty marker
+- Program lines / current line capacity
 - Console、SD、battery、Wi-Fi、RTC
-- Last run time
+- PicoCalc PSRAM容量、PIO state machine、bus clock
+- PSRAM aggregate allocation
+- Editor History / Program Store / SD Cache
+- Direct State / Compiled Cache
+- SD cache hit / miss
+- Compiled Cache VALID / EMPTY、hit / miss
+- DirectState PSRAM / SRAM fallback state
 
-![System Informationの表示例](images/manual-v090/SCREEN0007.png)
-
-Editorを開いていない通常時は `PSRAM runtime 0 KiB / IDLE`、Editor履歴取得中は `128 KiB / EDITOR HISTORY` が目安です。
+v0.91のPSRAMは単一ownerではなくmulti-client allocatorで管理されます。INTERNAL ProgramStoreは通常約2 MiBをclaimし、Editor History、SD Cache、DirectState、Compiled Cacheと同時利用できます。VMのhot opcode実行は内部SRAMで行います。
 
 ## 23. PSRAM Diagnostics
 
@@ -282,9 +315,9 @@ Editorを開いていない通常時は `PSRAM runtime 0 KiB / IDLE`、Editor履
 | Full | 検出全容量 | 全領域の確認 |
 | 3-pass stress | 検出全容量×3 | 安定性確認 |
 
-診断はPSRAM内容をpatternで上書きします。Editorを終了し、確認画面を読んでから実行してください。BASIC program本体はProgramStore上にあり、PSRAMには置かれません。
+診断はPSRAM内容を上書きするため、persistent clientが存在する場合は安全のため拒否されます。INTERNAL ProgramStoreがPSRAMを使用している場合やDirectStateが保持されている場合は、必要なprogramを保存してstorage modeを変更し、Direct variableは`CLEAR`してから実行します。
 
-起動時probeは末尾16 bytesだけを検査し、元の内容を復元します。検出失敗時は通常機能を継続します。
+SD read cacheとCompiled Cacheはdisposable clientなので、診断前に解放できます。起動時probeは末尾16 bytesだけを使用し、その領域はallocatorから予約されています。
 
 ## 24. RMBASIC.CFG
 
@@ -327,21 +360,29 @@ wifi_ntp_server=pool.ntp.org
 F1=DEMO.BAS,run
 ```
 
-`cpu_mhz` と `wifi_enabled=on` が旧設定に残っていても、v0.90は安全のため起動時にCPU 150 MHz、Wi-Fi OFFとします。
+`cpu_mhz` と `wifi_enabled=on` が旧設定に残っていても、v0.91は安全のため起動時にCPU 150 MHz、Wi-Fi OFFとします。
 
 ## 25. Troubleshooting
 
 ### EditorでUndoできない
 
-System InformationでPSRAMを確認します。`NOT AVAILABLE`なら編集自体は可能ですがUndo / Redoは使えません。診断中やerror後はEditorを閉じて再度開きます。
+System InformationでPSRAMを確認します。`NOT AVAILABLE`なら編集自体は可能ですがUndo / Redoは使えません。PSRAM利用時は大規模INTERNAL ProgramStore等の他clientとのallocationも確認します。
 
 ### 長い行を入力できない
 
-promptは191文字です。SD ProgramStoreとFull-Screen Editorを使用するか、PCで編集して転送します。
+`BASIC>` promptは191文字です。2,047文字lineはFull-Screen Editor、SD／INTERNAL PSRAM ProgramStore、またはPCで編集して転送します。
+
+### INTERNALが256行・191文字になっている
+
+PSRAMが利用できずSRAM fallbackになっています。System InformationとPSRAM Diagnosticsで検出状態を確認します。PSRAM利用時のINTERNAL capacityは1,024行・2,047文字です。
+
+### LISTが長くて止めたい
+
+BREAK、Esc、Ctrl-Cのいずれかで停止できます。停止すると`[LIST BREAK]`を表示してpromptへ戻ります。
 
 ### SDでStorage Busyになる
 
-音声、USB Storage、file transfer、診断など同時にSDを使う機能を停止します。Filesのpreviewはv0.90でlease競合を避けるよう改善されています。
+音声、USB Storage、file transfer、診断など同時にSDを使う機能を停止します。Files previewとProgramStoreはlease競合を避ける設計です。
 
 ### MP3が再生できない
 
@@ -349,7 +390,7 @@ promptは191文字です。SD ProgramStoreとFull-Screen Editorを使用する�
 
 ### CPU profileを切り替えられない
 
-USB Mass StorageまたはPSRAMの排他的処理を終了します。通常のWi-Fi / Bluetooth / LEDはv0.90が自動的に再起動します。
+USB Mass StorageまたはPSRAMの排他的診断処理を終了します。通常のWi-Fi / Bluetooth / LEDはprofile切替時に自動的に再初期化されます。
 
 ### Wi-FiまたはBluetoothが戻らない
 
@@ -359,6 +400,6 @@ profile切替後に数秒待ちます。再接続に失敗した場合は各メ�
 
 source、I2C address、配線、電源を確認し、I2C SCANでdeviceを確認します。
 
-### PDFと画面のキー表示が違う
+### PDFと画面の表示が違う
 
-PDF表紙がVersion 0.90であることを確認してください。旧版ではEditorのFキー割当が異なる場合があります。
+PDF表紙がVersion 0.91であることを確認してください。旧版ではControl Center構成、Program Storage容量、Serial設定が異なります。

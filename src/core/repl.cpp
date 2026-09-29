@@ -73,20 +73,45 @@ private:
 
 class CompileWorkspaceLease {
 public:
-    CompileWorkspaceLease(CompiledProgram& compiled, bool& busy)
-        : compiled_(compiled), busy_(busy), acquired_(!busy) {
-        if (acquired_) { busy_ = true; compiled_.reset(); }
+    CompileWorkspaceLease(CompiledProgram*& active, bool& busy)
+        : active_(active), busy_(busy) {
+        if (busy_) return;
+        busy_ = true;
+
+        void* memory = std::malloc(sizeof(CompiledProgram));
+        if (!memory) {
+            allocation_failed_ = true;
+            busy_ = false;
+            return;
+        }
+
+        compiled_ = new (memory) CompiledProgram();
+        active_ = compiled_;
+        acquired_ = true;
     }
+
     ~CompileWorkspaceLease() {
-        if (acquired_) { compiled_.reset(); busy_ = false; }
+        if (!acquired_) return;
+        compiled_->~CompiledProgram();
+        std::free(compiled_);
+        compiled_ = nullptr;
+        active_ = nullptr;
+        busy_ = false;
     }
+
     explicit operator bool() const { return acquired_; }
+    bool allocation_failed() const { return allocation_failed_; }
+    CompiledProgram& program() { return *compiled_; }
+
     CompileWorkspaceLease(const CompileWorkspaceLease&) = delete;
     CompileWorkspaceLease& operator=(const CompileWorkspaceLease&) = delete;
+
 private:
-    CompiledProgram& compiled_;
+    CompiledProgram*& active_;
     bool& busy_;
-    bool acquired_;
+    CompiledProgram* compiled_ = nullptr;
+    bool acquired_ = false;
+    bool allocation_failed_ = false;
 };
 
 constexpr std::size_t kInputBufferSize = 224;
@@ -1187,9 +1212,11 @@ void Repl::print_banner() {
     std::snprintf(
         capacity_line,
         sizeof(capacity_line),
-        " Program: RAM 256x191 / SD 1024x2047\r\n"
+        " Program: INTERNAL 1024x2047* / SD 1024x2047\r\n"
     );
     platform::put_string(capacity_line);
+    platform::put_string(
+        " *PSRAM; SRAM fallback 256x191\r\n");
 
     if (storage::available()) {
         platform::put_string(" SD: READY\r\n\r\n");
@@ -1227,8 +1254,21 @@ void Repl::list_program() {
         return;
     }
 
+    platform::reset_runtime_input();
+
+    auto interrupted = []() {
+        const auto key = platform::poll_runtime_key();
+        return key.type == platform::RuntimeKeyType::Break;
+    };
+
     char number[24] = {};
+    char chunk[129] = {};
     for (std::size_t i = 0; i < program_.size(); ++i) {
+        if (interrupted()) {
+            platform::put_string("[LIST BREAK]\r\n");
+            return;
+        }
+
         std::int32_t line_number=0;
         const char* text=nullptr;
         std::size_t length=0;
@@ -1238,7 +1278,21 @@ void Repl::list_program() {
         std::snprintf(
             number,sizeof(number),"%ld ",static_cast<long>(line_number));
         platform::put_string(number);
-        platform::put_string(text);
+
+        std::size_t offset=0;
+        while(offset<length) {
+            const std::size_t remaining=length-offset;
+            const std::size_t bytes=remaining<sizeof(chunk)-1
+                ? remaining : sizeof(chunk)-1;
+            std::memcpy(chunk,text+offset,bytes);
+            chunk[bytes]='\0';
+            platform::put_string(chunk);
+            offset+=bytes;
+            if(interrupted()) {
+                platform::put_string("\r\n[LIST BREAK]\r\n");
+                return;
+            }
+        }
         platform::put_string("\r\n");
     }
 }
@@ -1248,6 +1302,10 @@ bool Repl::load_named_program(
     bool run_after_load
 ) {
     if (!filename || !*filename) return false;
+
+    platform::put_string("LOADING... (");
+    platform::put_string(filename);
+    platform::put_string(")\r\n");
 
     if (!storage::load_program(filename, program_)) {
         print_storage_error();
@@ -1616,14 +1674,18 @@ void Repl::process_line(char* line) {
 void Repl::run_direct_line(const char* line) {
     if (!line || !*line) return;
 
-    CompileWorkspaceLease workspace(compiled_, workspace_busy_);
+    CompileWorkspaceLease workspace(active_compiled_, workspace_busy_);
     if (!workspace) {
-        platform::put_string("?BASIC BUSY\r\n");
+        platform::put_string(
+            workspace.allocation_failed()
+                ? "?OUT OF MEMORY\r\n"
+                : "?BASIC BUSY\r\n");
         return;
     }
 
+    CompiledProgram& compiled = workspace.program();
     const CompileResult cr =
-        compiler_.compile_direct(line, compiled_);
+        compiler_.compile_direct(line, compiled);
 
     if (!cr.ok) {
         platform::put_char('?');
@@ -1632,7 +1694,7 @@ void Repl::run_direct_line(const char* line) {
         return;
     }
 
-    const VmResult vr = vm_.run_direct(compiled_);
+    const VmResult vr = vm_.run_direct(compiled);
     handle_runtime_result(vr);
     if (!vr.ok) {
         ensure_body_cursor();
@@ -1659,13 +1721,32 @@ void Repl::run_autorun() {
 
 void Repl::run_program() {
     // Text output keeps the footer. Graphics APIs release it when needed.
-    CompileWorkspaceLease workspace(compiled_, workspace_busy_);
+    platform::put_string("RUN...\r\n");
+    CompileWorkspaceLease workspace(active_compiled_, workspace_busy_);
     if (!workspace) {
-        platform::put_string("?BASIC BUSY\r\n");
+        platform::put_string(
+            workspace.allocation_failed()
+                ? "?OUT OF MEMORY\r\n"
+                : "?BASIC BUSY\r\n");
         return;
     }
 
-    const CompileResult cr = compiler_.compile(program_, compiled_);
+    CompiledProgram& compiled = workspace.program();
+    const std::uint64_t source_revision = program_.revision();
+    const bool cache_hit =
+        compiled_cache_.restore(source_revision, compiled);
+
+    CompileResult cr;
+    if (cache_hit) {
+        cr.ok = true;
+    } else {
+        cr = compiler_.compile(program_, compiled);
+        if (cr.ok) {
+            // Cache failure is non-fatal; execution always uses the SRAM
+            // workspace and never fetches VM opcodes directly from PSRAM.
+            (void)compiled_cache_.store(source_revision, compiled);
+        }
+    }
 
     if (!cr.ok) {
         char message[160] = {};
@@ -1693,7 +1774,7 @@ void Repl::run_program() {
     }
 
     const std::uint32_t run_start_ms = platform::monotonic_millis();
-    const VmResult vr = vm_.run(compiled_);
+    const VmResult vr = vm_.run(compiled);
     handle_runtime_result(vr);
     const std::uint32_t run_end_ms = platform::monotonic_millis();
     const std::uint32_t elapsed_ms = run_end_ms - run_start_ms;
@@ -2563,7 +2644,7 @@ void Repl::menu_display() {
 
         draw_menu_option(
             first_row + 4,
-            "Advanced console RGB...",
+            "Advanced console RGB",
             selected == 4
         );
 
@@ -3934,16 +4015,77 @@ void Repl::menu_system_info() {
             );
         }
         draw_menu_message(row++, text);
-        const char* psram_owner = psram::owner() == psram::Client::EditorHistory
-            ? "EDITOR HISTORY"
-            : psram::owner() == psram::Client::Diagnostic
-                ? "DIAGNOSTIC" : "IDLE";
+        const std::size_t psram_clients = psram::active_client_count();
         std::snprintf(
             text,
             sizeof(text),
-            "PSRAM runtime   %lu KiB / %s",
+            "PSRAM runtime   %lu KiB / %lu client%s",
             static_cast<unsigned long>(psram::used_bytes() / 1024u),
-            psram_owner
+            static_cast<unsigned long>(psram_clients),
+            psram_clients == 1 ? "" : "s"
+        );
+        draw_menu_message(row++, text);
+
+        const auto history =
+            psram::allocation(psram::Client::EditorHistory);
+        const auto program =
+            psram::allocation(psram::Client::ProgramStore);
+        const auto cache =
+            psram::allocation(psram::Client::SdCache);
+        const auto direct =
+            psram::allocation(psram::Client::DirectState);
+        const auto compiled =
+            psram::allocation(psram::Client::CompiledCache);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "PSRAM clients   EH:%lu  PRG:%lu  SD:%lu KiB",
+            static_cast<unsigned long>(history.allocated_bytes / 1024u),
+            static_cast<unsigned long>(program.allocated_bytes / 1024u),
+            static_cast<unsigned long>(cache.allocated_bytes / 1024u)
+        );
+        draw_menu_message(row++, text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "PSRAM extra     DIR:%lu  CMP:%lu KiB",
+            static_cast<unsigned long>(direct.allocated_bytes / 1024u),
+            static_cast<unsigned long>(compiled.allocated_bytes / 1024u)
+        );
+        draw_menu_message(row++, text);
+
+        std::snprintf(
+            text,
+            sizeof(text),
+            "SD cache        %lu KiB  H:%lu M:%lu",
+            static_cast<unsigned long>(program_.sd_cache_bytes() / 1024u),
+            static_cast<unsigned long>(program_.sd_cache_hits()),
+            static_cast<unsigned long>(program_.sd_cache_misses())
+        );
+        draw_menu_message(row++, text);
+
+        std::snprintf(
+            text,
+            sizeof(text),
+            "Compile cache   %s %lu KiB H:%lu M:%lu",
+            compiled_cache_.valid() &&
+                    compiled_cache_.revision() == program_.revision()
+                ? "VALID" : "EMPTY",
+            static_cast<unsigned long>(
+                compiled_cache_.allocated_bytes() / 1024u),
+            static_cast<unsigned long>(compiled_cache_.hits()),
+            static_cast<unsigned long>(compiled_cache_.misses())
+        );
+        draw_menu_message(row++, text);
+
+        std::snprintf(
+            text,
+            sizeof(text),
+            "Direct state    %s %lu KiB",
+            vm_.direct_state_bytes() == 0
+                ? "EMPTY"
+                : (vm_.direct_state_in_psram() ? "PSRAM" : "SRAM"),
+            static_cast<unsigned long>(vm_.direct_state_bytes() / 1024u)
         );
         draw_menu_message(row++, text);
 
@@ -3989,7 +4131,7 @@ void Repl::menu_system_info() {
             sizeof(text),
             "Program lines   %lu / %lu",
             static_cast<unsigned long>(program_.size()),
-            static_cast<unsigned long>(program_.backend_type()==ProgramBackend::Sd ? kMaxSdProgramLines : kMaxRamProgramLines)
+            static_cast<unsigned long>(program_.line_capacity())
         );
         draw_menu_message(row++, text);
 
@@ -3998,9 +4140,7 @@ void Repl::menu_system_info() {
             sizeof(text),
             "Line capacity   %lu chars",
             static_cast<unsigned long>(
-                program_.backend_type()==ProgramBackend::Sd
-                    ?kMaxSdProgramLineLength-1
-                    :kMaxProgramLineLength-1)
+                program_.line_length_capacity())
         );
         draw_menu_message(row++, text);
 
@@ -4158,6 +4298,10 @@ void Repl::menu_psram_diagnostics() {
             (key_is_enter(key) && selected == 4)) return;
         if (!key_is_enter(key)) continue;
         if (selected == 3) {
+            // The SD read cache is disposable. Release it so a hardware
+            // reprobe is not blocked by a transient PSRAM client.
+            program_.release_sd_cache();
+            compiled_cache_.invalidate();
             draw_menu_message(option_row + 7, "Probing PicoCalc PSRAM...");
             (void)psram::reprobe();
             continue;
@@ -4186,6 +4330,10 @@ void Repl::menu_psram_diagnostics() {
         );
         if (!key_is_enter(platform::get_char())) continue;
 
+        // Diagnostics are destructive and exclusive. The SD cache is
+        // reconstructable, so release it before claiming the full device.
+        program_.release_sd_cache();
+        compiled_cache_.invalidate();
         platform::clear_lcd_color(0x000000);
         platform::draw_text_row(
             0, "PSRAM DIAGNOSTIC RUNNING", 0xffffff, 0x203060);
@@ -4312,10 +4460,25 @@ void Repl::menu_program_storage() {
         int top=(settings_.status_enabled ? console_layout::status_rows : 0)+3;
         char row[96];
         std::snprintf(row,sizeof(row),"Mode : %s",ProgramStore::mode_name(program_.mode()));draw_menu_message(top,row);
-        std::snprintf(row,sizeof(row),"Active : %s%s",program_.backend_type()==ProgramBackend::Sd?"SD CARD":"INTERNAL RAM",program_.suspended()?" (SUSPENDED)":"");draw_menu_message(top+1,row);
+        const char* active_backend =
+            program_.backend_type()==ProgramBackend::Sd
+                ? "SD CARD"
+                : (program_.internal_psram_extended()
+                    ? "INTERNAL PSRAM" : "INTERNAL SRAM FALLBACK");
+        std::snprintf(
+            row,sizeof(row),"Active : %s%s",
+            active_backend,
+            program_.suspended()?" (SUSPENDED)":"");
+        draw_menu_message(top+1,row);
         std::snprintf(row,sizeof(row),"SD : %s",storage::card_present()?(storage::available()?"READY":"NOT MOUNTED"):"NOT AVAILABLE");draw_menu_message(top+2,row);
         std::snprintf(row,sizeof(row),"Program: %.38s%s",current_filename_,program_dirty_?"*":"");draw_menu_message(top+3,row);
-        std::snprintf(row,sizeof(row),"Lines: %lu   Size: %lu bytes",static_cast<unsigned long>(program_.size()),static_cast<unsigned long>(program_.size_bytes()));draw_menu_message(top+4,row);
+        std::snprintf(
+            row,sizeof(row),
+            "Lines: %lu/%lu  Max body: %lu",
+            static_cast<unsigned long>(program_.size()),
+            static_cast<unsigned long>(program_.line_capacity()),
+            static_cast<unsigned long>(program_.line_length_capacity()));
+        draw_menu_message(top+4,row);
         for(int i=0;i<5;++i) draw_menu_option(top+7+i,items[i],selected==i);
         int k=platform::get_char();
         if(k==kKeyEscape||k==0x1b||k==kKeyHome) return;
@@ -4443,6 +4606,11 @@ void Repl::service_background() {
     wireless::service_board_led();
     network::file_server_poll();
     bluetooth_manager::service();
+
+    if (compiled_cache_.valid() &&
+        compiled_cache_.revision() != program_.revision()) {
+        compiled_cache_.invalidate();
+    }
 
     storage::poll();
 
@@ -5543,9 +5711,9 @@ void Repl::menu_bluetooth() {
             selected == 0
         );
         draw_menu_option(
-            first + 6, "Pair Keyboard...", selected == 1);
+            first + 6, "Pair Keyboard", selected == 1);
         draw_menu_option(
-            first + 7, "Paired Devices...", selected == 2);
+            first + 7, "Paired Devices", selected == 2);
         std::snprintf(
             row, sizeof(row), "Keyboard Layout: %s",
             bluetooth_hid::keyboard_layout_name(
@@ -5593,36 +5761,80 @@ void Repl::menu_bluetooth() {
 void Repl::show_system_menu() {
     platform::set_console_mode(platform::ConsoleMode::Both);
 
-    static const char* items[] = {
-        "Files",
-        "Editor",
-        "Save Program",
-        "Save Program As...",
-        "Quick Load Keys",
-        "Display",
-        "Console",
-        "Date / Time",
-        "Audio",
-        "Wireless LAN",
-        "Bluetooth",
-        "Wi-Fi File Server",
-        "File Transfer",
-        "USB Storage",
-        "SD Card",
-        "Firmware",
-        "Power / CPU",
-        "Board LED",
-        "System Information",
-        "PSRAM Diagnostics",
-        "Program Storage",
-        "Exit"
+    enum class ControlAction {
+        None,
+        Files,
+        Editor,
+        SaveProgram,
+        SaveProgramAs,
+        QuickLoadKeys,
+        ProgramStorage,
+        SdCard,
+        UsbStorage,
+        Display,
+        Audio,
+        WirelessLan,
+        WifiFileServer,
+        Bluetooth,
+        Console,
+        SerialConfig,
+        FileTransfer,
+        DateTime,
+        PowerCpu,
+        BoardLed,
+        Firmware,
+        SystemInformation,
+        PsramDiagnostics,
+        Exit
+    };
+
+    struct ControlItem {
+        const char* label;
+        ControlAction action;
+        bool indented;
+    };
+    static const ControlItem items[] = {
+        {"Files", ControlAction::Files, false},
+        {"Editor", ControlAction::Editor, false},
+        {"Program", ControlAction::None, false},
+        {"Save Program", ControlAction::SaveProgram, true},
+        {"Save Program As", ControlAction::SaveProgramAs, true},
+        {"Quick Load Keys", ControlAction::QuickLoadKeys, true},
+        {"Program Storage", ControlAction::ProgramStorage, true},
+        {"Storage", ControlAction::None, false},
+        {"SD Card", ControlAction::SdCard, true},
+        {"USB Storage", ControlAction::UsbStorage, true},
+        {"Display & Audio", ControlAction::None, false},
+        {"Display", ControlAction::Display, true},
+        {"Audio", ControlAction::Audio, true},
+        {"Network", ControlAction::None, false},
+        {"Wireless LAN", ControlAction::WirelessLan, true},
+        {"Wi-Fi File Server", ControlAction::WifiFileServer, true},
+        {"Bluetooth", ControlAction::Bluetooth, true},
+        {"Serial", ControlAction::None, false},
+        {"Console", ControlAction::Console, true},
+        {"Serial Config", ControlAction::SerialConfig, true},
+        {"File Transfer", ControlAction::FileTransfer, true},
+        {"System", ControlAction::None, false},
+        {"Date / Time", ControlAction::DateTime, true},
+        {"Power / CPU", ControlAction::PowerCpu, true},
+        {"Board LED", ControlAction::BoardLed, true},
+        {"Firmware", ControlAction::Firmware, true},
+        {"Diagnostics", ControlAction::None, false},
+        {"System Information", ControlAction::SystemInformation, true},
+        {"PSRAM Diagnostics", ControlAction::PsramDiagnostics, true},
+        {"Exit", ControlAction::Exit, false}
     };
 
     constexpr int item_count =
         static_cast<int>(sizeof(items) / sizeof(items[0]));
-    constexpr int visible = 27;
+    constexpr int visible = 32;
     menu_scroll::State scroll;
     menu_scroll::normalize(scroll, item_count, visible);
+
+    auto selectable = [](const ControlItem& item) {
+        return item.action != ControlAction::None;
+    };
 
     while (true) {
         draw_menu_header(
@@ -5641,11 +5853,16 @@ void Repl::show_system_menu() {
                 continue;
             }
             char row[80] = {};
-            std::snprintf(row, sizeof(row), "  %s", items[index]);
+            std::snprintf(
+                row,
+                sizeof(row),
+                items[index].indented ? "    %s" : "  %s",
+                items[index].label
+            );
             draw_menu_option(
                 first_row + row_index,
                 row,
-                index == scroll.selected
+                index == scroll.selected && selectable(items[index])
             );
         }
 
@@ -5666,8 +5883,19 @@ void Repl::show_system_menu() {
 
         const int key = platform::get_char();
 
-        if (handle_menu_scroll_key(
-                key, scroll, item_count, visible)) {
+        const int previous = scroll.selected;
+        if (handle_menu_scroll_key(key, scroll, item_count, visible)) {
+            if (!selectable(items[scroll.selected])) {
+                const int step = scroll.selected >= previous ? 1 : -1;
+                int next = scroll.selected;
+                do {
+                    next += step;
+                } while (next >= 0 && next < item_count &&
+                         !selectable(items[next]));
+                scroll.selected =
+                    next >= 0 && next < item_count ? next : previous;
+                menu_scroll::normalize(scroll, item_count, visible);
+            }
             continue;
         }
         if (key == kKeyEscape || key == 0x1b || key == kKeyHome) {
@@ -5677,55 +5905,35 @@ void Repl::show_system_menu() {
             continue;
         }
 
-        const int selected = scroll.selected;
-        if (selected == 0) {
+        const ControlAction action = items[scroll.selected].action;
+        if (action == ControlAction::Exit) break;
+        if (action == ControlAction::Files) {
             if (menu_files()) {
                 platform::set_console_mode(settings_.console_mode);
                 return;
             }
-        } else if (selected == 1) {
+        } else if (action == ControlAction::Editor) {
             open_full_screen_editor();
-        } else if (selected == 2) {
-            menu_save_program(false);
-        } else if (selected == 3) {
-            menu_save_program(true);
-        } else if (selected == 4) {
-            menu_quick_keys();
-        } else if (selected == 5) {
-            menu_display();
-        } else if (selected == 6) {
-            menu_console();
-        } else if (selected == 7) {
-            menu_datetime();
-        } else if (selected == 8) {
-            menu_audio();
-        } else if (selected == 9) {
-            menu_wifi();
-        } else if (selected == 10) {
-            menu_bluetooth();
-        } else if (selected == 11) {
-            menu_file_server();
-        } else if (selected == 12) {
-            menu_file_transfer();
-        } else if (selected == 13) {
-            menu_usb_storage();
-        } else if (selected == 14) {
-            menu_sd();
-        } else if (selected == 15) {
-            menu_firmware();
-        } else if (selected == 16) {
-            menu_power();
-        } else if (selected == 17) {
-            menu_board_led();
-        } else if (selected == 18) {
-            menu_system_info();
-        } else if (selected == 19) {
-            menu_psram_diagnostics();
-        } else if (selected == 20) {
-            menu_program_storage();
-        } else {
-            break;
-        }
+        } else if (action == ControlAction::SaveProgram) menu_save_program(false);
+        else if (action == ControlAction::SaveProgramAs) menu_save_program(true);
+        else if (action == ControlAction::QuickLoadKeys) menu_quick_keys();
+        else if (action == ControlAction::ProgramStorage) menu_program_storage();
+        else if (action == ControlAction::SdCard) menu_sd();
+        else if (action == ControlAction::UsbStorage) menu_usb_storage();
+        else if (action == ControlAction::Display) menu_display();
+        else if (action == ControlAction::Audio) menu_audio();
+        else if (action == ControlAction::WirelessLan) menu_wifi();
+        else if (action == ControlAction::WifiFileServer) menu_file_server();
+        else if (action == ControlAction::Bluetooth) menu_bluetooth();
+        else if (action == ControlAction::Console) menu_console();
+        else if (action == ControlAction::SerialConfig) menu_transfer_performance();
+        else if (action == ControlAction::FileTransfer) menu_file_transfer();
+        else if (action == ControlAction::DateTime) menu_datetime();
+        else if (action == ControlAction::PowerCpu) menu_power();
+        else if (action == ControlAction::BoardLed) menu_board_led();
+        else if (action == ControlAction::Firmware) menu_firmware();
+        else if (action == ControlAction::SystemInformation) menu_system_info();
+        else if (action == ControlAction::PsramDiagnostics) menu_psram_diagnostics();
     }
 
     save_settings();
@@ -5765,8 +5973,10 @@ void Repl::menu_file_transfer() {
     auto route_label = [](platform::SerialTransferRoute route) {
         switch (route) {
         case platform::SerialTransferRoute::Auto: return "AUTO";
-        case platform::SerialTransferRoute::Usb: return "USB CDC";
-        case platform::SerialTransferRoute::Uart: return "UART0";
+        case platform::SerialTransferRoute::Usb:
+            return "Micro-USB (USB CDC)";
+        case platform::SerialTransferRoute::Uart:
+            return "USB-C (UART0)";
         }
         return "AUTO";
     };
@@ -5798,8 +6008,8 @@ void Repl::menu_file_transfer() {
         for (int i = 0; i < 5; ++i) {
             draw_menu_option(first_row + i + 1, items[i], selected == i + 1);
         }
-        draw_menu_message(first_row + 8, "YMODEM: exact size / recommended");
-        draw_menu_message(first_row + 9, "XMODEM: compatibility / emergency");
+        draw_menu_message(first_row + 9, "YMODEM: exact size / recommended");
+        draw_menu_message(first_row + 10, "XMODEM: compatibility / emergency");
 
         const int key = platform::get_char();
         if (key == kKeyUp && selected > 0) { --selected; continue; }
@@ -5818,7 +6028,6 @@ void Repl::menu_file_transfer() {
             transfer_route = cycle_route(transfer_route, 1);
             continue;
         }
-
         char filename[kFilenameSize] = {};
         if (selected == 2 || selected == 4) {
             if (!pick_transfer_file(filename, sizeof(filename),
@@ -5852,6 +6061,72 @@ void Repl::menu_file_transfer() {
                 done == 0x1b || done == kKeyHome) break;
         }
         draw_menu_header(nullptr, nullptr);
+    }
+}
+
+void Repl::menu_transfer_performance() {
+    static const std::uint32_t baud_rates[] = {
+        115200, 230400, 460800, 921600
+    };
+    int selected = 0;
+    while (true) {
+        const auto& perf = platform::serial_transfer_performance();
+        draw_menu_header(
+            "SERIAL CONFIG",
+            "UP/DOWN SELECT  LEFT/RIGHT CHANGE  ENTER TOGGLE"
+        );
+        const int first =
+            (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        char row[72];
+        std::snprintf(row, sizeof(row), "YMODEM RX Bulk: %s",
+            perf.ymodem_rx_bulk ? "ON" : "OFF");
+        draw_menu_option(first, row, selected == 0);
+        std::snprintf(row, sizeof(row), "TX Packet Coalesce: %s",
+            perf.tx_packet_coalesce ? "ON" : "OFF");
+        draw_menu_option(first + 1, row, selected == 1);
+        std::snprintf(row, sizeof(row), "Micro-USB CDC Bulk: %s",
+            perf.usb_cdc_bulk ? "ON" : "OFF");
+        draw_menu_option(first + 2, row, selected == 2);
+        std::snprintf(row, sizeof(row), "UART Transfer Baud: %lu",
+            static_cast<unsigned long>(perf.uart_baud));
+        draw_menu_option(first + 3, row, selected == 3);
+        std::snprintf(row, sizeof(row), "UART RX Mode: %s",
+            platform::uart_rx_mode_name(perf.uart_rx_mode));
+        draw_menu_option(first + 4, row, selected == 4);
+        draw_menu_option(first + 5, "Back", selected == 5);
+        draw_menu_message(first + 8, "Micro-USB: USB CDC (baud ignored)");
+        draw_menu_message(first + 9, "USB-C: UART0 (PC baud must match)");
+        draw_menu_message(first + 10, "UART DMA is RX only / session only");
+
+        const int key = platform::get_char();
+        if (key == kKeyUp && selected > 0) { --selected; continue; }
+        if (key == kKeyDown && selected < 5) { ++selected; continue; }
+        if (key == kKeyEscape || key == 0x1b || key == kKeyHome ||
+            (key_is_enter(key) && selected == 5)) return;
+        const int direction = key == kKeyLeft ? -1 :
+                              key == kKeyRight ? 1 : 0;
+        if (!direction && !key_is_enter(key)) continue;
+
+        if (selected == 0) {
+            platform::set_ymodem_rx_bulk(!perf.ymodem_rx_bulk);
+        } else if (selected == 1) {
+            platform::set_tx_packet_coalesce(!perf.tx_packet_coalesce);
+        } else if (selected == 2) {
+            platform::set_usb_cdc_bulk(!perf.usb_cdc_bulk);
+        } else if (selected == 3) {
+            int current = 0;
+            for (int i = 0; i < 4; ++i)
+                if (baud_rates[i] == perf.uart_baud) current = i;
+            const int step = direction < 0 ? -1 : 1;
+            current = (current + step + 4) % 4;
+            platform::set_uart_transfer_baud(baud_rates[current]);
+        } else if (selected == 4) {
+            platform::set_uart_rx_mode(
+                perf.uart_rx_mode == platform::UartRxMode::Irq
+                    ? platform::UartRxMode::Dma
+                    : platform::UartRxMode::Irq
+            );
+        }
     }
 }
 
@@ -5892,6 +6167,15 @@ void Repl::run_xmodem_transfer(
     platform::put_string("TRANSPORT: ");
     platform::put_string(platform::serial_transfer_route_name(route));
     platform::put_string("\r\n");
+    if (std::strcmp(platform::serial_transfer_route_name(route), "UART0") == 0) {
+        const auto& perf = platform::serial_transfer_performance();
+        char uart_status[64];
+        std::snprintf(uart_status, sizeof(uart_status),
+            "UART: %lu BAUD / %s RX (PC MUST MATCH)\r\n",
+            static_cast<unsigned long>(perf.uart_baud),
+            platform::uart_rx_mode_name(perf.uart_rx_mode));
+        platform::put_string(uart_status);
+    }
     if (!platform::begin_serial_transfer(route)) {
         platform::put_string(platform::serial_transfer_error());
         platform::put_string("\r\n");
@@ -5904,7 +6188,11 @@ void Repl::run_xmodem_transfer(
         [](void*, const std::uint8_t* p, std::size_t n) { return platform::serial_transfer_write(p, n); },
         [](void* p, std::uint8_t* b, std::size_t n) { return static_cast<TransferFile*>(p)->read(b, n); },
         [](void* p, const std::uint8_t* b, std::size_t n) { return static_cast<TransferFile*>(p)->write(b, n); },
-        [](void* p) { return static_cast<TransferFile*>(p)->commit(); }
+        [](void* p) { return static_cast<TransferFile*>(p)->commit(); },
+        [](void*, std::uint8_t* p, std::size_t n, unsigned ms) {
+            return platform::serial_transfer_read_exact(p, n, ms);
+        },
+        true
     };
     auto result = receive ? xmodem::receive(io) : xmodem::send(io);
     file.abort();
@@ -5969,6 +6257,13 @@ void Repl::run_ymodem_transfer(
         "TERA TERM: FILE > TRANSFER > YMODEM > RECEIVE\r\n");
     platform::put_string("ESC: CANCEL\r\n");
     platform::put_string("TRANSPORT: ");platform::put_string(platform::serial_transfer_route_name(route));platform::put_string("\r\n");
+    if(std::strcmp(platform::serial_transfer_route_name(route),"UART0")==0){
+        const auto& perf=platform::serial_transfer_performance();char status[64];
+        std::snprintf(status,sizeof(status),"UART: %lu BAUD / %s RX (PC MUST MATCH)\r\n",
+            static_cast<unsigned long>(perf.uart_baud),
+            platform::uart_rx_mode_name(perf.uart_rx_mode));
+        platform::put_string(status);
+    }
     if(!platform::begin_serial_transfer(route)){
         platform::put_string(platform::serial_transfer_error());platform::put_string("\r\n");return;
     }
@@ -5996,7 +6291,12 @@ void Repl::run_ymodem_transfer(
                 platform::draw_text_row(c->info_row+1,line,0xffff80,0x000000);
             }
             return c->file.open(name,true,"/","YMODEM");
-        }
+        },
+        [](void*,std::uint8_t* p,std::size_t n,unsigned ms){
+            return platform::serial_transfer_read_exact(p,n,ms);
+        },
+        platform::serial_transfer_performance().ymodem_rx_bulk,
+        platform::serial_transfer_performance().tx_packet_coalesce
     };
     auto result=receive?ymodem::receive(io):ymodem::send(io,filename,context.file.size());
     context.file.abort();transfer_lease.close();
@@ -6267,4 +6567,3 @@ void Repl::run() {
 }
 
 } // namespace rmb
-

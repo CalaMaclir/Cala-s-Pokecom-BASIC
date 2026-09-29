@@ -1,5 +1,5 @@
 # Cala's Pokecom BASIC System
-## Version 0.90
+## Version 0.91
 ## Programming Reference Manual / プログラミング・リファレンスマニュアル
 
 for ClockworkPi PicoCalc  
@@ -23,8 +23,8 @@ CPB BASICはline number付きのprogramと、line numberなしで直ちに実行
 - commentは `REM` またはapostrophe（`'`）から行末までです。
 - line numberは0～2,147,483,647です。
 - 同じline numberの入力は既存lineを置換します。line numberだけなら削除します。
-- programの保存上限はProgram Storage backendに従います。RAMは256行・本文191 characters、SDは1,024行・本文2,047 charactersです。
-- `EDIT`でFull-Screen BASIC Editorを開けます。SDの2,047文字行はEditorまたはPCで編集します。
+- programの保存上限はProgram Storage backendに従います。PSRAM利用時のINTERNAL RAMとSDはともに1,024行・本文2,047 charactersです。PSRAMなしのINTERNAL SRAM fallbackは256行・本文191 charactersです。
+- `EDIT`でFull-Screen BASIC Editorを開けます。PSRAM INTERNAL／SDの2,047文字lineはEditorまたはPCで編集できます。Direct modeと通常prompt入力は191文字です。
 
 ## 2. Lexical Elements
 
@@ -72,7 +72,7 @@ CPB BASICはline number付きのprogramと、line numberなしで直ちに実行
 
 ## 4. Operator Precedence
 
-同じ優先順位のbinary operatorは左から評価されます。指数演算 `^` もVersion 0.90では左結合です。
+同じ優先順位のbinary operatorは左から評価されます。指数演算 `^` もVersion 0.91では左結合です。
 
 | 優先順位（高→低） | operator |
 |---:|---|
@@ -452,12 +452,12 @@ BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もba
 | command | 構文 | 説明 |
 |---|---|---|
 | EDIT | `EDIT` | Full-Screen BASIC Editorを開く |
-| LIST | `LIST` | current programを表示 |
-| RUN | `RUN` | current programを実行 |
+| LIST | `LIST` | current programを表示。BREAK／Esc／Ctrl-Cで途中停止 |
+| RUN | `RUN` | current programを実行。開始時に`RUN...`を表示 |
 | NEW | `NEW` | program、Direct scalar、current filenameをclear |
 | CLEAR | `CLEAR` | Direct scalarをclear |
 | CLS | `CLS` | console／graphics画面をclear |
-| LOAD | `LOAD "name"` | BASIC sourceをload |
+| LOAD | `LOAD "name"` | BASIC sourceをload。開始時に`LOADING... (filename)`を表示 |
 | SAVE | `SAVE` / `SAVE "name"` | current fileへsave／Save As |
 | FILES | `FILES` | SD root一覧 |
 | DIR | `DIR` | FILESと同義 |
@@ -479,13 +479,19 @@ BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もba
 
 `SAVE IMAGE` はBASIC statement、`SAVE` はREPL commandです。`EDIT` はprogram内には記述できません。
 
+### v0.91 storage / compile behavior
+
+Stored programの初回`RUN`ではsourceをcompileし、PSRAMが利用できる場合はCompiled Program cacheへ保存します。同じsourceを再度`RUN`するとcacheを復元して内部SRAMのexecution workspaceへ展開します。VMはPSRAM上のopcodeを直接実行しません。sourceを編集、LOAD、NEW、storage mode切替した場合はrevisionが変化し、古いcacheは再利用されません。
+
+Direct scalar stateもPSRAMへ保存できますが、Direct statement実行時は内部SRAM working copyへ復元して処理します。これらは言語仕様を変更せず、runtime memory使用量と再compile overheadを改善する実装です。
+
 ## 17. Runtime Limits and Errors
 
 | resource | limit |
 |---|---:|
 | compiled operations | 1,536 |
 | symbols | 64 |
-| compiled line map | 256 |
+| compiled line map | inline 256 + extended map up to program line count |
 | FOR nesting | 16 |
 | WHILE nesting | 16 |
 | DO nesting | 16 |
@@ -493,8 +499,10 @@ BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もba
 | string array cells | 512 |
 | string array element | 127 characters |
 | MML per voice | 384 characters |
-| RAM program | 256 lines / 191 body chars |
+| INTERNAL program / PSRAM | 1,024 lines / 2,047 body chars |
+| INTERNAL program / SRAM fallback | 256 lines / 191 body chars |
 | SD program | 1,024 lines / 2,047 body chars |
+| Direct / prompt input line | 191 body chars |
 
 代表的なerror：
 
@@ -503,7 +511,7 @@ BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もba
 | Compile | `SYNTAX ERROR`、`TYPE MISMATCH` | syntaxとdata typeを確認 |
 | Control flow | `NEXT WITHOUT FOR`、`WEND WITHOUT WHILE` | pairを確認 |
 | Resource | `PROGRAM TOO COMPLEX`、`TOO MANY VARIABLES` | programを分割、variableを削減 |
-| Storage | `LINE TOO LONG FOR RAM`、`PROGRAM TOO LARGE FOR RAM MODE` | SD modeを使うかsourceを縮小 |
+| Storage | `LINE TOO LONG FOR INTERNAL PSRAM`、`LINE TOO LONG FOR SRAM FALLBACK`、`PROGRAM TOO LARGE FOR INTERNAL MODE` | current backend capacityを確認。PSRAM利用時のINTERNALは1024×2047 |
 | I/O | transfer timeout、SD mount failure | route、cable、SD状態を確認 |
 
 ## 18. Quick Reference
