@@ -44,6 +44,8 @@ public:
     VmResult run(const CompiledProgram& program);
     VmResult run_direct(const CompiledProgram& program);
     void clear_direct_state();
+    std::uint32_t direct_state_bytes() const;
+    bool direct_state_in_psram() const;
 
     void set_profile_mode(VmProfileMode mode);
     VmProfileMode profile_mode() const;
@@ -75,19 +77,35 @@ private:
     BasicNumber numbers_[kMaxSymbols] = {};
     char strings_[kMaxSymbols][kRuntimeStringLength] = {};
     ArrayMeta arrays_[kMaxSymbols] = {};
-    BasicNumber array_pool_[kArrayCells] = {};
-    std::size_t array_used_ = 0;
-    char string_array_pool_[kStringArrayCells][kRuntimeStringLength] = {};
-    std::size_t string_array_used_ = 0;
+    // Numeric/string array cells are runtime-only. run_impl() allocates
+    // these pools lazily on the first DIM and releases them when execution
+    // returns, avoiding 80 KiB of persistent VM SRAM.
     std::uint32_t random_state_ = 0x4d595df4u;
-    DirectScalar direct_state_[kMaxSymbols] = {};
+
+    // Direct-mode scalars persist across statements, but they are not part of
+    // the VM hot working set. Prefer one PSRAM snapshot; fall back to a
+    // dynamically allocated SRAM snapshot when PSRAM is unavailable.
+    DirectScalar* direct_state_sram_ = nullptr;
+    std::uint32_t direct_state_psram_base_ = 0;
+    std::uint32_t direct_state_psram_bytes_ = 0;
+    bool direct_state_psram_ = false;
+    bool direct_state_valid_ = false;
 
     VmProfileMode profile_mode_ = VmProfileMode::Off;
     VmProfileReport profile_ = {};
 
     VmResult run_impl(const CompiledProgram& program, bool direct_mode);
-    void restore_direct_scalars(const CompiledProgram& program);
-    void save_direct_scalars(const CompiledProgram& program);
+    bool load_direct_state(DirectScalar* state);
+    bool store_direct_state(const DirectScalar* state);
+    void release_direct_state();
+    void restore_direct_scalars(
+        const CompiledProgram& program,
+        const DirectScalar* state
+    );
+    void save_direct_scalars(
+        const CompiledProgram& program,
+        DirectScalar* state
+    );
 };
 
 } // namespace rmb
