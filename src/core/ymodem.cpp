@@ -9,6 +9,7 @@ namespace {
 constexpr std::uint8_t SOH=1, STX=2, EOT=4, ACK=6, NAK=21, CAN=24;
 constexpr unsigned retries=10, startup_retries=30;
 constexpr unsigned eot_grace_ms=250;
+alignas(4) std::uint8_t tx_packet[kDataSize+5];
 bool control(IO& io,std::uint8_t value){return io.write(io.context,&value,1);}
 Error input_error(int c){return c==xmodem::cancelled||c==CAN?Error::Cancelled:
     c==xmodem::disconnected?Error::Disconnected:Error::Timeout;}
@@ -25,26 +26,44 @@ Result fail(IO& io,Error error,std::uint32_t bytes,const char* name=nullptr,
     return result(error,bytes,name,files);
 }
 struct Packet {std::uint8_t sequence=0;std::size_t size=0;std::uint8_t data[kDataSize]={};};
+int read_bytes(IO& io,std::uint8_t* data,std::size_t size,unsigned timeout_ms){
+    if(io.rx_bulk&&io.read_exact)
+        return io.read_exact(io.context,data,size,timeout_ms);
+    for(std::size_t i=0;i<size;++i){
+        int value=io.read(io.context,timeout_ms);
+        if(value<0)return value;
+        data[i]=static_cast<std::uint8_t>(value);
+    }
+    return static_cast<int>(size);
+}
 Error read_packet(IO& io,int marker,Packet& packet){
     if(marker!=SOH&&marker!=STX)return Error::Protocol;
     packet.size=marker==SOH?kHeaderSize:kDataSize;
-    int seq=io.read(io.context,1000),inverse=io.read(io.context,1000);
-    if(seq<0||inverse<0)return input_error(seq<0?seq:inverse);
-    if(static_cast<std::uint8_t>(seq^inverse)!=0xff)return Error::Protocol;
-    packet.sequence=static_cast<std::uint8_t>(seq);
-    for(std::size_t i=0;i<packet.size;++i){
-        int c=io.read(io.context,1000);if(c<0)return input_error(c);
-        packet.data[i]=static_cast<std::uint8_t>(c);
-    }
-    int high=io.read(io.context,1000),low=io.read(io.context,1000);
-    if(high<0||low<0)return input_error(high<0?high:low);
-    auto received=static_cast<std::uint16_t>((high<<8)|low);
+    std::uint8_t header[2];
+    int got=read_bytes(io,header,sizeof(header),1000);
+    if(got!=static_cast<int>(sizeof(header)))return input_error(got);
+    if(static_cast<std::uint8_t>(header[0]^header[1])!=0xff)return Error::Protocol;
+    packet.sequence=header[0];
+    got=read_bytes(io,packet.data,packet.size,1000);
+    if(got!=static_cast<int>(packet.size))return input_error(got);
+    std::uint8_t suffix[2];
+    got=read_bytes(io,suffix,sizeof(suffix),1000);
+    if(got!=static_cast<int>(sizeof(suffix)))return input_error(got);
+    auto received=static_cast<std::uint16_t>((suffix[0]<<8)|suffix[1]);
     return xmodem::crc16(packet.data,packet.size)==received?Error::None:Error::Crc;
 }
 bool write_packet(IO& io,std::uint8_t marker,std::uint8_t sequence,
                   const std::uint8_t* data,std::size_t size){
     std::uint8_t prefix[]={marker,sequence,static_cast<std::uint8_t>(~sequence)};
     auto crc=xmodem::crc16(data,size);std::uint8_t suffix[]={static_cast<std::uint8_t>(crc>>8),static_cast<std::uint8_t>(crc)};
+    if(io.tx_packet_coalesce){
+        const std::size_t packet_size=size+sizeof(prefix)+sizeof(suffix);
+        if(packet_size>sizeof(tx_packet))return false;
+        std::memcpy(tx_packet,prefix,sizeof(prefix));
+        std::memcpy(tx_packet+sizeof(prefix),data,size);
+        std::memcpy(tx_packet+sizeof(prefix)+size,suffix,sizeof(suffix));
+        return io.write(io.context,tx_packet,packet_size);
+    }
     return io.write(io.context,prefix,sizeof(prefix))&&io.write(io.context,data,size)&&io.write(io.context,suffix,sizeof(suffix));
 }
 Error transmit(IO& io,std::uint8_t marker,std::uint8_t sequence,
