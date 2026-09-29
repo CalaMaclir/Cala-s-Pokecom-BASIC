@@ -1,5 +1,6 @@
 #include "psram.hpp"
 #include "psram_layout.hpp"
+#include "psram_allocator.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -21,6 +22,7 @@ constexpr std::uint32_t kPicoCalcPsramBytes = 8u * 1024u * 1024u;
 constexpr std::uint32_t kQuickTestBytes = 1024u * 1024u;
 constexpr std::size_t kMaximumReadChunk = 31;
 constexpr std::size_t kMaximumWriteChunk = 27;
+constexpr std::uint32_t kReservedTailBytes = 16u;
 
 struct DriverState {
     PIO pio = pio1;
@@ -32,12 +34,20 @@ struct DriverState {
     bool fast_read = true;
     bool falling_edge_fudge = true;
     std::uint32_t target_clock_hz = 25000000u;
-    Client owner = Client::None;
-    std::uint32_t allocated_bytes = 0;
+    detail::RegionAllocator<kAllocatableClientCount> allocations{};
+    bool diagnostic_active = false;
     DeviceInfo info{};
 };
 
 DriverState state;
+
+bool allocatable_client(Client client) {
+    return client >= Client::EditorHistory && client <= Client::AudioCache;
+}
+
+std::size_t client_slot(Client client) {
+    return static_cast<std::size_t>(client) - 1u;
+}
 
 void release_driver() {
     if (state.state_machine >= 0) {
@@ -560,6 +570,11 @@ bool init() {
             attempt.known_good_die == 0x5d && id_size != 0;
         state.info.size_bytes = id_verified
             ? id_size : kPicoCalcPsramBytes;
+        const std::uint32_t allocatable =
+            state.info.size_bytes > kReservedTailBytes
+                ? state.info.size_bytes - kReservedTailBytes : 0u;
+        state.allocations.reset(allocatable);
+        state.diagnostic_active = false;
         state.info.available = true;
         state.info.error = id_verified ? "OK" : "OK (PROBE FALLBACK)";
         return true;
@@ -569,8 +584,10 @@ bool init() {
 }
 
 bool reprobe() {
-    if (state.busy || state.owner != Client::None) return false;
+    if (state.busy || state.diagnostic_active ||
+        state.allocations.active_count() != 0) return false;
     release_driver();
+    state.allocations.reset(0);
     state.info = {};
     return init();
 }
@@ -600,31 +617,62 @@ bool claim(
 ) {
     base_address = 0;
     allocated_bytes = 0;
-    if (client == Client::None || requested_bytes == 0 ||
-        !state.info.available || state.busy ||
-        state.owner != Client::None) return false;
-    // Keep the reversible boot-probe tail outside client allocations.
-    constexpr std::uint32_t reserved_tail = 16u;
-    if (state.info.size_bytes <= reserved_tail) return false;
-    const std::uint32_t available = state.info.size_bytes - reserved_tail;
-    allocated_bytes = std::min(requested_bytes, available);
-    state.owner = client;
-    state.allocated_bytes = allocated_bytes;
-    return true;
+    if (!allocatable_client(client) || requested_bytes == 0 ||
+        !state.info.available || state.busy || state.diagnostic_active)
+        return false;
+    return state.allocations.claim(
+        client_slot(client),
+        requested_bytes,
+        base_address,
+        allocated_bytes);
 }
 
 void release(Client client) {
-    if (client == Client::None || state.owner != client || state.busy) return;
-    state.owner = Client::None;
-    state.allocated_bytes = 0;
+    if (!allocatable_client(client) || state.busy ||
+        state.diagnostic_active) return;
+    state.allocations.release(client_slot(client));
 }
 
 Client owner() {
-    return state.owner;
+    if (state.diagnostic_active) return Client::Diagnostic;
+    if (state.allocations.active_count() != 1) return Client::None;
+    for (std::size_t slot = 0; slot < kAllocatableClientCount; ++slot) {
+        if (state.allocations.active(slot))
+            return static_cast<Client>(slot + 1u);
+    }
+    return Client::None;
+}
+
+const char* client_name(Client client) {
+    switch (client) {
+    case Client::EditorHistory: return "EDITOR HISTORY";
+    case Client::ProgramStore: return "PROGRAM STORE";
+    case Client::SdCache: return "SD CACHE";
+    case Client::DirectState: return "DIRECT STATE";
+    case Client::CompiledCache: return "COMPILED CACHE";
+    case Client::AudioCache: return "AUDIO CACHE";
+    case Client::Diagnostic: return "DIAGNOSTIC";
+    default: return "IDLE";
+    }
+}
+
+std::size_t active_client_count() {
+    return state.allocations.active_count() +
+        (state.diagnostic_active ? 1u : 0u);
+}
+
+AllocationInfo allocation(Client client) {
+    AllocationInfo out{};
+    if (!allocatable_client(client)) return out;
+    const auto region = state.allocations.region(client_slot(client));
+    out.active = region.used;
+    out.base_address = region.base;
+    out.allocated_bytes = region.size;
+    return out;
 }
 
 std::uint32_t used_bytes() {
-    return state.allocated_bytes;
+    return state.allocations.used_bytes();
 }
 
 bool read(
@@ -689,18 +737,19 @@ bool run_diagnostic(
 ) {
     result = {};
     if (!state.info.available || state.busy ||
-        state.owner != Client::None) {
-        result.failed_stage = state.owner != Client::None
-            ? "PSRAM IN USE" : state.info.error;
+        state.diagnostic_active || state.allocations.active_count() != 0) {
+        result.failed_stage =
+            (state.diagnostic_active || state.allocations.active_count() != 0)
+                ? "PSRAM IN USE" : state.info.error;
         return false;
     }
-    state.owner = Client::Diagnostic;
+    state.diagnostic_active = true;
     const std::uint32_t bytes = std::min(
         requested_bytes == 0 ? kQuickTestBytes : requested_bytes,
         state.info.size_bytes);
     if (bytes < 256) {
         result.failed_stage = "TEST RANGE TOO SMALL";
-        state.owner = Client::None;
+        state.diagnostic_active = false;
         return false;
     }
     state.busy = true;
@@ -722,7 +771,7 @@ bool run_diagnostic(
     result.passed = ok && result.error_count == 0;
     if (result.passed) result.failed_stage = "PASS";
     state.busy = false;
-    state.owner = Client::None;
+    state.diagnostic_active = false;
     return result.passed;
 }
 
