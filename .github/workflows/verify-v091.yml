@@ -1,0 +1,55 @@
+name: verify-v0.91-release
+
+on:
+  push:
+    branches: [v0.91-publish]
+    paths:
+      - '.github/workflows/verify-v091.yml'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build and PDF tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi libnewlib-arm-none-eabi zip
+          python3 -m pip install --disable-pip-version-check "reportlab==4.4.4"
+      - name: Prepare Pico SDK
+        run: |
+          git clone --depth 1 --branch 2.3.1 https://github.com/raspberrypi/pico-sdk.git
+          git -C pico-sdk submodule update --init --recursive
+      - name: Build firmware
+        env:
+          PICO_SDK_PATH: ${{ github.workspace }}/pico-sdk
+        run: |
+          cmake -S . -B build -G Ninja -DPICO_BOARD=pico2_w -DRMB_BUILD_NUMBER=664
+          cmake --build build
+      - name: Verify development UF2
+        run: |
+          echo "2f08f55d4198b91f65cf4813022fd743a22b3d1f7f151a4e85051c65d87cdcb6  build/CPokecombasic.uf2" | sha256sum -c -
+      - name: Generate manuals
+        run: python3 tools/generate_manual_pdfs.py
+      - name: Assemble release package
+        run: |
+          mkdir -p package/build package/examples package/docs package/tools
+          cp build/CPokecombasic.uf2 build/CPokecombasic.elf build/*.map package/build/
+          cp flash-cpb.cmd package/
+          cp examples/*.bas examples/RMBASIC.CFG package/examples/
+          cp docs/install-manual-ja.md docs/system-manual-ja.md docs/programming-reference-ja.md package/docs/
+          cp tools/generate_manual_pdfs.py package/tools/
+          (cd package && zip -qr ../CPokecombasic-v0.91-build664-pico2w.zip .)
+          cp build/CPokecombasic.uf2 Cala-Pokecom-BASIC-v0.91-pico2w.uf2
+          sha256sum CPokecombasic-v0.91-build664-pico2w.zip Cala-Pokecom-BASIC-v0.91-pico2w.uf2 docs/Cala-Pokecom-BASIC-v0.91-*.pdf > SHA256SUMS.txt
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: Cala-Pokecom-BASIC-v0.91-release-assets
+          path: |
+            CPokecombasic-v0.91-build664-pico2w.zip
+            Cala-Pokecom-BASIC-v0.91-pico2w.uf2
+            docs/Cala-Pokecom-BASIC-v0.91-*.pdf
+            SHA256SUMS.txt
+          retention-days: 90
