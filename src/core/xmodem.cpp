@@ -10,6 +10,17 @@ Error input_error(int c) {
     return c == cancelled || c == CAN ? Error::Cancelled :
            c == disconnected ? Error::Disconnected : Error::Timeout;
 }
+int read_packet_bytes(IO& io, std::uint8_t* data, std::size_t size,
+                      unsigned timeout_ms) {
+    if (io.rx_bulk && io.read_exact)
+        return io.read_exact(io.context, data, size, timeout_ms);
+    for (std::size_t i = 0; i < size; ++i) {
+        const int value = io.read(io.context, timeout_ms);
+        if (value < 0) return value;
+        data[i] = static_cast<std::uint8_t>(value);
+    }
+    return static_cast<int>(size);
+}
 Result fail(IO& io, Error error, std::uint32_t bytes) {
     const std::uint8_t abort[] = {CAN, CAN, CAN};
     io.write(io.context, abort, sizeof(abort));
@@ -59,15 +70,11 @@ Result receive(IO& io) {
         }
         if (c == SOH) {
             std::uint8_t packet[132]; // seq, ~seq, 128 bytes, CRC big endian
-            bool complete = true;
-            for (auto& b : packet) {
-                int v = io.read(io.context, 1000);
-                if (v == cancelled || v == disconnected)
-                    return fail(io, input_error(v), bytes);
-                if (v < 0) { complete = false; break; }
-                b = static_cast<std::uint8_t>(v);
-            }
-            if (!complete) {
+            const int received = read_packet_bytes(
+                io, packet, sizeof(packet), 1000);
+            if (received == cancelled || received == disconnected)
+                return fail(io, input_error(received), bytes);
+            if (received != static_cast<int>(sizeof(packet))) {
                 last = Error::Timeout;
                 int d = drain(io);
                 if (d == cancelled || d == disconnected) return fail(io, input_error(d), bytes);
