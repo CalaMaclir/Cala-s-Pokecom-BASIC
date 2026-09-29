@@ -4,10 +4,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 
 #include "line_editor.hpp"
 #include "pico/stdlib.h"
 #include "platform.hpp"
+#include "psram.hpp"
 #include "storage.hpp"
 
 namespace rmb {
@@ -298,8 +300,94 @@ VmResult VM::run_direct(const CompiledProgram& program) {
     return run_impl(program, true);
 }
 
+void VM::release_direct_state() {
+    if (direct_state_psram_)
+        psram::release(psram::Client::DirectState);
+    direct_state_psram_ = false;
+    direct_state_psram_base_ = 0;
+    direct_state_psram_bytes_ = 0;
+    std::free(direct_state_sram_);
+    direct_state_sram_ = nullptr;
+    direct_state_valid_ = false;
+}
+
 void VM::clear_direct_state() {
-    std::memset(direct_state_, 0, sizeof(direct_state_));
+    release_direct_state();
+}
+
+std::uint32_t VM::direct_state_bytes() const {
+    if (!direct_state_valid_) return 0;
+    return direct_state_psram_
+        ? direct_state_psram_bytes_
+        : static_cast<std::uint32_t>(
+              sizeof(DirectScalar) * kMaxSymbols);
+}
+
+bool VM::direct_state_in_psram() const {
+    return direct_state_valid_ && direct_state_psram_;
+}
+
+bool VM::load_direct_state(DirectScalar* state) {
+    if (!state) return false;
+    const std::size_t bytes = sizeof(DirectScalar) * kMaxSymbols;
+    std::memset(state, 0, bytes);
+    if (!direct_state_valid_) return true;
+
+    if (direct_state_psram_) {
+        return psram::read(
+            direct_state_psram_base_,
+            state,
+            bytes);
+    }
+
+    if (!direct_state_sram_) return false;
+    std::memcpy(state, direct_state_sram_, bytes);
+    return true;
+}
+
+bool VM::store_direct_state(const DirectScalar* state) {
+    if (!state) return false;
+    const std::size_t bytes = sizeof(DirectScalar) * kMaxSymbols;
+
+    if (direct_state_psram_) {
+        if (psram::write(direct_state_psram_base_, state, bytes)) {
+            direct_state_valid_ = true;
+            return true;
+        }
+        psram::release(psram::Client::DirectState);
+        direct_state_psram_ = false;
+        direct_state_psram_base_ = 0;
+        direct_state_psram_bytes_ = 0;
+    }
+
+    if (!direct_state_sram_ && psram::init()) {
+        std::uint32_t base = 0;
+        std::uint32_t allocated = 0;
+        if (psram::claim(
+                psram::Client::DirectState,
+                static_cast<std::uint32_t>(bytes),
+                base,
+                allocated) &&
+            allocated >= bytes) {
+            if (psram::write(base, state, bytes)) {
+                direct_state_psram_ = true;
+                direct_state_psram_base_ = base;
+                direct_state_psram_bytes_ = allocated;
+                direct_state_valid_ = true;
+                return true;
+            }
+            psram::release(psram::Client::DirectState);
+        }
+    }
+
+    if (!direct_state_sram_) {
+        direct_state_sram_ = static_cast<DirectScalar*>(
+            std::malloc(bytes));
+        if (!direct_state_sram_) return false;
+    }
+    std::memcpy(direct_state_sram_, state, bytes);
+    direct_state_valid_ = true;
+    return true;
 }
 
 void VM::set_profile_mode(VmProfileMode mode) {
@@ -456,12 +544,16 @@ void VM::print_profile_report() const {
     }
 }
 
-void VM::restore_direct_scalars(const CompiledProgram& program) {
+void VM::restore_direct_scalars(
+    const CompiledProgram& program,
+    const DirectScalar* state
+) {
+    if (!state) return;
     for (std::size_t i = 0; i < program.symbol_count; ++i) {
         const Symbol& sym = program.symbols[i];
 
         for (std::size_t j = 0; j < kMaxSymbols; ++j) {
-            const DirectScalar& saved = direct_state_[j];
+            const DirectScalar& saved = state[j];
             if (!saved.used) continue;
             if (saved.is_string != sym.is_string) continue;
             if (std::strcmp(saved.name, sym.name) != 0) continue;
@@ -477,14 +569,18 @@ void VM::restore_direct_scalars(const CompiledProgram& program) {
     }
 }
 
-void VM::save_direct_scalars(const CompiledProgram& program) {
+void VM::save_direct_scalars(
+    const CompiledProgram& program,
+    DirectScalar* state
+) {
+    if (!state) return;
     for (std::size_t i = 0; i < program.symbol_count; ++i) {
         const Symbol& sym = program.symbols[i];
         DirectScalar* exact = nullptr;
         DirectScalar* free_slot = nullptr;
 
         for (std::size_t j = 0; j < kMaxSymbols; ++j) {
-            DirectScalar& saved = direct_state_[j];
+            DirectScalar& saved = state[j];
 
             if (!saved.used && !free_slot) {
                 free_slot = &saved;
@@ -525,13 +621,27 @@ VmResult VM::run_impl(
     std::memset(numbers_, 0, sizeof(numbers_));
     std::memset(strings_, 0, sizeof(strings_));
     std::memset(arrays_, 0, sizeof(arrays_));
-    std::memset(array_pool_, 0, sizeof(array_pool_));
-    std::memset(string_array_pool_, 0, sizeof(string_array_pool_));
-    array_used_ = 0;
-    string_array_used_ = 0;
 
-    if (direct_mode) {
-        restore_direct_scalars(program);
+    // BASIC arrays do not survive RUN/direct execution. Allocate their
+    // backing stores only if DIM is actually executed and release them on
+    // every return path via unique_ptr.
+    std::unique_ptr<BasicNumber, decltype(&std::free)> array_pool(
+        nullptr, &std::free);
+    std::unique_ptr<char, decltype(&std::free)> string_array_pool(
+        nullptr, &std::free);
+    std::size_t array_used = 0;
+    std::size_t string_array_used = 0;
+
+    std::unique_ptr<DirectScalar, decltype(&std::free)> direct_state(
+        nullptr, &std::free);
+    if (direct_mode && program.symbol_count != 0) {
+        direct_state.reset(static_cast<DirectScalar*>(
+            std::calloc(kMaxSymbols, sizeof(DirectScalar))));
+        if (!direct_state)
+            return make_error(program, 0, "OUT OF MEMORY");
+        if (!load_direct_state(direct_state.get()))
+            return make_error(program, 0, "DIRECT STATE READ ERROR");
+        restore_direct_scalars(program, direct_state.get());
     }
 
     Value stack[kStackSize] = {};
@@ -1559,7 +1669,7 @@ VmResult VM::run_impl(
 
                 if (string_array) {
                     if (cells == 0 ||
-                        string_array_used_ + cells > kStringArrayCells) {
+                        string_array_used + cells > kStringArrayCells) {
                         return make_error(
                             program,
                             op_pc,
@@ -1567,28 +1677,53 @@ VmResult VM::run_impl(
                         );
                     }
 
-                    meta.offset = string_array_used_;
+                    if (!string_array_pool) {
+                        string_array_pool.reset(static_cast<char*>(
+                            std::calloc(
+                                kStringArrayCells,
+                                kRuntimeStringLength)));
+                        if (!string_array_pool)
+                            return make_error(
+                                program,
+                                op_pc,
+                                "OUT OF MEMORY"
+                            );
+                    }
+                    meta.offset = string_array_used;
                     std::memset(
-                        &string_array_pool_[string_array_used_][0],
+                        string_array_pool.get() +
+                            string_array_used * kRuntimeStringLength,
                         0,
                         cells * kRuntimeStringLength
                     );
-                    string_array_used_ += cells;
+                    string_array_used += cells;
                 } else {
-                    if (cells == 0 || array_used_ + cells > kArrayCells)
+                    if (cells == 0 || array_used + cells > kArrayCells)
                         return make_error(
                             program,
                             op_pc,
                             "ARRAY MEMORY FULL"
                         );
 
-                    meta.offset = array_used_;
+                    if (!array_pool) {
+                        array_pool.reset(static_cast<BasicNumber*>(
+                            std::calloc(
+                                kArrayCells,
+                                sizeof(BasicNumber))));
+                        if (!array_pool)
+                            return make_error(
+                                program,
+                                op_pc,
+                                "OUT OF MEMORY"
+                            );
+                    }
+                    meta.offset = array_used;
                     std::memset(
-                        array_pool_ + array_used_,
+                        array_pool.get() + array_used,
                         0,
                         cells * sizeof(BasicNumber)
                     );
-                    array_used_ += cells;
+                    array_used += cells;
                 }
                 break;
             }
@@ -1649,7 +1784,7 @@ VmResult VM::run_impl(
                         return make_error(program, op_pc, "BAD ARRAY");
 
                     if (op.code == OpCode::LOAD_ARR) {
-                        if (!push_string(string_array_pool_[index]))
+                        if (!push_string(string_array_pool.get() + index * kRuntimeStringLength))
                             return make_error(
                                 program,
                                 op_pc,
@@ -1657,7 +1792,7 @@ VmResult VM::run_impl(
                             );
                     } else {
                         std::snprintf(
-                            string_array_pool_[index],
+                            string_array_pool.get() + index * kRuntimeStringLength,
                             kRuntimeStringLength,
                             "%s",
                             value.string ? value.string : ""
@@ -1668,14 +1803,14 @@ VmResult VM::run_impl(
                         return make_error(program, op_pc, "BAD ARRAY");
 
                     if (op.code == OpCode::LOAD_ARR) {
-                        if (!push(Value::num(array_pool_[index])))
+                        if (!push(Value::num(array_pool.get()[index])))
                             return make_error(
                                 program,
                                 op_pc,
                                 "STACK OVERFLOW"
                             );
                     } else {
-                        array_pool_[index] = value.number;
+                        array_pool.get()[index] = value.number;
                     }
                 }
                 break;
@@ -3514,8 +3649,11 @@ VmResult VM::run_impl(
             case OpCode::HALT: {
                 platform::graphics_flush();
 
-                if (direct_mode) {
-                    save_direct_scalars(program);
+                if (direct_mode && direct_state) {
+                    save_direct_scalars(program, direct_state.get());
+                    if (!store_direct_state(direct_state.get()))
+                        return make_error(
+                            program, op_pc, "DIRECT STATE SAVE ERROR");
                 }
 
                 if (profile_run) {
