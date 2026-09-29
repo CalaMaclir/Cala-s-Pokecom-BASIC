@@ -6,6 +6,7 @@
 #include "basic_compiler.hpp"
 #include "bluetooth_hid_keyboard_core.hpp"
 #include "command_history.hpp"
+#include "compiled_cache.hpp"
 #include "platform.hpp"
 #include "program_store.hpp"
 #include "serial_transfer.hpp"
@@ -56,11 +57,13 @@ private:
 
     // Persistent saved source. Direct statements must never modify this store.
     ProgramStore program_;
-    // Transient compile workspace, leased by RUN or one direct statement.
-    // IL, literal pools, symbols and line map have no lifetime beyond execution.
-    CompiledProgram compiled_;
+    // CompiledProgram is a transient SRAM working set. It exists only while
+    // RUN or one direct statement owns the compile workspace.
+    CompiledProgram* active_compiled_ = nullptr;
     bool workspace_busy_ = false;
     BasicCompiler compiler_;
+    // Stored-program RUN results may persist in PSRAM between executions.
+    CompiledProgramCache compiled_cache_;
     // Execution stacks are already shared by VM::run_impl; only direct scalar
     // snapshots persist separately, as required by the existing direct mode.
     VM vm_;
@@ -117,6 +120,7 @@ private:
     void menu_bluetooth_devices();
     void menu_file_server();
     void menu_file_transfer();
+    void menu_transfer_performance();
     void menu_usb_storage();
     void menu_sd();
     void menu_firmware();
