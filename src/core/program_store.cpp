@@ -4,6 +4,7 @@
 #include "safe_file.hpp"
 #include "editor_perf.hpp"
 #include "storage.hpp"
+#include "psram.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -134,7 +135,522 @@ void remove_work(const char* root,const char* name) {
     char path[192]; std::snprintf(path,sizeof(path),"%s%s",root,name); std::remove(path);
 }
 }
-ProgramStore::~ProgramStore() { release_backend(ram_); release_backend(sd_); if(active_) program_files::set_active(nullptr); }
+ProgramStore::~ProgramStore() {
+    release_sd_cache();
+    release_ram_store();
+    release_backend(sd_);
+    if(active_) program_files::set_active(nullptr);
+}
+
+std::size_t ProgramStore::line_capacity() const {
+    if (backend_ == ProgramBackend::Sd) return kMaxSdProgramLines;
+    return ram_psram_ ? kMaxPsramProgramLines : kMaxRamProgramLines;
+}
+
+std::size_t ProgramStore::line_length_capacity() const {
+    if (backend_ == ProgramBackend::Sd)
+        return kMaxSdProgramLineLength - 1;
+    return ram_psram_
+        ? kMaxPsramProgramLineLength - 1
+        : kMaxProgramLineLength - 1;
+}
+
+bool ProgramStore::ensure_ram_store() {
+    if (ram_psram_ || ram_) return true;
+
+    if (psram::init()) {
+        std::uint32_t base = 0;
+        std::uint32_t allocated = 0;
+        if (psram::claim(
+                psram::Client::ProgramStore,
+                kPsramProgramStoreBytes,
+                base,
+                allocated) &&
+            allocated >= kPsramProgramStoreBytes) {
+            char* scratch = static_cast<char*>(
+                std::malloc(kMaxPsramProgramLineLength));
+            if (scratch &&
+                psram::fill(base, 0, kPsramProgramIndexBytes)) {
+                ram_psram_ = true;
+                ram_psram_base_ = base;
+                ram_psram_bytes_ = allocated;
+                ram_long_scratch_ = scratch;
+                return true;
+            }
+            std::free(scratch);
+            psram::release(psram::Client::ProgramStore);
+        }
+    }
+
+    ram_ = allocate_backend<RamProgramStore>();
+    return ram_ != nullptr;
+}
+
+bool ProgramStore::migrate_ram_to_psram() {
+    if (ram_psram_) return true;
+    if (!ram_) return ensure_ram_store();
+    if (!psram::init() || count_ > kMaxPsramProgramLines) return false;
+
+    std::uint32_t base = 0;
+    std::uint32_t allocated = 0;
+    if (!psram::claim(
+            psram::Client::ProgramStore,
+            kPsramProgramStoreBytes,
+            base,
+            allocated) ||
+        allocated < kPsramProgramStoreBytes) {
+        return false;
+    }
+
+    char* scratch = static_cast<char*>(
+        std::malloc(kMaxPsramProgramLineLength));
+    auto* entries = static_cast<PsramProgramIndexEntry*>(
+        std::malloc(
+            (count_ == 0 ? 1 : count_) *
+            sizeof(PsramProgramIndexEntry)));
+    if (!scratch || !entries ||
+        !psram::fill(base, 0, kPsramProgramIndexBytes)) {
+        std::free(scratch);
+        std::free(entries);
+        psram::release(psram::Client::ProgramStore);
+        return false;
+    }
+
+    bool ok = true;
+    const std::uint32_t text_base =
+        base + kPsramProgramIndexBytes;
+    for (std::size_t i = 0; i < count_; ++i) {
+        const ProgramLine& line = ram_->lines[i];
+        const std::size_t length = std::strlen(line.text);
+        entries[i].number = line.number;
+        entries[i].hash = hash_line(line.number, line.text, length);
+        entries[i].slot = static_cast<std::uint16_t>(i);
+        entries[i].length = static_cast<std::uint16_t>(length);
+        if (!psram::write(
+                text_base +
+                    static_cast<std::uint32_t>(
+                        i * kMaxPsramProgramLineLength),
+                line.text,
+                length + 1u)) {
+            ok = false;
+            break;
+        }
+    }
+    if (ok && count_ != 0) {
+        ok = psram::write(
+            base,
+            entries,
+            count_ * sizeof(PsramProgramIndexEntry));
+    }
+
+    std::free(entries);
+    if (!ok) {
+        std::free(scratch);
+        psram::release(psram::Client::ProgramStore);
+        return false;
+    }
+
+    release_backend(ram_);
+    ram_ = nullptr;
+    ram_psram_ = true;
+    ram_psram_base_ = base;
+    ram_psram_bytes_ = allocated;
+    ram_long_scratch_ = scratch;
+    return true;
+}
+
+void ProgramStore::release_ram_store() {
+    release_backend(ram_);
+    ram_ = nullptr;
+    if (ram_psram_) psram::release(psram::Client::ProgramStore);
+    ram_psram_ = false;
+    ram_psram_base_ = 0;
+    ram_psram_bytes_ = 0;
+    std::free(ram_long_scratch_);
+    ram_long_scratch_ = nullptr;
+}
+
+bool ProgramStore::psram_read_index(
+    std::size_t index,
+    PsramProgramIndexEntry& entry
+) const {
+    if (!ram_psram_ || index >= kMaxPsramProgramLines) return false;
+    return psram::read(
+        ram_psram_base_ +
+            static_cast<std::uint32_t>(
+                index * sizeof(PsramProgramIndexEntry)),
+        &entry,
+        sizeof(entry));
+}
+
+bool ProgramStore::psram_write_index(
+    std::size_t index,
+    const PsramProgramIndexEntry& entry
+) {
+    if (!ram_psram_ || index >= kMaxPsramProgramLines) return false;
+    return psram::write(
+        ram_psram_base_ +
+            static_cast<std::uint32_t>(
+                index * sizeof(PsramProgramIndexEntry)),
+        &entry,
+        sizeof(entry));
+}
+
+bool ProgramStore::psram_read_text(
+    const PsramProgramIndexEntry& entry,
+    const char*& text
+) const {
+    text = nullptr;
+    if (!ram_psram_ || !ram_long_scratch_ ||
+        entry.slot >= kMaxPsramProgramLines ||
+        entry.length >= kMaxPsramProgramLineLength) {
+        return false;
+    }
+    if (!psram::read(
+            psram_text_base() +
+                static_cast<std::uint32_t>(
+                    entry.slot * kMaxPsramProgramLineLength),
+            ram_long_scratch_,
+            static_cast<std::size_t>(entry.length) + 1u)) {
+        return false;
+    }
+    if (ram_long_scratch_[entry.length] != '\0' ||
+        hash_line(
+            entry.number,
+            ram_long_scratch_,
+            entry.length) != entry.hash) {
+        return false;
+    }
+    text = ram_long_scratch_;
+    return true;
+}
+
+bool ProgramStore::psram_write_text(
+    std::uint16_t slot,
+    const char* text,
+    std::size_t length
+) {
+    if (!ram_psram_ || !text ||
+        slot >= kMaxPsramProgramLines ||
+        length >= kMaxPsramProgramLineLength) {
+        return false;
+    }
+    return psram::write(
+        psram_text_base() +
+            static_cast<std::uint32_t>(
+                slot * kMaxPsramProgramLineLength),
+        text,
+        length + 1u);
+}
+
+bool ProgramStore::psram_set_line(
+    std::int32_t number,
+    const char* text,
+    std::size_t length
+) {
+    if (!ram_psram_ || !text ||
+        length >= kMaxPsramProgramLineLength) {
+        return fail("LINE TOO LONG FOR INTERNAL PSRAM");
+    }
+
+    const std::size_t capacity =
+        count_ < kMaxPsramProgramLines ? count_ + 1u : count_;
+    auto* entries = static_cast<PsramProgramIndexEntry*>(
+        std::malloc(
+            (capacity == 0 ? 1 : capacity) *
+            sizeof(PsramProgramIndexEntry)));
+    if (!entries) return fail("OUT OF MEMORY");
+
+    if (count_ != 0 &&
+        !psram::read(
+            ram_psram_base_,
+            entries,
+            count_ * sizeof(PsramProgramIndexEntry))) {
+        std::free(entries);
+        return fail("PSRAM READ ERROR");
+    }
+
+    std::size_t pos = 0;
+    while (pos < count_ && entries[pos].number < number) ++pos;
+    const bool exists =
+        pos < count_ && entries[pos].number == number;
+
+    if (!exists && count_ >= kMaxPsramProgramLines) {
+        std::free(entries);
+        return fail("PROGRAM TOO LARGE FOR INTERNAL MODE");
+    }
+
+    std::uint8_t used[
+        (kMaxPsramProgramLines + 7u) / 8u] = {};
+    for (std::size_t i = 0; i < count_; ++i) {
+        const std::size_t slot = entries[i].slot;
+        if (slot < kMaxPsramProgramLines) {
+            used[slot >> 3] |= static_cast<std::uint8_t>(
+                1u << (slot & 7u));
+        }
+    }
+
+    std::uint16_t slot = exists
+        ? entries[pos].slot
+        : static_cast<std::uint16_t>(kMaxPsramProgramLines);
+    for (std::size_t candidate = 0;
+         candidate < kMaxPsramProgramLines;
+         ++candidate) {
+        if ((used[candidate >> 3] &
+             static_cast<std::uint8_t>(
+                 1u << (candidate & 7u))) == 0) {
+            slot = static_cast<std::uint16_t>(candidate);
+            break;
+        }
+    }
+    if (slot >= kMaxPsramProgramLines) {
+        if (!exists) {
+            std::free(entries);
+            return fail("PROGRAM TOO LARGE FOR INTERNAL MODE");
+        }
+        slot = entries[pos].slot;
+    }
+
+    if (!psram_write_text(slot, text, length)) {
+        std::free(entries);
+        return fail("PSRAM WRITE ERROR");
+    }
+
+    std::size_t new_count = count_;
+    const std::size_t replaced_bytes = exists
+        ? line_bytes(
+              entries[pos].number,
+              nullptr,
+              entries[pos].length)
+        : 0u;
+    if (!exists) {
+        std::memmove(
+            entries + pos + 1,
+            entries + pos,
+            (count_ - pos) * sizeof(PsramProgramIndexEntry));
+        ++new_count;
+    }
+
+    entries[pos].number = number;
+    entries[pos].hash = hash_line(number, text, length);
+    entries[pos].slot = slot;
+    entries[pos].length = static_cast<std::uint16_t>(length);
+
+    if (!psram::write(
+            ram_psram_base_,
+            entries,
+            new_count * sizeof(PsramProgramIndexEntry))) {
+        std::free(entries);
+        return fail("PSRAM WRITE ERROR");
+    }
+
+    std::free(entries);
+    count_ = new_count;
+    bytes_ = bytes_ - replaced_bytes +
+        line_bytes(number, text, length);
+    dirty_ = true;
+    bump_revision();
+    error_ = "OK";
+    return true;
+}
+
+bool ProgramStore::psram_erase_line(std::int32_t number) {
+    if (!ram_psram_ || count_ == 0) return true;
+
+    auto* entries = static_cast<PsramProgramIndexEntry*>(
+        std::malloc(count_ * sizeof(PsramProgramIndexEntry)));
+    if (!entries) return fail("OUT OF MEMORY");
+    if (!psram::read(
+            ram_psram_base_,
+            entries,
+            count_ * sizeof(PsramProgramIndexEntry))) {
+        std::free(entries);
+        return fail("PSRAM READ ERROR");
+    }
+
+    std::size_t pos = 0;
+    while (pos < count_ && entries[pos].number < number) ++pos;
+    if (pos == count_ || entries[pos].number != number) {
+        std::free(entries);
+        return true;
+    }
+
+    const std::size_t removed_bytes = line_bytes(
+        entries[pos].number,
+        nullptr,
+        entries[pos].length);
+    std::memmove(
+        entries + pos,
+        entries + pos + 1,
+        (count_ - pos - 1u) * sizeof(PsramProgramIndexEntry));
+
+    const std::size_t new_count = count_ - 1u;
+    if (new_count != 0 &&
+        !psram::write(
+            ram_psram_base_,
+            entries,
+            new_count * sizeof(PsramProgramIndexEntry))) {
+        std::free(entries);
+        return fail("PSRAM WRITE ERROR");
+    }
+
+    std::free(entries);
+    count_ = new_count;
+    bytes_ -= removed_bytes;
+    dirty_ = true;
+    bump_revision();
+    error_ = "OK";
+    return true;
+}
+
+bool ProgramStore::ram_read_record(
+    std::size_t index,
+    ProgramLine& out
+) const {
+    if (index >= count_) return false;
+    if (ram_psram_) {
+        PsramProgramIndexEntry entry;
+        const char* text = nullptr;
+        if (!psram_read_index(index, entry) ||
+            entry.length >= kMaxProgramLineLength ||
+            !psram_read_text(entry, text)) {
+            return false;
+        }
+        out.number = entry.number;
+        std::memcpy(out.text, text, entry.length + 1u);
+        return true;
+    }
+    if (!ram_ || index >= kMaxRamProgramLines) return false;
+    out = ram_->lines[index];
+    return true;
+}
+
+bool ProgramStore::ram_write_record(
+    std::size_t index,
+    const ProgramLine& line
+) {
+    if (ram_psram_) return false;
+    if (!ram_ || index >= kMaxRamProgramLines) return false;
+    ram_->lines[index] = line;
+    return true;
+}
+
+void ProgramStore::release_sd_cache() {
+    if(sd_cache_bytes_!=0)
+        psram::release(psram::Client::SdCache);
+    std::free(sd_cache_meta_);
+    sd_cache_meta_=nullptr;
+    sd_cache_slots_=0;
+    sd_cache_next_=0;
+    sd_cache_base_=0;
+    sd_cache_bytes_=0;
+    sd_cache_hits_=0;
+    sd_cache_misses_=0;
+}
+
+bool ProgramStore::ensure_sd_cache() const {
+    if(sd_cache_meta_&&sd_cache_slots_!=0&&sd_cache_bytes_!=0)
+        return true;
+    if(!sd_||!psram::init()) return false;
+
+    constexpr std::uint32_t requested=64u*1024u;
+    constexpr std::uint32_t slot_bytes=
+        static_cast<std::uint32_t>(kMaxSdProgramLineLength);
+    std::uint32_t base=0,allocated=0;
+    if(!psram::claim(
+           psram::Client::SdCache,requested,base,allocated) ||
+       allocated<slot_bytes) return false;
+
+    const std::size_t slots=allocated/slot_bytes;
+    auto* meta=static_cast<SdCacheMeta*>(
+        std::calloc(slots,sizeof(SdCacheMeta)));
+    if(!meta) {
+        psram::release(psram::Client::SdCache);
+        return false;
+    }
+
+    sd_cache_meta_=meta;
+    sd_cache_slots_=slots;
+    sd_cache_next_=0;
+    sd_cache_base_=base;
+    sd_cache_bytes_=static_cast<std::uint32_t>(slots*slot_bytes);
+    return true;
+}
+
+void ProgramStore::invalidate_sd_cache() const {
+    if(sd_cache_meta_&&sd_cache_slots_)
+        std::memset(
+            sd_cache_meta_,0,
+            sd_cache_slots_*sizeof(SdCacheMeta));
+    sd_cache_next_=0;
+    sd_cache_hits_=0;
+    sd_cache_misses_=0;
+}
+
+bool ProgramStore::sd_cache_lookup(
+    std::size_t index,
+    const SdProgramStore::Entry& entry,
+    const char*& text,
+    std::size_t& length
+) const {
+    if(!ensure_sd_cache()) {
+        ++sd_cache_misses_;
+        return false;
+    }
+    constexpr std::uint32_t slot_bytes=
+        static_cast<std::uint32_t>(kMaxSdProgramLineLength);
+    for(std::size_t slot=0;slot<sd_cache_slots_;++slot) {
+        auto& meta=sd_cache_meta_[slot];
+        if(!meta.valid||meta.index!=index||
+           meta.length!=entry.length||meta.hash!=entry.hash)
+            continue;
+        if(!psram::read(
+               sd_cache_base_+
+                   static_cast<std::uint32_t>(slot)*slot_bytes,
+               sd_->scratch,
+               static_cast<std::size_t>(entry.length)+1u) ||
+           sd_->scratch[entry.length]!=0 ||
+           hash_line(entry.number,sd_->scratch,entry.length)!=entry.hash) {
+            meta.valid=false;
+            break;
+        }
+        ++sd_cache_hits_;
+        text=sd_->scratch;
+        length=entry.length;
+        return true;
+    }
+    ++sd_cache_misses_;
+    return false;
+}
+
+void ProgramStore::sd_cache_store(
+    std::size_t index,
+    const SdProgramStore::Entry& entry,
+    const char* text,
+    std::size_t length
+) const {
+    if(!text||length!=entry.length||
+       length>=kMaxSdProgramLineLength||
+       !ensure_sd_cache()||sd_cache_slots_==0) return;
+
+    constexpr std::uint32_t slot_bytes=
+        static_cast<std::uint32_t>(kMaxSdProgramLineLength);
+    const std::size_t slot=sd_cache_next_++%sd_cache_slots_;
+    if(!psram::write(
+           sd_cache_base_+
+               static_cast<std::uint32_t>(slot)*slot_bytes,
+           text,length+1u)) return;
+    sd_cache_meta_[slot].hash=entry.hash;
+    sd_cache_meta_[slot].index=static_cast<std::uint16_t>(index);
+    sd_cache_meta_[slot].length=entry.length;
+    sd_cache_meta_[slot].valid=true;
+}
+
+void ProgramStore::bump_revision() {
+    ++revision_;
+    if(revision_==0) revision_=1;
+}
+
 bool ProgramStore::fail(const char* error,bool suspend) const { error_=error; if(suspend) suspended_=true; return false; }
 const char* ProgramStore::mode_name(ProgramStorageMode mode) {
     return mode==ProgramStorageMode::Auto ? "AUTO" : mode==ProgramStorageMode::SdCard ? "SD CARD" : "INTERNAL RAM";
@@ -169,9 +685,24 @@ bool ProgramStore::read_text_unlocked(
 ) const {
     if(i>=count_) return fail("BAD LINE INDEX");
     if(backend_==ProgramBackend::Ram) {
+        if(ram_psram_) {
+            PsramProgramIndexEntry entry;
+            if(!psram_read_index(i,entry) ||
+               !psram_read_text(entry,text))
+                return fail("PSRAM READ ERROR");
+            number=entry.number;
+            length=entry.length;
+            return true;
+        }
+        if(!ram_) return fail("RAM PROGRAM STORAGE ERROR");
         number=ram_->lines[i].number;
         text=ram_->lines[i].text;
         length=std::strlen(text);
+        return true;
+    }
+    const auto& entry=sd_->lines[i];
+    if(sd_cache_lookup(i,entry,text,length)) {
+        number=entry.number;
         return true;
     }
     char path[192];std::snprintf(path,sizeof(path),"%s%s",root_,sd_->work);
@@ -179,9 +710,10 @@ bool ProgramStore::read_text_unlocked(
     if(!f)return fail("SD READ ERROR - PROGRAM STORAGE SUSPENDED",true);
     editor_perf::sd_open();
     bool ok=read_sd_entry(
-        f,sd_->lines[i],sd_->scratch,sizeof(sd_->scratch),
+        f,entry,sd_->scratch,sizeof(sd_->scratch),
         number,text,length,program_files::reserved(sd_->work));
     if(std::fclose(f)!=0)ok=false;
+    if(ok) sd_cache_store(i,entry,text,length);
     if(!ok)
         return fail("SD SOURCE CHANGED - PROGRAM STORAGE SUSPENDED",true);
     return true;
@@ -194,8 +726,17 @@ bool ProgramStore::read_line_metadata(
     if(!ready()) return false;
     if(i>=count_) return fail("BAD LINE INDEX");
     if(backend_==ProgramBackend::Ram) {
-        number=ram_->lines[i].number;
-        length=std::strlen(ram_->lines[i].text);
+        if(ram_psram_) {
+            PsramProgramIndexEntry entry;
+            if(!psram_read_index(i,entry))
+                return fail("PSRAM READ ERROR");
+            number=entry.number;
+            length=entry.length;
+        } else {
+            if(!ram_) return fail("RAM PROGRAM STORAGE ERROR");
+            number=ram_->lines[i].number;
+            length=std::strlen(ram_->lines[i].text);
+        }
     } else {
         number=sd_->lines[i].number;
         length=sd_->lines[i].length;
@@ -230,12 +771,13 @@ bool ProgramStore::visit_line_range(
     if(backend_==ProgramBackend::Ram) {
         for(std::size_t offset=0;offset<count;++offset) {
             const std::size_t index=first+offset;
-            const auto& line=ram_->lines[index];
-            const std::size_t length=std::strlen(line.text);
-            if(!visitor(
-                    index,line.number,line.text,length,context)) {
+            std::int32_t number=0;
+            const char* body=nullptr;
+            std::size_t length=0;
+            if(!read_text_unlocked(index,number,body,length))
+                return false;
+            if(!visitor(index,number,body,length,context))
                 return fail("LINE VISITOR STOPPED");
-            }
         }
         error_="OK";
         return true;
@@ -262,6 +804,7 @@ bool ProgramStore::visit_line_range(
             ok=false;
             break;
         }
+        sd_cache_store(index,sd_->lines[index],body,length);
         if(!visitor(index,number,body,length,context)) {
             std::fclose(file);
             return fail("LINE VISITOR STOPPED");
@@ -491,8 +1034,10 @@ bool ProgramStore::publish_sd(
     }
     SdProgramStore* old=sd_;
     sd_=next;count_=count;bytes_=bytes;backend_=ProgramBackend::Sd;
+    invalidate_sd_cache();
     suspended_=false;dirty_=dirty;session_recovered_=false;
     std::snprintf(filename_,sizeof(filename_),"%s",published_filename);
+    bump_revision();
     error_="OK";protect();
     if(old){if(!program_files::equal(old->work,sd_->work))
         remove_work(root_,old->work);release_backend(old);}
@@ -541,10 +1086,12 @@ bool ProgramStore::recover_session_locked(ProgramStorageMode mode) {
     std::remove(temp);
     SdProgramStore* old=sd_;
     sd_=next.release();count_=count;bytes_=bytes;backend_=ProgramBackend::Sd;
+    invalidate_sd_cache();
     mode_=mode;suspended_=false;dirty_=session.dirty;session_recovered_=true;
     std::snprintf(filename_,sizeof(filename_),"%s",session.filename);
-    release_backend(ram_);ram_=nullptr;
+    release_ram_store();
     if(old)release_backend(old);
+    bump_revision();
     error_="OK";protect();
     cleanup_orphans_locked(sd_->work,sd_->work);
     return true;
@@ -619,7 +1166,10 @@ bool ProgramStore::initialize(ProgramStorageMode mode) {
         (storage::available()&&storage::card_present()
             ?ProgramBackend::Sd:ProgramBackend::Ram);
     if(target==ProgramBackend::Ram) {
-        backend_=ProgramBackend::Ram;suspended_=false;error_="OK";
+        backend_=ProgramBackend::Ram;
+        suspended_=false;
+        error_="OK";
+        if(!ensure_ram_store()) return fail("OUT OF MEMORY");
         return true;
     }
     if(!storage::available()||!storage::card_present()) {
@@ -647,24 +1197,51 @@ bool ProgramStore::switch_mode(ProgramStorageMode mode,bool discard) {
     ProgramBackend target=mode==ProgramStorageMode::InternalRam ? ProgramBackend::Ram :
         mode==ProgramStorageMode::SdCard ? ProgramBackend::Sd :
         (storage::available() && storage::card_present() ? ProgramBackend::Sd : ProgramBackend::Ram);
-    if(target==backend_ && !discard) { if(!ready()) return false; mode_=mode; return true; }
+    if(target==backend_ && !discard) {
+        if(!ready()) return false;
+        mode_=mode;
+        return true;
+    }
+    if(target==backend_ && discard && target==ProgramBackend::Ram) {
+        mode_=mode;
+        return clear();
+    }
     if(backend_==ProgramBackend::Sd && !discard && !ready()) return false;
     if(target==ProgramBackend::Ram) {
-        if(!discard && count_>kMaxRamProgramLines) return fail("PROGRAM TOO LARGE FOR RAM MODE");
-        BackendPtr<RamProgramStore> next(allocate_backend<RamProgramStore>());
-        if(!next) return fail("OUT OF MEMORY");
-        std::size_t bytes=0;
+        ProgramStore next;
+        next.backend_=ProgramBackend::Ram;
+        next.mode_=mode;
+        if(!next.ensure_ram_store()) return fail("OUT OF MEMORY");
+
         if(!discard) {
             for(std::size_t i=0;i<count_;++i) {
-                if(!read_line(i,next->lines[i])) return false;
-                bytes+=line_bytes(next->lines[i]);
+                std::int32_t number=0;
+                const char* text=nullptr;
+                std::size_t length=0;
+                if(!read_line_text(i,number,text,length))
+                    return false;
+                if(!next.set_line(number,text))
+                    return fail(next.error());
             }
         }
+
         // The SD session remains durable so an explicit later restore is possible.
-        release_backend(sd_); sd_=nullptr; release_backend(ram_); ram_=next.release();
-        if(discard) {count_=0;filename_[0]=0;dirty_=false;}
-        bytes_=bytes; backend_=target; mode_=mode; suspended_=false;
-        session_recovered_=false;protect(); return true;
+        release_sd_cache();
+        release_backend(sd_);sd_=nullptr;
+        release_ram_store();
+        ram_=next.ram_;next.ram_=nullptr;
+        ram_psram_=next.ram_psram_;next.ram_psram_=false;
+        ram_psram_base_=next.ram_psram_base_;next.ram_psram_base_=0;
+        ram_psram_bytes_=next.ram_psram_bytes_;next.ram_psram_bytes_=0;
+        ram_long_scratch_=next.ram_long_scratch_;
+        next.ram_long_scratch_=nullptr;
+        count_=discard ? 0 : next.count_;
+        bytes_=discard ? 0 : next.bytes_;
+        if(!ram_psram_) (void)migrate_ram_to_psram();
+        if(discard) {filename_[0]=0;dirty_=false;}
+        else dirty_=next.dirty_;
+        backend_=target;mode_=mode;suspended_=false;
+        session_recovered_=false;bump_revision();protect();return true;
     }
     if(!storage::available() || !storage::card_present()) return fail("SD CARD NOT AVAILABLE");
     Lease lease; if(!lease.locked) return fail(storage::last_error());
@@ -677,7 +1254,7 @@ bool ProgramStore::switch_mode(ProgramStorageMode mode,bool discard) {
     const bool next_dirty=discard?false:dirty_;
     if(!publish_sd(next.get(),count,bytes,next_filename,next_dirty))return false;
     next.release();
-    release_backend(ram_); ram_=nullptr;
+    release_ram_store();
     mode_=mode;protect(); return true;
 }
 bool ProgramStore::resume() {
@@ -699,12 +1276,14 @@ bool ProgramStore::resume() {
     }
     if(changed)
         return fail("SD SOURCE CHANGED - STORAGE SUSPENDED",true);
+    invalidate_sd_cache();
     suspended_=false; error_="OK"; return true;
 }
 bool ProgramStore::suspend_for_usb() {
     if (backend_==ProgramBackend::Ram) return true;
     if (!ready()) return false;
     if (dirty_) return fail("PROGRAM MODIFIED - SAVE OR DISCARD BEFORE USB STORAGE");
+    release_sd_cache();
     suspended_=true;
     error_="PROGRAM STORAGE SUSPENDED - USB HOST OWNS SD CARD";
     if(active_) program_files::set_active(nullptr);
@@ -759,24 +1338,76 @@ bool ProgramStore::set_line(std::int32_t number,const char* text) {
         if(length>=kMaxSdProgramLineLength)return fail("SD LINE TOO LONG");
         return edit_sd(number,text,length,false);
     }
+
+    if(!ensure_ram_store()) return fail("OUT OF MEMORY");
+    if(ram_psram_) return psram_set_line(number,text,length);
+
     if(length>=kMaxProgramLineLength)
-        return fail("LINE TOO LONG FOR RAM PROGRAM STORAGE");
-    if(!ram_) {ram_=allocate_backend<RamProgramStore>(); if(!ram_) return fail("OUT OF MEMORY");}
-    std::size_t pos=0;while(pos<count_ && ram_->lines[pos].number<number) ++pos;
-    bool exists=pos<count_ && ram_->lines[pos].number==number;
+        return fail("LINE TOO LONG FOR SRAM FALLBACK");
+
+    ProgramLine current;
+    std::size_t pos=0;
+    while(pos<count_) {
+        if(!ram_read_record(pos,current))
+            return fail("RAM PROGRAM STORAGE ERROR");
+        if(current.number>=number) break;
+        ++pos;
+    }
+    const bool exists=pos<count_&&current.number==number;
     if(!exists) {
-        if(count_==kMaxRamProgramLines) return fail("PROGRAM TOO LARGE FOR RAM MODE");
-        for(auto j=count_;j>pos;--j) ram_->lines[j]=ram_->lines[j-1]; ++count_;
-    } else bytes_-=line_bytes(ram_->lines[pos]);
-    auto& line=ram_->lines[pos]; line.number=number;std::strncpy(line.text,text,sizeof(line.text)-1);line.text[sizeof(line.text)-1]=0;
-    bytes_+=line_bytes(line);dirty_=true;return true;
+        if(count_==kMaxRamProgramLines)
+            return fail("PROGRAM TOO LARGE FOR SRAM FALLBACK");
+        for(std::size_t j=count_;j>pos;--j) {
+            ProgramLine moved;
+            if(!ram_read_record(j-1,moved) ||
+               !ram_write_record(j,moved))
+                return fail("RAM PROGRAM STORAGE ERROR");
+        }
+        ++count_;
+    } else {
+        bytes_-=line_bytes(current);
+    }
+
+    ProgramLine line;
+    line.number=number;
+    std::strncpy(line.text,text,sizeof(line.text)-1);
+    line.text[sizeof(line.text)-1]=0;
+    if(!ram_write_record(pos,line))
+        return fail("RAM PROGRAM STORAGE ERROR");
+    bytes_+=line_bytes(line);
+    dirty_=true;
+    bump_revision();
+    error_="OK";
+    return true;
 }
+
 bool ProgramStore::erase_line(std::int32_t number) {
     if(backend_==ProgramBackend::Sd) return edit_sd(number,nullptr,0,true);
-    std::size_t pos=0;while(pos<count_ && ram_->lines[pos].number<number) ++pos;
-    if(pos==count_ || ram_->lines[pos].number!=number) return true;
-    bytes_-=line_bytes(ram_->lines[pos]);
-    for(auto j=pos;j+1<count_;++j) ram_->lines[j]=ram_->lines[j+1];--count_;dirty_=true;return true;
+    if(count_==0) return true;
+    if(!ensure_ram_store()) return fail("OUT OF MEMORY");
+    if(ram_psram_) return psram_erase_line(number);
+
+    ProgramLine current;
+    std::size_t pos=0;
+    while(pos<count_) {
+        if(!ram_read_record(pos,current))
+            return fail("RAM PROGRAM STORAGE ERROR");
+        if(current.number>=number) break;
+        ++pos;
+    }
+    if(pos==count_||current.number!=number) return true;
+    bytes_-=line_bytes(current);
+    for(std::size_t j=pos;j+1<count_;++j) {
+        ProgramLine moved;
+        if(!ram_read_record(j+1,moved) ||
+           !ram_write_record(j,moved))
+            return fail("RAM PROGRAM STORAGE ERROR");
+    }
+    --count_;
+    dirty_=true;
+    bump_revision();
+    error_="OK";
+    return true;
 }
 bool ProgramStore::clear() {
     if(!ready()) return false;
@@ -790,8 +1421,17 @@ bool ProgramStore::clear() {
         if(!publish_sd(next.get(),count,bytes,"",false))return false;
         next.release();
     } else {
-        release_backend(ram_);ram_=nullptr;count_=bytes_=0;
+        // Keep the selected INTERNAL backend allocated. On PSRAM systems this
+        // preserves the 1024 x 2047 capability after NEW/CLEAR without
+        // re-probing or briefly falling back to the legacy SRAM limits.
+        count_=bytes_=0;
         filename_[0]=0;dirty_=false;session_recovered_=false;
+        if(ram_psram_)
+            (void)psram::fill(
+                ram_psram_base_,0,kPsramProgramIndexBytes);
+        else if(ram_)
+            std::memset(ram_,0,sizeof(RamProgramStore));
+        bump_revision();
     }
     protect();return true;
 }
@@ -801,28 +1441,120 @@ bool ProgramStore::load(const char* name) {
     Lease lease;if(!lease.locked) return fail(storage::last_error());
     std::size_t bytes=0;
     if(backend_==ProgramBackend::Ram) {
-        ProgramStore next;
-        char path[192],text[256]; std::snprintf(path,sizeof(path),"%s%s",root_,filename);
-        FILE* file=std::fopen(path,"rb"); if(!file) return fail("FILE NOT FOUND");
-        bool ok=true;
-        while(std::fgets(text,sizeof(text),file)) {
-            auto length=std::strlen(text);
-            if(length==sizeof(text)-1 && text[length-1]!='\n') {ok=fail("SOURCE LINE TOO LONG");break;}
-            char* body=text; while(*body && std::isspace(static_cast<unsigned char>(*body))) ++body;
-            if(!*body) continue;
-            ProgramLine line;
-            if(!parse(body,line)) {ok=fail("BAD BASIC FILE / LINE TOO LONG");break;}
-            if(!next.set_line(line.number,line.text)) {
-                ok=fail(next.error());break;
+        // If PSRAM became available since the fallback backend was selected,
+        // upgrade before evaluating the incoming source limits.
+        if(!ram_psram_) (void)migrate_ram_to_psram();
+
+        BackendPtr<SdProgramStore> source(
+            allocate_backend<SdProgramStore>());
+        if(!source) return fail("OUT OF MEMORY");
+        std::size_t source_count=0;
+        if(!scan(filename,*source,source_count)) return false;
+
+        if(!ram_psram_) {
+            if(source_count>kMaxRamProgramLines)
+                return fail("PROGRAM TOO LARGE FOR SRAM FALLBACK");
+            for(std::size_t i=0;i<source_count;++i) {
+                if(source->lines[i].length>=kMaxProgramLineLength)
+                    return fail("LINE TOO LONG FOR SRAM FALLBACK");
             }
         }
-        if(std::ferror(file)) ok=fail("SD READ ERROR");
-        if(std::fclose(file)!=0) ok=fail("SD READ ERROR");
-        if(!ok) return false;
-        release_backend(ram_);ram_=next.ram_;next.ram_=nullptr;
-        count_=next.count_;bytes_=next.bytes_;
+
+        char path[192];
+        std::snprintf(path,sizeof(path),"%s%s",root_,filename);
+        FILE* file=std::fopen(path,"rb");
+        if(!file) return fail("FILE NOT FOUND");
+
+        char* scratch=static_cast<char*>(
+            std::malloc(kSdProgramSourceBufferLength));
+        PsramProgramIndexEntry* entries=nullptr;
+        if(ram_psram_ && source_count!=0) {
+            entries=static_cast<PsramProgramIndexEntry*>(
+                std::malloc(
+                    source_count*sizeof(PsramProgramIndexEntry)));
+        }
+        if(!scratch || (ram_psram_ && source_count!=0 && !entries)) {
+            std::free(scratch);
+            std::free(entries);
+            std::fclose(file);
+            return fail("OUT OF MEMORY");
+        }
+
+        bool ok=true;
+        std::size_t loaded_bytes=0;
+        if(!ram_psram_ && ram_)
+            std::memset(ram_,0,sizeof(RamProgramStore));
+
+        for(std::size_t i=0;i<source_count;++i) {
+            std::int32_t number=0;
+            const char* body=nullptr;
+            std::size_t length=0;
+            if(!read_sd_entry(
+                    file,
+                    source->lines[i],
+                    scratch,
+                    kSdProgramSourceBufferLength,
+                    number,
+                    body,
+                    length,
+                    false)) {
+                ok=false;
+                break;
+            }
+
+            if(ram_psram_) {
+                if(!psram::write(
+                        psram_text_base()+
+                            static_cast<std::uint32_t>(
+                                i*kMaxPsramProgramLineLength),
+                        body,
+                        length+1u)) {
+                    ok=false;
+                    break;
+                }
+                entries[i].number=number;
+                entries[i].hash=hash_line(number,body,length);
+                entries[i].slot=static_cast<std::uint16_t>(i);
+                entries[i].length=static_cast<std::uint16_t>(length);
+            } else {
+                ram_->lines[i].number=number;
+                std::memcpy(
+                    ram_->lines[i].text,
+                    body,
+                    length+1u);
+            }
+            loaded_bytes+=line_bytes(number,body,length);
+        }
+
+        if(std::ferror(file)) ok=false;
+        if(std::fclose(file)!=0) ok=false;
+
+        if(ok && ram_psram_) {
+            if(source_count==0) {
+                ok=psram::fill(
+                    ram_psram_base_,0,kPsramProgramIndexBytes);
+            } else {
+                ok=psram::write(
+                    ram_psram_base_,
+                    entries,
+                    source_count*sizeof(PsramProgramIndexEntry));
+            }
+        }
+
+        std::free(entries);
+        std::free(scratch);
+        if(!ok) return fail(
+            ram_psram_ ? "PSRAM LOAD ERROR" : "SD READ ERROR");
+
+        count_=source_count;
+        bytes_=loaded_bytes;
         std::snprintf(filename_,sizeof(filename_),"%s",filename);
-        dirty_=false;session_recovered_=false;protect();return true;
+        dirty_=false;
+        session_recovered_=false;
+        bump_revision();
+        protect();
+        error_="OK";
+        return true;
     }
     ProgramStore input; input.root_=root_;input.backend_=ProgramBackend::Sd;
     input.sd_=allocate_backend<SdProgramStore>();if(!input.sd_) return fail("OUT OF MEMORY");
