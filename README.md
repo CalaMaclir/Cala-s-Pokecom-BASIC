@@ -29,7 +29,7 @@
 
 正式配布は[Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0)です。
 
-- `CPokecombasic-v0.91-build<final-build>-pico2w.zip`（完全build package。Windows用`flash-cpb.cmd`を同梱）
+- `CPokecombasic-v0.91-build664-pico2w.zip`（完全build package。Windows用`flash-cpb.cmd`を同梱）
 - `Cala-Pokecom-BASIC-v0.91-pico2w.uf2`
 - `Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf`
 - `Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf`
@@ -80,7 +80,7 @@ cmake --build build
 
 ### Download / Installation
 
-The official distribution is the [Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0). The complete `CPokecombasic-v0.91-build<final-build>-pico2w.zip` package contains the verified CI build, examples, diagnostics, and the Windows `flash-cpb.cmd` helper. The helper is not distributed as a standalone asset.
+The official distribution is the [Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0). The complete `CPokecombasic-v0.91-build664-pico2w.zip` package contains the verified CI build, examples, diagnostics, and the Windows `flash-cpb.cmd` helper. The helper is not distributed as a standalone asset.
 
 ### Documentation
 
