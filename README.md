@@ -1,4 +1,4 @@
-# Cala's Pokecom BASIC Version 0.90
+# Cala's Pokecom BASIC Version 0.91
 
 **for ClockworkPi PicoCalc + Raspberry Pi Pico 2 W**
 
@@ -8,9 +8,9 @@
 
 ### 概要
 
-**Cala's Pokecom BASIC（CPB）**は、PicoCalcだけでプログラムの作成・実行・保存、グラフィック、音楽、通信を行えるスタンドアロンの行番号付きBASIC環境です。Version 0.90の正式対応構成は **ClockworkPi PicoCalc + Raspberry Pi Pico 2 W（RP2350）**です。
+**Cala's Pokecom BASIC（CPB）**は、PicoCalcだけでプログラムの作成・実行・保存、グラフィック、音楽、通信を行えるスタンドアロンの行番号付きBASIC環境です。Version 0.91の正式対応構成は **ClockworkPi PicoCalc + Raspberry Pi Pico 2 W（RP2350）**です。
 
-### Version 0.90の主な機能
+### Version 0.91の主な機能
 
 - 独立Full-Screen BASIC Editor（visual wrap、Find、Goto、PSRAM Undo／Redo）
 - `BASIC>`のsession-only command historyと、FilesのPROGRAMS／DIRECTORY管理
@@ -24,24 +24,24 @@
 
 ### Download / Installation
 
-正式配布は[Version 0.90 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.90.0)です。通常利用では次のassetを使用します。
+正式配布は[Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0)です。通常利用では次のassetを使用します。
 
-- `CPokecombasic-v0.90-build528-pico2w.zip`（完全build package。`flash-cpb.cmd`を同梱）
-- `Cala-Pokecom-BASIC-v0.90-pico2w.uf2`
-- `Cala-Pokecom-BASIC-v0.90-Install-Manual-ja.pdf`
-- `Cala-Pokecom-BASIC-v0.90-System-Manual-ja.pdf`
-- `Cala-Pokecom-BASIC-v0.90-Programming-Reference-ja.pdf`
-- `Cala-Pokecom-BASIC-v0.90-examples.zip`
+- `CPokecombasic-v0.91-build528-pico2w.zip`（完全build package。`flash-cpb.cmd`を同梱）
+- `Cala-Pokecom-BASIC-v0.91-pico2w.uf2`
+- `Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf`
+- `Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf`
+- `Cala-Pokecom-BASIC-v0.91-Programming-Reference-ja.pdf`
+- `Cala-Pokecom-BASIC-v0.91-examples.zip`
 - `SHA256SUMS.txt`
 
 初回はPico 2 WをPicoCalcから取り外し、BOOTSELを押しながらPico 2 W側Micro-USBでPCへ接続し、RPI-RP2へUF2をコピーします。対応版の導入後は`Control Center → Firmware → Enter BOOTSEL`も利用できます。Windows用`flash-cpb.cmd`は完全build package ZIP内にあり、展開後の`build/CPokecombasic.uf2`との相対配置を維持して使用します。
 
 ### Documentation
 
-- [導入マニュアル](docs/install-manual-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.90-Install-Manual-ja.pdf)）
-- [システムマニュアル](docs/system-manual-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.90-System-Manual-ja.pdf)）
-- [プログラミング・リファレンス](docs/programming-reference-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.90-Programming-Reference-ja.pdf)）
-- [Version 0.90 Release Notes](docs/release/v0.90-release-notes.md)
+- [導入マニュアル](docs/install-manual-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf)）
+- [システムマニュアル](docs/system-manual-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf)）
+- [プログラミング・リファレンス](docs/programming-reference-ja.md)（[PDF](docs/Cala-Pokecom-BASIC-v0.91-Programming-Reference-ja.pdf)）
+- [Version 0.91 Release Notes](docs/release/v0.91-release-notes.md)
 - [Roadmap](ROADMAP.md)
 
 ### Build from Source
@@ -62,9 +62,9 @@ cmake --build build
 
 ### Overview
 
-**Cala's Pokecom BASIC (CPB)** is a standalone, line-numbered BASIC environment for creating, running, and saving programs, graphics, music, and communications directly on a PicoCalc. Version 0.90 officially supports **ClockworkPi PicoCalc with Raspberry Pi Pico 2 W (RP2350)**.
+**Cala's Pokecom BASIC (CPB)** is a standalone, line-numbered BASIC environment for creating, running, and saving programs, graphics, music, and communications directly on a PicoCalc. Version 0.91 officially supports **ClockworkPi PicoCalc with Raspberry Pi Pico 2 W (RP2350)**.
 
-### Version 0.90 highlights
+### Version 0.91 highlights
 
 - Full-screen BASIC editor with visual wrapping, Find/Goto, and PSRAM-backed Undo/Redo
 - Session command history and expanded PROGRAMS/DIRECTORY file management
@@ -77,14 +77,14 @@ cmake --build build
 
 ### Download / Installation
 
-The official distribution is the [Version 0.90 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.90.0). Use `Cala-Pokecom-BASIC-v0.90-pico2w.uf2` for normal installation. The complete `CPokecombasic-v0.90-build528-pico2w.zip` package contains the verified CI build, examples, diagnostics, and the Windows `flash-cpb.cmd` helper. The helper is not distributed as a standalone asset.
+The official distribution is the [Version 0.91 Release](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.91.0). Use `Cala-Pokecom-BASIC-v0.91-pico2w.uf2` for normal installation. The complete `CPokecombasic-v0.91-build528-pico2w.zip` package contains the verified CI build, examples, diagnostics, and the Windows `flash-cpb.cmd` helper. The helper is not distributed as a standalone asset.
 
 For the initial installation, remove the Pico 2 W from the PicoCalc, hold BOOTSEL while connecting its Micro-USB port to a PC, and copy the UF2 to RPI-RP2. Once a compatible version is installed, `Control Center → Firmware → Enter BOOTSEL` is also available. To use `flash-cpb.cmd`, extract the complete build package and preserve its relative path to `build/CPokecombasic.uf2`.
 
 ### Documentation
 
 - [Japanese manuals index](docs/manual-ja.md)
-- [Version 0.90 Release Notes](docs/release/v0.90-release-notes.md)
+- [Version 0.91 Release Notes](docs/release/v0.91-release-notes.md)
 - [Roadmap](ROADMAP.md)
 
 ### Build from Source
