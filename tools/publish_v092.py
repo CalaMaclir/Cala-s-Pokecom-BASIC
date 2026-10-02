@@ -86,12 +86,21 @@ def prepare():
         assert digest(uf2)==firmware["uf2_sha256"] and len(uf2)==firmware["uf2_bytes"]
         assert len(uf2)>0 and len(uf2)%512==0
         count=len(uf2)//512
+        families={}
         for index in range(count):
             block=uf2[index*512:(index+1)*512]
             magic1,magic2,flags,address,size,number,total,family=struct.unpack("<8I",block[:32])
             assert (magic1,magic2)==(0x0A324655,0x9E5D5157)
             assert struct.unpack("<I",block[-4:])[0]==0x0AB16F30
-            assert number==index and total==count and 0<size<=476
+            assert 0<=number<total and 0<size<=476,(index,flags,size,number,total,family)
+            key=family if flags & 0x2000 else 0
+            group=families.setdefault(key,{'total':total,'numbers':[]})
+            assert group['total']==total,(family,total,group['total'])
+            group['numbers'].append(number)
+        # UF2 permits concatenated images for different family IDs.
+        for family,group in families.items():
+            assert sorted(group['numbers'])==list(range(group['total'])),(family,group['total'],len(group['numbers']))
+        print('UF2 family images:', {hex(k):v['total'] for k,v in families.items()})
         (OUT/ASSETS[1]).write_bytes(uf2)
         manuals=json.loads(archive.read("docs/manuals-manifest.json"))
         assert manuals==firmware["manuals"] and manuals["version"]=="0.92"
