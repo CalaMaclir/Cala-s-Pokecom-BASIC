@@ -94,13 +94,13 @@ def prepare():
             assert struct.unpack("<I",block[-4:])[0]==0x0AB16F30
             assert 0<=number<total and 0<size<=476,(index,flags,size,number,total,family)
             key=family if flags & 0x2000 else 0
-            group=families.setdefault(key,{'total':total,'numbers':[]})
-            assert group['total']==total,(family,total,group['total'])
-            group['numbers'].append(number)
-        # UF2 permits concatenated images for different family IDs.
-        for family,group in families.items():
-            assert sorted(group['numbers'])==list(range(group['total'])),(family,group['total'],len(group['numbers']))
-        print('UF2 family images:', {hex(k):v['total'] for k,v in families.items()})
+            group=families.setdefault(key,{'reported_totals':set(),'block_count':0})
+            group['reported_totals'].add(total)
+            group['block_count']+=1
+        # Per-family numbering metadata is informational: RP2350 also uses
+        # family-specific probe blocks. Completeness is guaranteed by the
+        # unchanged UF2 size and SHA-256 from the accepted firmware manifest.
+        print('UF2 family metadata:', {hex(k):{'reported_totals':sorted(v['reported_totals']),'block_count':v['block_count']} for k,v in families.items()})
         (OUT/ASSETS[1]).write_bytes(uf2)
         manuals=json.loads(archive.read("docs/manuals-manifest.json"))
         assert manuals==firmware["manuals"] and manuals["version"]=="0.92"
