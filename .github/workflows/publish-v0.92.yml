@@ -22,6 +22,13 @@ jobs:
           python-version: '3.12'
       - name: Audit the original Actions ZIP and public source
         run: python3 tools/publish_v092.py prepare
+      - name: Checkout SDK headers required by USB host tests
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.3.1
+          path: pico-sdk
+          submodules: recursive
       - name: Run public host regressions
         run: |
           sudo apt-get update
