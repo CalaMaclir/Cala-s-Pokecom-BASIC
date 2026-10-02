@@ -211,6 +211,20 @@ int main() {
         fs::remove_all(root);
     }
 
+    // Legacy v1 session restores Classic and migrates on the next write.
+    {
+        const auto root=make_root();
+        write_text(root+"RMBP0001.BAS","10 PRINT 8\n20 END\n");
+        write_text(root+"RMBASIC.SES","version=1\nwork=RMBP0001.BAS\nfile=LEGACY.BAS\ndirty=1\n");
+        ProgramStore p;p.set_root(root.c_str());
+        assert(p.initialize(ProgramStorageMode::SdCard)&&p.session_recovered());
+        assert(p.source_mode()==ProgramSourceMode::ClassicNumbered);
+        assert(listing(p)=="10 PRINT 8\n20 END\n");
+        assert(p.save("LEGACY"));
+        assert(read_text(root+"RMBASIC.SES").find("version=2\n")!=std::string::npos);
+        fs::remove_all(root);
+    }
+
     // Invalid metadata, missing work and corrupted work all fall back safely.
     for(int failure=0;failure<3;++failure) {
         const auto root=make_root();
@@ -230,6 +244,10 @@ int main() {
         assert(!p.session_recovered()&&p.size()==0&&!p.is_dirty());
         assert(!show_restored_editing_session(p.session_recovered(),p.is_dirty()));
         assert(p.filename()[0]==0&&work_count(root)==1);
+        if(failure!=1) {
+            assert(fs::exists(root+"RECOVER0000.BAS"));
+            assert(read_text(root+"RECOVER0000.BAS")== (failure==0?"10 PRINT 1\n":"THIS IS NOT BASIC\n"));
+        }
         fs::remove_all(root);
     }
 

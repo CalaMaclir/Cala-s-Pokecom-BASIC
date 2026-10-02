@@ -8,7 +8,7 @@
 namespace rmb {
 namespace {
 
-constexpr std::uint32_t kHistoryBytes = 128u * 1024u;
+constexpr std::uint32_t kHistoryBytes = 256u * 1024u;
 constexpr std::uint32_t kRecordMagic = 0x554e4431u; // UND1
 
 struct StoredRecord {
@@ -42,6 +42,19 @@ std::uint32_t snapshot_crc(const EditorHistorySnapshot& snapshot) {
     const std::uint8_t existed = snapshot.existed ? 1u : 0u;
     crc = crc32_update(crc, &existed, sizeof(existed));
     crc = crc32_update(crc, snapshot.body, snapshot.length + 1u);
+    const std::uint8_t pair = snapshot.pair ? 1u : 0u;
+    const std::uint8_t other_existed = snapshot.other_existed ? 1u : 0u;
+    crc = crc32_update(crc, &pair, sizeof(pair));
+    crc = crc32_update(crc, &snapshot.other_number, sizeof(snapshot.other_number));
+    crc = crc32_update(crc, &snapshot.other_length, sizeof(snapshot.other_length));
+    crc = crc32_update(crc, &other_existed, sizeof(other_existed));
+    crc = crc32_update(crc, snapshot.other_body, snapshot.other_length + 1u);
+    crc = crc32_update(crc, &snapshot.focus_number, sizeof(snapshot.focus_number));
+    crc = crc32_update(crc, &snapshot.focus_cursor, sizeof(snapshot.focus_cursor));
+    crc=crc32_update(crc,&snapshot.row_edit,sizeof(snapshot.row_edit));
+    crc=crc32_update(crc,&snapshot.replace_rows,sizeof(snapshot.replace_rows));
+    crc=crc32_update(crc,&snapshot.restore_rows,sizeof(snapshot.restore_rows));
+    crc=crc32_update(crc,&snapshot.focus_index,sizeof(snapshot.focus_index));
     return crc ^ 0xffffffffu;
 }
 
@@ -99,7 +112,11 @@ bool PsramEditorHistory::push(
 ) {
     if (!ready_ || stack.capacity == 0 ||
         snapshot.length >= kMaxSdProgramLineLength ||
-        snapshot.cursor > snapshot.length) return false;
+        snapshot.cursor > snapshot.length ||
+        snapshot.other_length >= kMaxSdProgramLineLength ||
+        snapshot.body[snapshot.length] != '\0' ||
+        snapshot.other_body[snapshot.other_length] != '\0' ||
+        snapshot.focus_cursor >= kMaxSdProgramLineLength) return false;
     StoredRecord record{};
     record.snapshot = snapshot;
     record.crc32 = snapshot_crc(record.snapshot);
@@ -133,6 +150,9 @@ bool PsramEditorHistory::pop(
         record.snapshot.length >= kMaxSdProgramLineLength ||
         record.snapshot.cursor > record.snapshot.length ||
         record.snapshot.body[record.snapshot.length] != '\0' ||
+        record.snapshot.other_length >= kMaxSdProgramLineLength ||
+        record.snapshot.other_body[record.snapshot.other_length] != '\0' ||
+        record.snapshot.focus_cursor >= kMaxSdProgramLineLength ||
         record.crc32 != snapshot_crc(record.snapshot)) return false;
     --stack.count;
     snapshot = record.snapshot;

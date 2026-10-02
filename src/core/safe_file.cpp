@@ -1,4 +1,5 @@
 #include "safe_file.hpp"
+#include "file_path.hpp"
 
 #include <cerrno>
 #include <cctype>
@@ -44,15 +45,22 @@ bool SafeFileWriter::valid_root_name(const char* name) {
 bool SafeFileWriter::open(const char* name, const char* staging, const char* root) {
     if (file_ || owns_temp_) return false;
     error_ = "BAD FILENAME";
-    if (!valid_root_name(name) || !staging || !*staging || !root) return false;
+    if (!file_paths::valid_relative(name) || !valid_root_name(staging) || !root) return false;
+    const char* leaf = file_paths::basename(name);
     char reserved[96] = {};
     std::snprintf(reserved, sizeof(reserved), "%s.TMP", staging);
-    if (equal_name(name, reserved)) return false;
+    if (equal_name(leaf, reserved)) return false;
     std::snprintf(reserved, sizeof(reserved), "%s.BAK", staging);
-    if (equal_name(name, reserved)) return false;
-    if (std::snprintf(target_, sizeof(target_), "%s%s", root, name) >= int(sizeof(target_)) ||
-        std::snprintf(temp_, sizeof(temp_), "%s%s.TMP", root, staging) >= int(sizeof(temp_)) ||
-        std::snprintf(backup_, sizeof(backup_), "%s%s.BAK", root, staging) >= int(sizeof(backup_))) return false;
+    if (equal_name(leaf, reserved)) return false;
+    char directory[file_paths::capacity] = {};
+    char parent_path[192] = {};
+    if (!file_paths::parent(name, directory, sizeof(directory)) ||
+        !file_paths::physical(root, name, target_, sizeof(target_)) ||
+        !file_paths::physical(root, directory, parent_path, sizeof(parent_path), true)) return false;
+    const std::size_t parent_length = std::strlen(parent_path);
+    const char* separator = parent_length && parent_path[parent_length - 1] == '/' ? "" : "/";
+    if (std::snprintf(temp_, sizeof(temp_), "%s%s%s.TMP", parent_path, separator, staging) >= int(sizeof(temp_)) ||
+        std::snprintf(backup_, sizeof(backup_), "%s%s%s.BAK", parent_path, separator, staging) >= int(sizeof(backup_))) return false;
     if (!absent(temp_) || !absent(backup_)) {
         error_ = "STAGING FILE EXISTS";
         return false;

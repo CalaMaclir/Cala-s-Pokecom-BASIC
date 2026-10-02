@@ -12,6 +12,31 @@ namespace rmb::platform { void audio_service() {} }
 int main() {
     using namespace rmb::picocalc::display;
     clear();
+
+    // STANDBY must stop the LCD controller, not merely request backlight zero.
+    // Repeated entry/leave calls are idempotent so nested UI paths cannot send
+    // an invalid DCS sequence.
+    test_spi_begin_capture();
+    test_sleep_begin_capture();
+    enter_standby();
+    enter_standby();
+    assert(test_spi_single_write_count == 2);
+    assert(test_spi_single_writes[0] == 0x28); // Display OFF
+    assert(test_spi_single_writes[1] == 0x10); // Sleep IN
+    assert(test_sleep_count == 1);
+    assert(test_sleep_values[0] == 120);
+
+    leave_standby();
+    leave_standby();
+    assert(test_spi_single_write_count == 4);
+    assert(test_spi_single_writes[2] == 0x11); // Sleep OUT
+    assert(test_spi_single_writes[3] == 0x29); // Display ON
+    assert(test_sleep_count == 3);
+    assert(test_sleep_values[1] == 120);
+    assert(test_sleep_values[2] == 20);
+    test_spi_end_capture();
+    test_sleep_end_capture();
+
     assert(scroll_top_pixels() == 24);
     assert(console_bottom_pixels() == 312);
     for (int row = 0; row < 3; ++row)

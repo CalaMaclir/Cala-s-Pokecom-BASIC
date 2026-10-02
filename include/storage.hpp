@@ -52,6 +52,8 @@ bool busy();
 bool load_program(const char* name, ProgramStore& program);
 bool save_program(const char* name, ProgramStore& program);
 bool program_exists(const char* name);
+bool list_directory(const char* directory, bool programs_only);
+
 bool list_program_files();
 // DIR view: all visible regular root files (not ProgramStore work/staging files).
 bool list_root_files();
@@ -69,6 +71,15 @@ std::size_t collect_root_entries(
     DirectoryEntry* output,
     std::size_t max_entries
 );
+// Explicit directory API. Names in DirectoryEntry remain untruncated leaves;
+// all file operations take complete canonical paths relative to the SD root.
+std::size_t collect_directory_entries(const char* directory, bool programs_only,
+    DirectoryEntry* output, std::size_t max_entries, std::size_t skip = 0,
+    bool* more = nullptr);
+bool create_directory(const char* path);
+bool delete_directory(const char* path, const char* current_file);
+bool rename_directory(const char* old_path, const char* new_path, const char* current_file);
+
 bool root_entry_info(const char* name, DirectoryEntry& output);
 bool rename_root_file(
     const char* old_name,

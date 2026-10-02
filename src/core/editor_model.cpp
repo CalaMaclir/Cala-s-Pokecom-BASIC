@@ -5,6 +5,8 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <memory>
 
 namespace rmb {
 namespace {
@@ -430,8 +432,33 @@ bool EditorModel::insert_char(char value) {
     return true;
 }
 
+bool EditorModel::insert_tab() {
+    if (!has_line_) return fail("PROGRAM EMPTY - INSERT LINE FIRST");
+    constexpr std::size_t kTabWidth = 4;
+    const std::size_t spaces = kTabWidth - cursor_ % kTabWidth;
+    if (length_ + spaces > document_.max_body_length()) {
+        return fail(document_.max_body_length() < 2047
+            ? "LINE TOO LONG FOR RAM PROGRAM STORAGE"
+            : "SD LINE TOO LONG");
+    }
+    // Tab is one edit, independent of adjacent typing and other Tab presses.
+    history_boundary();
+    capture_current(history_snapshot_);
+    std::memmove(body_ + cursor_ + spaces, body_ + cursor_, length_ - cursor_ + 1);
+    std::memset(body_ + cursor_, ' ', spaces);
+    cursor_ += spaces;
+    length_ += spaces;
+    preferred_visual_column_ = cursor_visual_column();
+    line_dirty_ = true;
+    record_edit(history_snapshot_, EditGroup::None);
+    ensure_visual_cursor_visible();
+    error_ = "OK";
+    return true;
+}
+
 bool EditorModel::backspace() {
-    if (!has_line_ || cursor_ == 0) return false;
+    if (!has_line_) return false;
+    if (cursor_ == 0) return join_line(true);
     const bool new_group = !history_group_matches(EditGroup::Backspace);
     if (new_group) capture_current(history_snapshot_);
     std::memmove(
@@ -450,7 +477,8 @@ bool EditorModel::backspace() {
 }
 
 bool EditorModel::delete_char() {
-    if (!has_line_ || cursor_ >= length_) return false;
+    if (!has_line_) return false;
+    if (cursor_ >= length_) return join_line(false);
     const bool new_group = !history_group_matches(EditGroup::Delete);
     if (new_group) capture_current(history_snapshot_);
     std::memmove(
@@ -462,6 +490,166 @@ bool EditorModel::delete_char() {
     line_dirty_ = true;
     if (new_group) record_edit(history_snapshot_, EditGroup::Delete);
     else edit_group_cursor_ = cursor_;
+    ensure_visual_cursor_visible();
+    error_ = "OK";
+    return true;
+}
+
+
+bool EditorModel::capture_other(std::int32_t number, EditorHistorySnapshot& snapshot) {
+    snapshot.pair = true;
+    snapshot.other_number = number;
+    snapshot.other_length = 0;
+    snapshot.other_existed = false;
+    snapshot.other_body[0] = '\0';
+    snapshot.focus_number = number_;
+    snapshot.focus_cursor = static_cast<std::uint16_t>(cursor_);
+    std::size_t at = 0;
+    bool exact = false;
+    if (!locate_line(number, at, exact)) return false;
+    if (!exact) return true;
+    const char* body = nullptr;
+    std::size_t length = 0;
+    std::int32_t found = 0;
+    if (!line_view(at, found, body, length)) return fail(document_.error());
+    if (length >= sizeof(snapshot.other_body)) return fail("LINE TOO LONG");
+    snapshot.other_existed = true;
+    snapshot.other_length = static_cast<std::uint16_t>(length);
+    std::memcpy(snapshot.other_body, body, length + 1u);
+    return true;
+}
+
+bool EditorModel::split_line(std::int32_t new_number) {
+    history_boundary();
+    if(structured()) {
+        if(!has_line_)return insert_line(0);
+        if(cursor_==0) { const char* rows[]={"",body_};
+            return structured_replace(index_,1,rows,2,index_,0); }
+        using Buffer=std::unique_ptr<char,decltype(&std::free)>;
+        Buffer left(static_cast<char*>(std::malloc(kWorkingCapacity)),&std::free);
+        if(!left)return fail("OUT OF MEMORY");
+        std::memcpy(left.get(),body_,cursor_);left.get()[cursor_]=0;
+        const char* rows[]={left.get(),body_+cursor_};
+        return structured_replace(index_,1,rows,2,index_+1,0);
+    }
+    if (!has_line_) return fail("PROGRAM EMPTY - INSERT LINE FIRST");
+    if (new_number < 0) return fail("BAD LINE NUMBER");
+
+    const bool insert_before = cursor_ == 0;
+    if (insert_before) {
+        if (new_number >= number_) {
+            return fail("NEW NUMBER MUST PRECEDE CURRENT LINE");
+        }
+        if (index_ != 0) {
+            std::int32_t previous = 0;
+            std::size_t previous_length = 0;
+            if (!document_.line_metadata(
+                    index_ - 1u, previous, previous_length)) {
+                return fail(document_.error());
+            }
+            if (new_number <= previous) {
+                return fail("NUMBER MUST FOLLOW PREVIOUS LINE");
+            }
+        }
+    } else {
+        if (new_number <= number_) {
+            return fail("NEW NUMBER MUST FOLLOW CURRENT LINE");
+        }
+        if (index_ + 1u < document_.line_count()) {
+            std::int32_t next = 0;
+            std::size_t next_length = 0;
+            if (!document_.line_metadata(
+                    index_ + 1u, next, next_length)) {
+                return fail(document_.error());
+            }
+            if (new_number >= next) {
+                return fail("NUMBER MUST BE BEFORE NEXT LINE");
+            }
+        }
+    }
+
+    capture_current(history_snapshot_);
+    if (!capture_other(new_number, history_snapshot_)) return false;
+    if (history_snapshot_.other_existed) return fail("LINE ALREADY EXISTS");
+
+    if (insert_before) {
+        // Keep the current numbered line and its exact body. Publish one new
+        // empty line before it and focus that line so source can be typed
+        // immediately. The pair transaction makes failure non-destructive.
+        if (!document_.replace_line_pair(
+                number_, body_, new_number, "")) {
+            return fail(document_.error());
+        }
+        body_[0] = '\0';
+        length_ = 0;
+        number_ = new_number;
+        // The new line occupies the old index; the existing line shifts down.
+    } else {
+        using Buffer = std::unique_ptr<char, decltype(&std::free)>;
+        Buffer first(
+            static_cast<char*>(std::malloc(kWorkingCapacity)), &std::free);
+        if (!first) return fail("OUT OF MEMORY");
+        std::memcpy(first.get(), body_, cursor_);
+        first.get()[cursor_] = '\0';
+        const std::size_t tail_length = length_ - cursor_;
+        if (!document_.replace_line_pair(
+                number_, first.get(), new_number, body_ + cursor_)) {
+            return fail(document_.error());
+        }
+        std::memmove(body_, body_ + cursor_, tail_length + 1u);
+        length_ = tail_length;
+        number_ = new_number;
+        ++index_;
+    }
+
+    cursor_ = preferred_visual_column_ = 0;
+    line_dirty_ = false;
+    record_edit(history_snapshot_, EditGroup::None);
+    ensure_visual_cursor_visible();
+    error_ = "OK";
+    return true;
+}
+
+bool EditorModel::join_line(bool previous) {
+    history_boundary();
+    error_ = "OK";
+    if (!has_line_ || (previous ? index_ == 0 : index_ + 1u >= document_.line_count()))
+        return false;
+    const std::size_t other_index = previous ? index_ - 1u : index_ + 1u;
+    std::int32_t other_number = 0;
+    std::size_t other_length = 0;
+    if (!document_.line_metadata(other_index, other_number, other_length))
+        return fail(document_.error());
+    const std::size_t limit = std::min(document_.max_body_length(), kWorkingCapacity - 1u);
+    if (length_ > limit || other_length > limit - length_)
+        return fail("JOIN TOO LONG - BOTH LINES KEPT");
+    capture_current(history_snapshot_);
+    if (!capture_other(other_number, history_snapshot_)) return false;
+    using Buffer = std::unique_ptr<char, decltype(&std::free)>;
+    Buffer combined(static_cast<char*>(std::malloc(kWorkingCapacity)), &std::free);
+    if (!combined) return fail("OUT OF MEMORY");
+    const std::size_t seam = previous ? other_length : length_;
+    const char* left = previous ? history_snapshot_.other_body : body_;
+    const char* right = previous ? body_ : history_snapshot_.other_body;
+    std::memcpy(combined.get(), left, seam);
+    std::memcpy(combined.get() + seam, right, length_ + other_length - seam + 1u);
+    if(structured()) {
+        const char* rows[]={combined.get()};
+        return structured_replace(previous?index_-1:index_,2,rows,1,
+                                  previous?index_-1:index_,seam);
+    }
+    const std::int32_t kept = previous ? other_number : number_;
+    const std::int32_t removed = previous ? number_ : other_number;
+    if (!document_.replace_line_pair(kept, combined.get(), removed, nullptr))
+        return fail(document_.error());
+    length_ += other_length;
+    std::memcpy(body_, combined.get(), length_ + 1u);
+    if (previous) --index_;
+    number_ = kept;
+    cursor_ = seam;
+    preferred_visual_column_ = cursor_visual_column();
+    line_dirty_ = false;
+    record_edit(history_snapshot_, EditGroup::None);
     ensure_visual_cursor_visible();
     error_ = "OK";
     return true;
@@ -550,6 +738,37 @@ void EditorModel::record_edit(
 bool EditorModel::restore_snapshot(
     const EditorHistorySnapshot& snapshot
 ) {
+    if(snapshot.row_edit) {
+        const char* rows[]={snapshot.body,snapshot.other_body};
+        if(!document_.replace_source_rows(snapshot.line_index,snapshot.replace_rows,
+                    rows,snapshot.restore_rows))return fail(document_.error());
+        if(document_.line_count()==0) {
+            has_line_=false;line_dirty_=false;body_[0]=0;length_=cursor_=index_=0;
+            visual_top_={};cursor_screen_row_=0;cursor_screen_row_valid_=false;
+            return true;
+        }
+        if(!load_index(std::min<std::size_t>(snapshot.focus_index,document_.line_count()-1),false))
+            return false;
+        cursor_=std::min<std::size_t>(snapshot.focus_cursor,length_);
+        preferred_visual_column_=cursor_visual_column();ensure_visual_cursor_visible();
+        return true;
+    }
+    if (snapshot.pair) {
+        if (!document_.replace_line_pair(
+                snapshot.line_number, snapshot.existed ? snapshot.body : nullptr,
+                snapshot.other_number, snapshot.other_existed ? snapshot.other_body : nullptr))
+            return fail(document_.error());
+        std::size_t target = 0;
+        bool exact = false;
+        if (!locate_line(snapshot.focus_number, target, exact) || !exact)
+            return fail("UNDO FOCUS LINE NOT FOUND");
+        if (!load_index(target, false)) return false;
+        cursor_ = std::min<std::size_t>(snapshot.focus_cursor, length_);
+        preferred_visual_column_ = cursor_visual_column();
+        ensure_visual_cursor_visible();
+        error_ = "OK";
+        return true;
+    }
     std::size_t existing_index = 0;
     bool exact = false;
     if (!locate_line(snapshot.line_number, existing_index, exact)) return false;
@@ -595,35 +814,43 @@ bool EditorModel::restore_snapshot(
 
 bool EditorModel::apply_history(bool redo_action) {
     history_boundary();
-    if (!history_ready()) {
-        return fail(history_fault_
-            ? "UNDO DISABLED: PSRAM ERROR"
-            : "UNDO REQUIRES PICOCALC PSRAM");
-    }
-    const std::size_t available = redo_action
-        ? history_->redo_count() : history_->undo_count();
-    if (available == 0) {
+    if (!history_ready()) return fail(history_fault_
+        ? "UNDO DISABLED: PSRAM ERROR" : "UNDO REQUIRES PICOCALC PSRAM");
+    if ((redo_action ? history_->redo_count() : history_->undo_count()) == 0)
         return fail(redo_action ? "NOTHING TO REDO" : "NOTHING TO UNDO");
-    }
     if (!commit()) return false;
-    const bool popped = redo_action
-        ? history_->pop_redo(history_snapshot_)
-        : history_->pop_undo(history_snapshot_);
+    const bool popped = redo_action ? history_->pop_redo(history_snapshot_)
+                                    : history_->pop_undo(history_snapshot_);
     if (!popped) {
         history_fault_ = true;
         history_ = nullptr;
         return fail("UNDO DISABLED: PSRAM ERROR");
     }
-    if (!capture_line(history_snapshot_.line_number, history_swap_)) return false;
-    const bool saved = redo_action
-        ? history_->push_undo(history_swap_)
-        : history_->push_redo(history_swap_);
-    if (!saved) {
-        history_fault_ = true;
-        history_ = nullptr;
-        return fail("UNDO DISABLED: PSRAM ERROR");
+    auto put_back = [&]() {
+        const bool ok = redo_action ? history_->push_redo(history_snapshot_)
+                                   : history_->push_undo(history_snapshot_);
+        if (!ok) { history_fault_ = true; history_ = nullptr; }
+    };
+    if(history_snapshot_.row_edit) {
+        if(!capture_rows(history_snapshot_.line_index,history_snapshot_.replace_rows,history_swap_)) {
+            put_back();return false;
+        }
+        history_swap_.replace_rows=history_snapshot_.restore_rows;
+        history_swap_.restore_rows=history_snapshot_.replace_rows;
+    } else if (!capture_line(history_snapshot_.line_number, history_swap_) ||
+        (history_snapshot_.pair && !capture_other(history_snapshot_.other_number, history_swap_))) {
+        put_back();
+        return false;
     }
-    if (!restore_snapshot(history_snapshot_)) return false;
+    // Do not move a record to the opposite stack until the source transaction
+    // has succeeded. A rejected write can be retried without losing Undo.
+    if (!restore_snapshot(history_snapshot_)) {
+        put_back();
+        return false;
+    }
+    const bool saved = redo_action ? history_->push_undo(history_swap_)
+                                   : history_->push_redo(history_swap_);
+    if (!saved) { history_fault_ = true; history_ = nullptr; }
     state_id_ = history_snapshot_.state_id;
     error_ = "OK";
     return true;
@@ -673,6 +900,11 @@ bool EditorModel::locate_line(
 
 bool EditorModel::insert_line(std::int32_t number) {
     history_boundary();
+    if(structured()) {
+        if(!commit())return false;
+        const char* rows[]={""};
+        return structured_replace(has_line_?index_:0,0,rows,1,has_line_?index_:0,0);
+    }
     if (number < 0) return fail("BAD LINE NUMBER");
     if (!commit()) return false;
     std::size_t target = 0;
@@ -695,6 +927,11 @@ bool EditorModel::insert_line(std::int32_t number) {
 
 bool EditorModel::delete_line() {
     history_boundary();
+    if(structured()) {
+        if(!has_line_)return false;
+        if(!commit())return false;
+        return structured_replace(index_,1,nullptr,0,index_,0);
+    }
     if (!has_line_) return false;
     if (!commit()) return false;
     capture_current(history_snapshot_);
@@ -848,4 +1085,37 @@ bool EditorModel::goto_line(std::int32_t requested) {
     return load_index(target, true);
 }
 
+bool EditorModel::capture_rows(std::size_t first,std::size_t count,EditorHistorySnapshot& snapshot) {
+    snapshot={};snapshot.row_edit=true;snapshot.state_id=state_id_;
+    snapshot.line_index=static_cast<std::uint32_t>(first);
+    snapshot.focus_index=static_cast<std::uint32_t>(index_);
+    snapshot.focus_cursor=static_cast<std::uint16_t>(cursor_);
+    for(std::size_t j=0;j<count;++j) {
+        const char* body=nullptr;std::size_t length=0;std::int32_t id=0;
+        if(!line_view(first+j,id,body,length))return fail(document_.error());
+        // History records the logical editor text, including pending typed edits.
+        if(has_line_&&first+j==index_){body=body_;length=length_;}
+        std::memcpy(j?snapshot.other_body:snapshot.body,body,length+1);
+        if(j)snapshot.other_length=static_cast<std::uint16_t>(length);
+        else snapshot.length=static_cast<std::uint16_t>(length);
+    }
+    return true;
+}
+bool EditorModel::structured_replace(std::size_t first,std::size_t remove,
+    const char* const* rows,std::size_t insert,std::size_t focus,std::size_t cursor) {
+    if(!capture_rows(first,remove,history_snapshot_))return false;
+    history_snapshot_.replace_rows=static_cast<std::uint8_t>(insert);
+    history_snapshot_.restore_rows=static_cast<std::uint8_t>(remove);
+    if(!document_.replace_source_rows(first,remove,rows,insert))return fail(document_.error());
+    record_edit(history_snapshot_,EditGroup::None);
+    if(document_.line_count()==0) {
+        has_line_=false;line_dirty_=false;body_[0]=0;length_=cursor_=index_=0;
+        visual_top_={};cursor_screen_row_=0;cursor_screen_row_valid_=false;
+    } else {
+        if(!load_index(std::min(focus,document_.line_count()-1),false))return false;
+        cursor_=std::min(cursor,length_);preferred_visual_column_=cursor_visual_column();
+        ensure_visual_cursor_visible();
+    }
+    error_="OK";return true;
+}
 } // namespace rmb

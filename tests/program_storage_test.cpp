@@ -3,6 +3,7 @@
 #include "file_management.hpp"
 #include "transfer_file.hpp"
 #include "basic_compiler.hpp"
+#include "psram.hpp"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -49,6 +50,7 @@ void unlock(){assert(locked);locked=false;}
 const char* last_error(){return locked?"STORAGE BUSY":"SD NOT AVAILABLE";}
 }
 using namespace rmb;
+namespace rmb::psram { void test_set_available(bool value); }
 std::string read(const std::string& path){std::ifstream f(path);return {std::istreambuf_iterator<char>(f),{}};}
 void write(const std::string& path,const std::string& text){std::ofstream(path)<<text;}
 std::string listing(const ProgramStore& p) {
@@ -108,6 +110,16 @@ int main(int argc,char** argv) {
         // makes SAVE available without silently migrating the live backend.
         if(scenario==3) card=mounted=true;
         assert(current.set_line(10,"PRINT 1"));
+        if(current.backend_type()==ProgramBackend::Ram) {
+            const auto allocation=
+                psram::allocation(psram::Client::ProgramStore);
+            assert(allocation.active);
+            assert(allocation.allocated_bytes>=kPsramProgramStoreBytes);
+            assert(current.internal_psram_extended());
+            assert(current.line_capacity()==kMaxPsramProgramLines);
+            assert(current.line_length_capacity()==
+                   kMaxPsramProgramLineLength-1);
+        }
         std::int32_t metadata_number=0;
         std::size_t metadata_length=0;
         assert(current.read_line_metadata(
@@ -177,12 +189,17 @@ int main(int argc,char** argv) {
     {
         ProgramStore limits;limits.set_root(root.c_str());
         assert(limits.initialize(ProgramStorageMode::InternalRam));
-        assert(limits.set_line(10,std::string(191,'R').c_str()));
+        assert(limits.internal_psram_extended());
+        assert(limits.line_capacity()==1024);
+        assert(limits.line_length_capacity()==2047);
+
+        const std::string maximum=make_body(2047,"PSRAM_END");
+        assert(limits.set_line(10,maximum.c_str()));
         std::int32_t maximum_number=0;
         std::size_t maximum_length=0;
         assert(limits.read_line_metadata(
             0,maximum_number,maximum_length));
-        assert(maximum_number==10&&maximum_length==191);
+        assert(maximum_number==10&&maximum_length==2047);
         std::int32_t borrowed_number=0;
         const char* borrowed_body=nullptr;
         std::size_t borrowed_length=0;
@@ -191,16 +208,54 @@ int main(int argc,char** argv) {
         const std::string borrowed_copy(borrowed_body,borrowed_length);
         assert(limits.read_line_metadata(
             0,maximum_number,maximum_length));
-        assert(std::string(borrowed_body,borrowed_length)==borrowed_copy);
+        assert(std::string(
+            borrowed_body,borrowed_length)==borrowed_copy);
+
         const auto kept=listing(limits);
-        assert(!limits.set_line(20,std::string(192,'R').c_str()));
+        assert(!limits.set_line(
+            20,std::string(2048,'R').c_str()));
         assert(!std::strcmp(
-            limits.error(), "LINE TOO LONG FOR RAM PROGRAM STORAGE"));
+            limits.error(), "LINE TOO LONG FOR INTERNAL PSRAM"));
         assert(listing(limits)==kept);
-        write(root+"RAM192.BAS","10 "+std::string(192,'R')+"\n");
-        assert(!limits.load("RAM192"));
-        assert(listing(limits)==kept);
+
+        write(root+"RAM2047.BAS",
+              "10 "+std::string(2047,'R')+"\n");
+        assert(limits.load("RAM2047"));
+        assert(limits.size()==1);
+        assert(limits.read_line_metadata(
+            0,maximum_number,maximum_length));
+        assert(maximum_length==2047);
+
+        const auto loaded=listing(limits);
+        write(root+"RAM2048.BAS",
+              "10 "+std::string(2048,'R')+"\n");
+        assert(!limits.load("RAM2048"));
+        assert(listing(limits)==loaded);
     }
+
+    // Explicitly disable PSRAM and verify the compatibility fallback remains
+    // 256 source lines x 191 body characters.
+    psram::test_set_available(false);
+    {
+        ProgramStore fallback;fallback.set_root(root.c_str());
+        assert(fallback.initialize(ProgramStorageMode::InternalRam));
+        assert(!fallback.internal_psram_extended());
+        assert(fallback.line_capacity()==256);
+        assert(fallback.line_length_capacity()==191);
+        assert(fallback.set_line(
+            10,std::string(191,'F').c_str()));
+        assert(!fallback.set_line(
+            20,std::string(192,'F').c_str()));
+        assert(!std::strcmp(
+            fallback.error(), "LINE TOO LONG FOR SRAM FALLBACK"));
+        assert(fallback.clear());
+        for(int i=1;i<=256;++i)
+            assert(fallback.set_line(i,"REM fallback"));
+        assert(!fallback.set_line(257,"END"));
+        assert(!std::strcmp(
+            fallback.error(), "PROGRAM TOO LARGE FOR SRAM FALLBACK"));
+    }
+    psram::test_set_available(true);
     {
         ProgramStore unavailable; unavailable.set_root(root.c_str());card=mounted=false;
         assert(!unavailable.initialize(ProgramStorageMode::SdCard));
@@ -219,12 +274,26 @@ int main(int argc,char** argv) {
     assert(!transfer.open("RMBP0000.BAS",true,root.c_str()));
     assert(p.set_line(15,"PRINT \"EDIT\""));assert(p.erase_line(20));
     auto edited=listing(p);assert(read(root+"TEST.BAS")==saved);assert(p.is_dirty());
+    // SD body reads populate the read-only PSRAM cache. Re-reading the same
+    // line must hit it without changing source semantics.
+    {
+        std::int32_t cached_number=0;
+        const char* cached_text=nullptr;
+        std::size_t cached_length=0;
+        const auto hits_before=p.sd_cache_hits();
+        assert(p.read_line_text(0,cached_number,cached_text,cached_length));
+        assert(p.sd_cache_bytes()>=kMaxSdProgramLineLength);
+        assert(p.read_line_text(0,cached_number,cached_text,cached_length));
+        assert(p.sd_cache_hits()>hits_before);
+    }
     locked=true;assert(!p.set_line(30,"END"));assert(!p.save("TEST"));locked=false;
     assert(listing(p)==edited&&!p.suspended());
     fail_write=1;assert(!p.set_line(15,"PRINT 999"));assert(listing(p)==edited);assert(read(root+"TEST.BAS")==saved);
     // Failed close / first rename / install rename preserve both live index and old source.
     for(int phase=0;phase<2;++phase) {
-        if(phase==0) fail_close=static_cast<int>(p.size())+1; // source reads then writer close
+        // PSRAM SD cache removes per-line source fopen/fclose from the hot
+        // path. Fail the transactional writer close directly.
+        if(phase==0) fail_close=1;
         else fail_rename=phase;
         assert(!p.set_line(15,"PRINT 999"));assert(listing(p)==edited);assert(read(root+"TEST.BAS")==saved);
     }
@@ -397,11 +466,15 @@ int main(int argc,char** argv) {
     write(long_work,long_program);assert(p.resume());
     assert(listing(p)==long_program);
 
-    // A long SD source cannot be migrated into the fixed RAM ProgramLine store.
+    // Enhanced INTERNAL PSRAM has the same 1024 x 2047 source limits as SD.
     const auto long_before=listing(p);
-    assert(!p.switch_mode(ProgramStorageMode::InternalRam));
-    assert(!std::strcmp(p.error(),"LINE TOO LONG FOR RAM"));
-    assert(p.backend_type()==ProgramBackend::Sd&&listing(p)==long_before);
+    assert(p.switch_mode(ProgramStorageMode::InternalRam));
+    assert(p.internal_psram_extended());
+    assert(p.line_capacity()==1024);
+    assert(p.line_length_capacity()==2047);
+    assert(listing(p)==long_before);
+    assert(p.switch_mode(ProgramStorageMode::SdCard));
+    assert(listing(p)==long_before);
 
     // Syntax after character 191 proves the compiler consumes the full SD line.
     const std::string late_error=
@@ -415,14 +488,25 @@ int main(int argc,char** argv) {
     // Leftover staging from interrupted power is never overwritten automatically.
     write(root+"RMBEDIT.BAK","recover me");assert(!p.set_line(40,"END"));assert(read(root+"RMBEDIT.BAK")=="recover me");
     std::filesystem::remove(root+"RMBEDIT.BAK");
-    assert(p.clear());for(int i=1;i<=256;++i)assert(p.set_line(i,"REM capacity"));
+    {
+        ProgramStore internal_capacity;
+        internal_capacity.set_root(root.c_str());
+        assert(internal_capacity.initialize(
+            ProgramStorageMode::InternalRam));
+        assert(internal_capacity.internal_psram_extended());
+        for(int i=1;i<=1024;++i)
+            assert(internal_capacity.set_line(i,"REM capacity"));
+        const auto full=listing(internal_capacity);
+        assert(!internal_capacity.set_line(1025,"END"));
+        assert(listing(internal_capacity)==full);
+    }
     before=listing(p);
-    assert(p.switch_mode(ProgramStorageMode::InternalRam));assert(listing(p)==before);
-    assert(!p.set_line(257,"END"));assert(listing(p)==before);
     assert(!p.load("BAD")); assert(listing(p)==before);
     fail_close=1; assert(!p.load("SORT")); assert(listing(p)==before);
     // Compile the same source through both backends: VM sees identical IL.
+    {
     ProgramStore ram;ram.set_root(root.c_str());
+    assert(ram.initialize(ProgramStorageMode::InternalRam));
     for(int i=1;i<argc;++i) {
         std::filesystem::copy_file(argv[i],root+"BENCH.BAS",std::filesystem::copy_options::overwrite_existing);
         assert(ram.load("BENCH"));assert(p.switch_mode(ProgramStorageMode::SdCard));assert(p.load("BENCH"));
@@ -430,6 +514,7 @@ int main(int argc,char** argv) {
         static CompiledProgram il;BasicCompiler c;
         auto t=std::chrono::steady_clock::now();assert(c.compile(ram,il).ok);auto u=std::chrono::steady_clock::now();assert(c.compile(p,il).ok);auto v=std::chrono::steady_clock::now();
         std::printf("host compile %s RAM=%lld us SD-file=%lld us (not device timing)\n",argv[i],(long long)std::chrono::duration_cast<std::chrono::microseconds>(u-t).count(),(long long)std::chrono::duration_cast<std::chrono::microseconds>(v-u).count());
+    }
     }
     // Exact hardware route, CRLF input and a pico-vfs-style broken ftell.
     write(root+"A.BAS","10 PRINT 11\r\n20 END\r\n");
@@ -456,8 +541,13 @@ int main(int argc,char** argv) {
     std::filesystem::copy_file("tests/fixtures/cpb_large_400.bas",root+"LARGE.BAS");
     assert(p.load("LARGE"));assert(p.size()==400);assert(p.resume());
     before=listing(p);assert(compiler.compile(p,repeated).ok);assert(repeated.line_count==400);
-    assert(!p.switch_mode(ProgramStorageMode::InternalRam));assert(listing(p)==before);
-    assert(p.backend_type()==ProgramBackend::Sd);
+    assert(p.switch_mode(ProgramStorageMode::InternalRam));
+    assert(p.internal_psram_extended());
+    assert(listing(p)==before);
+    assert(compiler.compile(p,repeated).ok);
+    assert(repeated.line_count==400);
+    assert(p.switch_mode(ProgramStorageMode::SdCard));
+    assert(listing(p)==before);
     assert(p.save("LARGE2"));assert(p.load("LARGE2"));assert(listing(p)==before);
     assert(p.set_line(100,"PRINT \"EDITED\""));assert(p.set_line(105,"REM extra"));
     assert(p.size()==401);assert(p.erase_line(105));assert(p.size()==400);assert(p.resume());
@@ -466,8 +556,12 @@ int main(int argc,char** argv) {
     assert(!p.set_line(1025,"END"));assert(p.size()==1024);assert(p.resume());
     assert(compiler.compile(p,repeated).ok);assert(repeated.line_count==1024);
     assert(p.switch_mode(ProgramStorageMode::InternalRam,true));
-    assert(p.set_line(10,"PRINT 99"));before=listing(p);assert(!p.load("LARGE"));
-    assert(!std::strcmp(p.error(),"PROGRAM TOO LARGE FOR RAM MODE"));assert(listing(p)==before);
+    assert(p.internal_psram_extended());
+    assert(p.set_line(10,"PRINT 99"));
+    assert(p.load("LARGE"));
+    assert(p.size()==400);
+    assert(compiler.compile(p,repeated).ok);
+    assert(repeated.line_count==400);
     assert(p.set_line(10,"  PRINT 3"));before=listing(p);
     assert(p.switch_mode(ProgramStorageMode::Auto));assert(listing(p)==before);assert(p.resume());
 

@@ -1,6 +1,8 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#define PICO_RP2350 1
+#define PICO_DEFAULT_UART_BAUD_RATE 115200
 struct stdio_driver_t {
     void (*out_chars)(const char*, int);
     void (*out_flush)();
@@ -20,6 +22,7 @@ inline unsigned to_ms_since_boot(absolute_time_t t) { return t/1000; }
 inline bool time_reached(absolute_time_t t) { return test_time>=t; }
 void sleep_ms(unsigned);
 void sleep_us(unsigned);
+void mock_dma_pump();
 inline unsigned save_and_disable_interrupts() { return 0; }
 inline void restore_interrupts(unsigned) {}
 constexpr int uart_default = 0;

@@ -2,6 +2,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstring>
+#include "file_path.hpp"
 namespace rmb::program_files {
 inline char active[80] = {};
 inline bool equal(const char* a, const char* b) {
@@ -12,16 +13,19 @@ inline bool equal(const char* a, const char* b) {
 }
 inline bool reserved(const char* name) {
     if (!name) return false;
+    name = file_paths::basename(name);
     char prefix[5] = {};
     for (int i=0; i<4 && name[i]; ++i) prefix[i]=std::toupper(static_cast<unsigned char>(name[i]));
     return std::strcmp(prefix,"RMBP")==0 || std::strcmp(prefix,"RMBE")==0;
 }
 inline bool transfer_staging(const char* name) {
+    name = file_paths::basename(name);
     return equal(name, "XMODEM.TMP") || equal(name, "XMODEM.BAK") ||
            equal(name, "YMODEM.TMP") || equal(name, "YMODEM.BAK") ||
            equal(name, "HTTP.TMP") || equal(name, "HTTP.BAK");
 }
 inline bool session_staging(const char* name) {
+    name = file_paths::basename(name);
     return equal(name, "RMBSES.TMP") || equal(name, "RMBSES.BAK");
 }
 inline bool visible_for_transfer(const char* name) {

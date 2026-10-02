@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <cassert>
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -15,6 +16,10 @@ constexpr std::uint32_t kBlocks = 8;
 std::array<std::uint8_t, kBlocks * 512> medium{};
 bool card = true;
 bool fail_mount = false;
+bool fail_init = false;
+bool fat_slot_reserved = false;
+bool root_registered = false;
+int fat_cleanups = 0;
 bool fail_unmount = false;
 bool fail_sync = false;
 bool fail_read = false;
@@ -41,8 +46,19 @@ int write_block(blockdevice_t*, const void* in, std::uint64_t address, std::size
 }
 int sync_block(blockdevice_t*) { return fail_sync ? -1 : 0; }
 std::uint64_t media_size(blockdevice_t*) { return medium.size(); }
-blockdevice_t device{read_block, write_block, sync_block, media_size};
-filesystem_t filesystem;
+int initialize(blockdevice_t* dev) {
+    if (fail_init) return -5005;
+    dev->is_initialized = true;
+    return 0;
+}
+int unmount_fat(filesystem_t*) {
+    assert(fat_slot_reserved); // Never clean up an unassigned context id.
+    fat_slot_reserved = false;
+    ++fat_cleanups;
+    return 0;
+}
+blockdevice_t device{false, initialize, read_block, write_block, sync_block, media_size};
+filesystem_t filesystem{unmount_fat};
 spi_inst_t spi;
 }
 
@@ -52,13 +68,23 @@ blockdevice_t* blockdevice_sd_create(
     return &device;
 }
 filesystem_t* filesystem_fat_create() { return &filesystem; }
-int fs_mount(const char*, filesystem_t*, blockdevice_t*) {
+int fs_mount(const char*, filesystem_t*, blockdevice_t* dev) {
     ++mounts;
-    return fail_mount ? -1 : 0;
+    assert(dev->is_initialized);
+    assert(!root_registered);
+    if (fat_slot_reserved) { errno = ENOMEM; return -1; }
+    // Match pinned pico-vfs: failed f_mount still reserves its only FAT slot.
+    fat_slot_reserved = true;
+    if (fail_mount) { errno = EIO; return -1; }
+    root_registered = true;
+    return 0;
 }
 int fs_unmount(const char*) {
     ++unmounts;
-    return fail_unmount ? -1 : 0;
+    assert(root_registered);
+    if (fail_unmount) return -1;
+    root_registered = false;
+    return unmount_fat(&filesystem);
 }
 void gpio_init(unsigned) {}
 void gpio_set_dir(unsigned, bool) {}
@@ -69,6 +95,22 @@ void sleep_ms(std::uint32_t) {}
 int main() {
     using namespace rmb::storage;
     assert(owner() == Owner::Firmware);
+    // Driver init failure must not unmount a FAT context with id -1.
+    fail_init = true;
+    assert(!init() && !available());
+    assert(fat_cleanups == 0 && mounts == 0);
+    assert(std::strstr(last_error(), "SD INIT FAILED (5005)"));
+    fail_init = false;
+    // Repeated initial mount failures must release the sole FAT slot.
+    fail_mount = true;
+    for (int i = 0; i < 3; ++i) {
+        assert(!init() && !available());
+        assert(!fat_slot_reserved && !root_registered);
+        assert(errno == EIO);
+        assert(std::strstr(last_error(), "SD MOUNT FAILED"));
+    }
+    assert(fat_cleanups == 3);
+    fail_mount = false;
     assert(init() && available());
 
     // A failed unmount keeps the mounted firmware state intact.

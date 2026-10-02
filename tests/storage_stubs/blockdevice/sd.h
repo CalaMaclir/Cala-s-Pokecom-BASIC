@@ -3,6 +3,8 @@
 #include <cstdint>
 
 struct blockdevice_t {
+    bool is_initialized = false;
+    int (*init)(blockdevice_t*);
     int (*read)(blockdevice_t*, void*, std::uint64_t, std::size_t);
     int (*program)(blockdevice_t*, const void*, std::uint64_t, std::size_t);
     int (*sync)(blockdevice_t*);

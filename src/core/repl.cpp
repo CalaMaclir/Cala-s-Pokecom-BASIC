@@ -1,3 +1,5 @@
+#include "file_list_layout.hpp"
+#include "path_compaction.hpp"
 #include "repl.hpp"
 #include "psram.hpp"
 #include "session_notice.hpp"
@@ -8,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <new>
+#include <initializer_list>
 
 #include "audio_file_policy.hpp"
 #include "basic_compiler.hpp"
@@ -21,6 +24,7 @@
 #include "network.hpp"
 #include "file_server.hpp"
 #include "file_management.hpp"
+#include "file_path.hpp"
 #include "full_screen_editor.hpp"
 #include "platform.hpp"
 #include "program_file_guard.hpp"
@@ -187,6 +191,50 @@ bool ci_equal(const char* a, const char* b) {
         ++b;
     }
     return *a == '\0' && *b == '\0';
+}
+
+std::size_t basic_name_stem_length(const char* name) {
+    if (!name) return 0;
+    std::size_t length = std::strlen(name);
+    if (length >= 4 && audio::has_extension_ci(name, ".BAS")) {
+        length -= 4;
+    }
+    return length;
+}
+
+void put_root_path(const char* path) {
+    char display[file_paths::display_capacity]={};file_paths::format_root_path(path,display,sizeof(display));
+    platform::put_string(display);
+}
+
+void format_status_filename(const char* path,bool dirty,char* output,std::size_t capacity) {
+    if(!output||!capacity)return;
+    const std::size_t width=19-(dirty?1u:0u);
+    char label[80]={};
+    if(path&&*path&&!file_paths::same(path,"UNTITLED"))
+        file_paths::compact_root_path(path,width,file_paths::CompactPathPolicy::ProgramName,label,sizeof(label));
+    else file_paths::compact_path("UNTITLED",width,file_paths::CompactPathPolicy::ProgramName,label,sizeof(label));
+    std::snprintf(output,capacity,"%s%s",label,dirty?"*":"");
+}
+
+void format_quick_filename(
+    const char* path,
+    char* output,
+    std::size_t capacity
+) {
+    if (!output || capacity == 0) return;
+    std::snprintf(output, capacity, "-");
+    if (!path || !*path) return;
+
+    // The bottom F-key bar identifies the executable file, so directory
+    // components never consume its nine-character label.
+    const char* base = file_paths::basename(path);
+    std::size_t length = basic_name_stem_length(base);
+    if (length > 9u) length = 9u;
+    if (length == 0) return;
+    if (length >= capacity) length = capacity - 1u;
+    std::memcpy(output, base, length);
+    output[length] = '\0';
 }
 
 char* command_argument(char* input, const char* command) {
@@ -956,14 +1004,8 @@ void Repl::render_status() {
         platform::get_battery_status(battery, charging);
 
     char filename[24] = {};
-    std::snprintf(
-        filename,
-        sizeof(filename),
-        "%.*s%s",
-        program_dirty_ ? 18 : 19,
-        current_filename_,
-        program_dirty_ ? "*" : ""
-    );
+    format_status_filename(
+        current_filename_, program_dirty_, filename, sizeof(filename));
 
     char line1[80] = {};
     if (battery_ok) {
@@ -1074,23 +1116,7 @@ void Repl::render_function_keys() {
         const char* filename = settings_.quick[index].filename;
 
         char short_name[10] = "-";
-        if (filename && *filename) {
-            std::size_t length = std::strlen(filename);
-            if (length >= 4) {
-                const char* ext = filename + length - 4;
-                if (ext[0] == '.' &&
-                    ascii_upper(ext[1]) == 'B' &&
-                    ascii_upper(ext[2]) == 'A' &&
-                    ascii_upper(ext[3]) == 'S') {
-                    length -= 4;
-                }
-            }
-            if (length > 9) length = 9;
-            if (length > 0) {
-                std::memcpy(short_name, filename, length);
-                short_name[length] = '\0';
-            }
-        }
+        format_quick_filename(filename, short_name, sizeof(short_name));
 
         const int written = std::snprintf(
             line + used,
@@ -1277,7 +1303,7 @@ void Repl::list_program() {
         }
         std::snprintf(
             number,sizeof(number),"%ld ",static_cast<long>(line_number));
-        platform::put_string(number);
+        if(program_.source_mode()==ProgramSourceMode::ClassicNumbered)platform::put_string(number);
 
         std::size_t offset=0;
         while(offset<length) {
@@ -1304,7 +1330,7 @@ bool Repl::load_named_program(
     if (!filename || !*filename) return false;
 
     platform::put_string("LOADING... (");
-    platform::put_string(filename);
+    put_root_path(filename);
     platform::put_string(")\r\n");
 
     if (!storage::load_program(filename, program_)) {
@@ -1315,7 +1341,7 @@ bool Repl::load_named_program(
     set_current_filename(program_.filename(), false);
 
     platform::put_string("LOADED ");
-    platform::put_string(program_.filename());
+    put_root_path(program_.filename());
     platform::put_string("\r\n");
 
     if (run_after_load) {
@@ -1389,16 +1415,12 @@ void Repl::command_profile(char* argument) {
     );
 }
 
-void Repl::process_line(char* line) {
-    trim_right(line);
-    char* input = skip_spaces(line);
-
-    if (*input == '\0') return;
-
+void Repl::process_numbered_line(char* input) {
     std::int32_t line_number = 0;
     char* body = nullptr;
-
-    if (*input >= '0' && *input <= '9') {
+        if(program_.source_mode()==ProgramSourceMode::Structured) {
+            platform::put_string("?STRUCTURED PROGRAM - USE EDITOR\r\n");return;
+        }
         if (!parse_line_number(input, line_number, body)) {
             platform::put_string("?BAD LINE NUMBER\r\n");
             return;
@@ -1420,6 +1442,17 @@ void Repl::process_line(char* line) {
         } else {
             program_dirty_ = true;
         }
+        return;
+}
+
+void Repl::process_line(char* line) {
+    trim_right(line);
+    char* input = skip_spaces(line);
+
+    if (*input == '\0') return;
+
+    if (*input >= '0' && *input <= '9') {
+        process_numbered_line(input);
         return;
     }
 
@@ -1449,7 +1482,7 @@ void Repl::process_line(char* line) {
     }
 
     if (command_equals(input, "NEW")) {
-        if (!program_.clear()) { print_program_error(); return; }
+        if (!program_.new_program(ProgramSourceMode::ClassicNumbered)) { print_program_error(); return; }
         vm_.clear_direct_state();
         set_current_filename("UNTITLED", false);
         platform::put_string("OK\r\n");
@@ -1477,13 +1510,16 @@ void Repl::process_line(char* line) {
         return;
     }
 
-    if (command_equals(input, "FILES")) {
-        if (!storage::list_program_files()) print_storage_error();
-        return;
-    }
-    if (command_equals(input, "DIR")) {
-        if (!storage::list_root_files()) print_storage_error();
-        return;
+    for (const char* command : {"FILES", "DIR"}) {
+        if (char* arg = command_argument(input, command)) {
+            char directory[80] = {};
+            if (*arg && !parse_filename_argument(arg, directory, sizeof(directory))) {
+                platform::put_string("?BAD DIRECTORY PATH\r\n");
+            } else if (!storage::list_directory(directory, command[0] == 'F')) {
+                print_storage_error();
+            }
+            return;
+        }
     }
 
     if (char* arg = command_argument(input, "XRECV")) {
@@ -1535,7 +1571,7 @@ void Repl::process_line(char* line) {
         }
 
         platform::put_string("SAVED ");
-        platform::put_string(program_.filename());
+        put_root_path(program_.filename());
         platform::put_string("\r\n");
         return;
     }
@@ -1582,7 +1618,7 @@ void Repl::process_line(char* line) {
         }
 
         platform::put_string("SAVED ");
-        platform::put_string(filename);
+        put_root_path(filename);
         platform::put_string(".BMP\r\n");
         return;
     }
@@ -1701,6 +1737,12 @@ void Repl::run_direct_line(const char* line) {
         platform::put_char('?');
         platform::put_string(vr.message);
         platform::put_string("\r\n");
+        if(vr.function_name[0]) {
+            platform::put_string("IN FUNCTION ");platform::put_string(vr.function_name);
+            char location[64];std::snprintf(location,sizeof(location),"\r\nCALLED FROM ROW %ld (DEPTH %u)\r\n",
+                static_cast<long>(vr.call_source_row),vr.call_depth);
+            platform::put_string(location);
+        }
     }
 }
 
@@ -1720,6 +1762,7 @@ void Repl::run_autorun() {
 }
 
 void Repl::run_program() {
+    compile_error_location_ = 0;
     // Text output keeps the footer. Graphics APIs release it when needed.
     platform::put_string("RUN...\r\n");
     CompileWorkspaceLease workspace(active_compiled_, workspace_busy_);
@@ -1734,7 +1777,7 @@ void Repl::run_program() {
     CompiledProgram& compiled = workspace.program();
     const std::uint64_t source_revision = program_.revision();
     const bool cache_hit =
-        compiled_cache_.restore(source_revision, compiled);
+        compiled_cache_.restore(source_revision, compiled,program_.source_mode());
 
     CompileResult cr;
     if (cache_hit) {
@@ -1749,8 +1792,15 @@ void Repl::run_program() {
     }
 
     if (!cr.ok) {
+        compile_error_revision_ = source_revision;
+        compile_error_mode_ = cr.source_mode;
+        compile_error_location_ = cr.source_mode == ProgramSourceMode::Structured
+            ? cr.row : cr.line;
         char message[160] = {};
-        if (cr.line > 0) {
+        if(cr.source_mode==ProgramSourceMode::Structured && cr.row>0) {
+            std::snprintf(message,sizeof(message),"?%s AT ROW %ld\r\n",
+                          cr.message,static_cast<long>(cr.row));
+        } else if (cr.line > 0) {
             std::snprintf(
                 message,
                 sizeof(message),
@@ -1770,6 +1820,8 @@ void Repl::run_program() {
         render_function_keys();
         ensure_body_cursor();
         platform::put_string(message);
+        if (compile_error_location_ > 0)
+            platform::put_string("EDIT: OPEN AT COMPILE ERROR\r\n");
         return;
     }
 
@@ -1790,6 +1842,12 @@ void Repl::run_program() {
         platform::put_char('?');
         platform::put_string(vr.message);
         platform::put_string("\r\n");
+        if(vr.function_name[0]) {
+            platform::put_string("IN FUNCTION ");platform::put_string(vr.function_name);
+            char location[64];std::snprintf(location,sizeof(location),"\r\nCALLED FROM ROW %ld (DEPTH %u)\r\n",
+                static_cast<long>(vr.call_source_row),vr.call_depth);
+            platform::put_string(location);
+        }
     }
 
     const std::uint32_t minutes = elapsed_ms / 60000u;
@@ -1855,16 +1913,17 @@ void Repl::handle_quick_key(int key) {
         return;
     }
 
-    char message[128] = {};
+    char message[32] = {};
     std::snprintf(
         message,
         sizeof(message),
-        "F%d: %s %s\r\n",
+        "F%d: %s ",
         index + 1,
-        quick.run ? "RUN" : "LOAD",
-        quick.filename
+        quick.run ? "RUN" : "LOAD"
     );
     platform::put_string(message);
+    put_root_path(quick.filename);
+    platform::put_string("\r\n");
     load_named_program(quick.filename, quick.run);
 }
 
@@ -1945,6 +2004,15 @@ void Repl::draw_menu_option(
     );
 }
 
+void Repl::draw_file_option(int row,const storage::DirectoryEntry* entry,bool selected,
+                            bool show_size,const char* empty) {
+    char text[54]={};file_list::format_row(entry,show_size,text,sizeof(text),53,empty);
+    const bool directory=entry&&entry->directory;
+    platform::draw_text_row(row,text,
+        selected?0xffffff:directory?theme_status_fg(settings_.theme):0x00ff80,
+        selected?theme_selected_bg(settings_.theme):directory?theme_status_bg(settings_.theme):0x000000);
+}
+
 void Repl::draw_menu_message(int row, const char* text) {
     platform::draw_text_row(
         row,
@@ -1992,538 +2060,337 @@ bool Repl::choose_quick_mode(bool& run) {
     }
 }
 
-bool Repl::pick_program_file(
-    char* output,
-    std::size_t capacity
-) {
-    if (!output || capacity == 0) return false;
-    output[0] = '\0';
-
-    auto& files = menu_file_scratch.names;
-    const std::size_t count = storage::collect_program_files(
-        &files[0][0],
-        kMenuFileCount,
-        kMenuFilenameSize
-    );
-
-    if (count == 0) {
-        draw_menu_header("SELECT BASIC FILE", "ESC BACK");
-        draw_menu_message(
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 4,
-            storage::available() ? "(NO .BAS FILES)" : storage::last_error()
-        );
-        while (true) {
-            const int key = platform::get_char();
-            if (key == kKeyEscape || key == 0x1b || key_is_enter(key)) {
-                return false;
-            }
-        }
-    }
-
-    sort_file_names(files, count);
-
-    constexpr int visible = 27;
-    menu_scroll::State scroll;
-    menu_scroll::normalize(
-        scroll, static_cast<int>(count), visible);
-
-    while (true) {
-        draw_menu_header(
-            "SELECT BASIC FILE",
-            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER USE  ESC"
-        );
-
-        const int first_row =
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
-
-        menu_scroll::normalize(
-            scroll, static_cast<int>(count), visible);
-
-        for (int row_index = 0; row_index < visible; ++row_index) {
-            const int index = scroll.offset + row_index;
-            if (index >= static_cast<int>(count)) {
-                draw_menu_option(first_row + row_index, "", false);
-                continue;
-            }
-            char row[96] = {};
-            std::snprintf(
-                row, sizeof(row), "%2d  %-46.46s",
-                index + 1, files[index]);
-            draw_menu_option(
-                first_row + row_index,
-                row,
-                index == scroll.selected
-            );
-        }
-
-        char position[48] = {};
-        std::snprintf(
-            position, sizeof(position),
-            "%d-%d / %u",
-            scroll.offset + 1,
-            menu_scroll::last_exclusive(
-                scroll, static_cast<int>(count), visible),
-            static_cast<unsigned>(count)
-        );
-        draw_menu_message(first_row + visible, position);
-
-        const int key = platform::get_char();
-        if (handle_menu_scroll_key(
-                key, scroll, static_cast<int>(count), visible)) {
-            continue;
-        }
-        if (key_is_enter(key)) {
-            std::snprintf(
-                output, capacity, "%s", files[scroll.selected]);
-            return true;
-        }
-        if (key == kKeyEscape || key == 0x1b) return false;
-    }
+bool Repl::pick_program_file(char* output, std::size_t capacity) {
+    return pick_path_file(output, capacity, "SELECT BASIC FILE", true);
 }
 
-bool Repl::pick_transfer_file(
-    char* output,
-    std::size_t capacity,
-    const char* title
-) {
+bool Repl::pick_transfer_file(char* output, std::size_t capacity, const char* title) {
+    return pick_path_file(output, capacity, title, false);
+}
+
+
+bool Repl::pick_path_file(char* output, std::size_t capacity,
+                          const char* title, bool programs_only) {
     if (!output || capacity == 0) return false;
     output[0] = '\0';
-
-    auto& files = menu_file_scratch.names;
-    const std::size_t count = storage::collect_transfer_files(
-        &files[0][0], kMenuFileCount, kMenuFilenameSize);
-
-    if (count == 0) {
-        draw_menu_header(title, "ESC BACK");
-        draw_menu_message(
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 4,
-            storage::available() ? "(NO TRANSFERABLE FILES)" : storage::last_error());
-        while (true) {
-            const int key = platform::get_char();
-            if (key == kKeyEscape || key == 0x1b || key_is_enter(key)) return false;
-        }
-    }
-
-    sort_file_names(files, count);
-    constexpr int visible = 27;
+    char directory[80] = {};
+    std::size_t batch = 0, count = 0;
+    bool more = false, refresh = true;
     menu_scroll::State scroll;
-    menu_scroll::normalize(
-        scroll, static_cast<int>(count), visible);
-
+    constexpr int visible = 25;
     while (true) {
-        draw_menu_header(
-            title,
-            "UP/DN SELECT  SHIFT+UP/DN PAGE  ENTER SEND  ESC"
-        );
-        const int first_row =
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
-
-        menu_scroll::normalize(
-            scroll, static_cast<int>(count), visible);
-
-        for (int row_index = 0; row_index < visible; ++row_index) {
-            const int index = scroll.offset + row_index;
-            if (index >= static_cast<int>(count)) {
-                draw_menu_option(first_row + row_index, "", false);
-                continue;
-            }
-            char row[96] = {};
-            std::snprintf(
-                row, sizeof(row), "%2d  %-46.46s",
-                index + 1, files[index]);
-            draw_menu_option(
-                first_row + row_index,
-                row,
-                index == scroll.selected);
+        auto& entries = menu_file_scratch.entries;
+        if (refresh) {
+            count = storage::collect_directory_entries(directory, programs_only,
+                entries, kMenuFileCount, batch, &more);
+            sort_directory_entries(entries, count);
+            refresh = false;
         }
-
-        char position[48] = {};
-        std::snprintf(
-            position, sizeof(position),
-            "%d-%d / %u",
-            scroll.offset + 1,
-            menu_scroll::last_exclusive(
-                scroll, static_cast<int>(count), visible),
-            static_cast<unsigned>(count)
-        );
-        draw_menu_message(first_row + visible, position);
-
+        menu_scroll::normalize(scroll, static_cast<int>(count), visible);
+        draw_menu_header(title, "ENTER OPEN/USE  ESC PARENT/BACK  HOME ROOT");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        char row[96] = {};
+        file_paths::compact_root_path(directory,53,
+            file_paths::CompactPathPolicy::FullName,row,sizeof(row),true);
+        draw_menu_message(first - 1, row);
+        for (int r = 0; r < visible; ++r) {
+            const int index = scroll.offset + r;
+            const auto* entry=index<static_cast<int>(count)?&entries[index]:nullptr;
+            const char* empty=r==0?(std::strcmp(storage::last_error(),"OK")
+                ?storage::last_error():"(EMPTY DIRECTORY)"):nullptr;
+            draw_file_option(first+r,entry,index==scroll.selected&&count!=0,false,empty);
+        }
+        std::snprintf(row, sizeof(row), "Batch %u  %u items%s  F refresh",
+                      static_cast<unsigned>(batch / kMenuFileCount + 1u),
+                      static_cast<unsigned>(count), more ? " +" : "");
+        draw_menu_message(first + visible, row);
+        draw_menu_message(first + visible + 1, "UP/DN + SHIFT: scroll; at edge: next batch");
         const int key = platform::get_char();
-        if (handle_menu_scroll_key(
-                key, scroll, static_cast<int>(count), visible)) {
-            continue;
+        if (key == kKeyHome) {
+            directory[0] = '\0'; batch = 0; scroll = {}; refresh = true; continue;
         }
-        if (key_is_enter(key)) {
-            std::snprintf(
-                output, capacity, "%s", files[scroll.selected]);
-            return true;
+        if (key == kKeyEscape || key == 0x1b || key == 8 || key == 127) {
+            if (!*directory) return false;
+            (void)file_paths::parent(directory, directory, sizeof(directory));
+            batch = 0; scroll = {}; refresh = true; continue;
         }
-        if (key == kKeyEscape || key == 0x1b) return false;
+        if (key == 'f' || key == 'F') { batch = 0; scroll = {}; refresh = true; continue; }
+        if (key == kKeyDown && more && count && scroll.selected == static_cast<int>(count - 1u)) {
+            batch += count; scroll = {}; refresh = true; continue;
+        }
+        if (key == kKeyUp && batch && scroll.selected == 0) {
+            batch = batch >= kMenuFileCount ? batch - kMenuFileCount : 0;
+            scroll.selected = static_cast<int>(kMenuFileCount - 1u);
+            refresh = true; continue;
+        }
+        if (handle_menu_scroll_key(key, scroll, static_cast<int>(count), visible)) continue;
+        if (!key_is_enter(key) || count == 0) continue;
+        char full[80] = {};
+        if (!file_paths::join(directory, entries[scroll.selected].name, full, sizeof(full))) continue;
+        if (entries[scroll.selected].directory) {
+            std::memcpy(directory, full, std::strlen(full) + 1u);
+            batch = 0; scroll = {}; refresh = true; continue;
+        }
+        if (std::strlen(full) >= capacity) return false;
+        std::memcpy(output, full, std::strlen(full) + 1u);
+        return true;
     }
 }
 
 bool Repl::menu_files() {
     enum class Mode { Programs, Directory };
     Mode mode = Mode::Programs;
-    constexpr int visible = 24;
+    constexpr int visible = 22;
     menu_scroll::State scroll;
-    bool info_visible = false;
+    // The browser directory is not the process/HTTP working directory. All
+    // persisted names, Quick Keys and current-file saves are root-relative.
+    static char directory[80] = {};
+    char restore_selection[80] = {};
+    char playing_name[80] = {};
+    char info_path[80] = {};
     storage::DirectoryEntry inline_info;
-    char playing_name[kMenuFilenameSize] = {};
-    std::size_t count = 0;
-    bool scan_ok = true;
-    bool scan_requested = true;
-
+    bool info_visible = false, scan_ok = true, refresh = true, more = false;
+    std::size_t count = 0, batch = 0;
+    auto stop_preview = [&]() {
+        if (*playing_name) platform::audio_stop();
+        playing_name[0] = '\0';
+    };
     auto show_error = [&](const char* title, const char* message) {
         draw_menu_header(title, "PRESS ANY KEY");
-        const int top = settings_.status_enabled
-            ? console_layout::status_rows : 0;
+        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
         draw_menu_message(top + 5, message ? message : "FILE OPERATION FAILED");
         (void)platform::get_char();
+        draw_menu_header(nullptr, nullptr);
     };
-
-    auto confirm_delete = [&](const char* name) {
-        int selected = 0; // Safe default: Cancel.
+    auto confirm_delete = [&](const char* name, bool is_directory) {
+        int selected = 0;
         while (true) {
-            draw_menu_header(
-                "DELETE FILE?",
-                "UP/DOWN SELECT  ENTER OK  ESC CANCEL"
-            );
-            const int top = settings_.status_enabled
-                ? console_layout::status_rows : 0;
-            draw_menu_message(top + 4, name);
+            draw_menu_header(is_directory ? "DELETE EMPTY DIRECTORY?" : "DELETE FILE?",
+                             "UP/DOWN SELECT  ENTER OK  ESC CANCEL");
+            const int top = settings_.status_enabled ? console_layout::status_rows : 0;
+            char row[54] = {};
+            char path[file_paths::display_capacity]={};
+            file_paths::format_root_path(name,path,sizeof(path));
+            std::snprintf(row,sizeof(row),"%.53s",path);
+            draw_menu_message(top+4,row);
+            draw_menu_message(top+5,std::strlen(path)>53?path+53:"");
             draw_menu_option(top + 7, "Cancel", selected == 0);
             draw_menu_option(top + 8, "Delete", selected == 1);
             const int key = platform::get_char();
-            if (key == kKeyUp || key == kKeyDown) {
-                selected = 1 - selected;
-            } else if (key_is_enter(key)) {
-                return selected == 1;
-            } else if (key == kKeyEscape || key == 0x1b) {
-                return false;
-            }
+            if (key == kKeyUp || key == kKeyDown) selected = 1 - selected;
+            else if (key_is_enter(key)) return selected == 1;
+            else if (key == kKeyEscape || key == 0x1b) return false;
         }
     };
-
-    while (true) {
-        if (playing_name[0] && !platform::audio_playing()) {
-            playing_name[0] = '\0';
-            scan_requested = true;
-        }
-        if (scan_requested) {
-            if (mode == Mode::Programs) {
-                auto& names = menu_file_scratch.names;
-                count = storage::collect_program_files(
-                    &names[0][0], kMenuFileCount, kMenuFilenameSize);
-                sort_file_names(names, count);
-            } else {
-                auto& entries = menu_file_scratch.entries;
-                count = storage::collect_root_entries(entries, kMenuFileCount);
-                sort_directory_entries(entries, count);
+    auto may_replace_program = [&]() {
+        if (!program_dirty_ && !program_.is_dirty()) return true;
+        draw_menu_header("CURRENT PROGRAM MODIFIED", "S SAVE  D REPLACE  ESC CANCEL");
+        while (true) {
+            const int key = platform::get_char();
+            if (key == kKeyEscape || key == 0x1b) return false;
+            if (key == 'd' || key == 'D') return true;
+            if (key != 's' && key != 'S') continue;
+            bool ok = false;
+            if (has_current_filename()) ok = save_current_program();
+            else {
+                char name[80] = {};
+                if (!prompt_text("SAVE AS (SD-relative path): ", name, sizeof(name))) return false;
+                ok = save_program_as(name);
             }
+            if (!ok) show_error("SAVE FAILED", storage::last_error());
+            return ok;
+        }
+    };
+    auto reset_view = [&]() {
+        batch = 0; scroll = {}; info_visible = false; refresh = true;
+    };
+    while (true) {
+        if (*playing_name && !platform::audio_playing()) {
+            playing_name[0] = '\0'; refresh = true;
+        }
+        auto& entries = menu_file_scratch.entries;
+        if (refresh) {
+            count = storage::collect_directory_entries(directory, mode == Mode::Programs,
+                entries, kMenuFileCount, batch, &more);
+            sort_directory_entries(entries, count);
             scan_ok = std::strcmp(storage::last_error(), "OK") == 0;
-            scan_requested = false;
+            if (*restore_selection) {
+                for (std::size_t i = 0; i < count; ++i)
+                    if (file_paths::same(entries[i].name, restore_selection))
+                        scroll.selected = static_cast<int>(i);
+                restore_selection[0] = '\0';
+            }
+            refresh = false;
         }
         menu_scroll::normalize(scroll, static_cast<int>(count), visible);
-
-        draw_menu_header(
-            mode == Mode::Programs ? "FILES [PROGRAMS]" : "FILES [DIRECTORY]",
-            "UP/DN SELECT  SHIFT+UP/DN PAGE  LEFT/RIGHT MODE"
-        );
-
-        const int first_row =
-            (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
-
-        for (int row_index = 0; row_index < visible; ++row_index) {
-            const int index = scroll.offset + row_index;
-            if (index >= static_cast<int>(count)) {
-                draw_menu_option(
-                    first_row + row_index,
-                    row_index == 0 && count == 0
-                        ? (scan_ok
-                            ? (mode == Mode::Programs
-                                ? "(NO .BAS FILES)" : "(NO FILES)")
-                            : storage::last_error())
-                        : "",
-                    false
-                );
-                continue;
-            }
-
-            char row[96] = {};
-            if (mode == Mode::Programs) {
-                std::snprintf(
-                    row, sizeof(row), "%2d  %-46.46s",
-                    index + 1, menu_file_scratch.names[index]);
-            } else {
-                const auto& entry = menu_file_scratch.entries[index];
-                if (entry.directory) {
-                    std::snprintf(
-                        row, sizeof(row), "%2d  %-38.38s <DIR>",
-                        index + 1, entry.name);
-                } else {
-                    std::snprintf(
-                        row, sizeof(row), "%2d  %-36.36s %9lu",
-                        index + 1, entry.name,
-                        static_cast<unsigned long>(entry.size));
-                }
-            }
-            draw_menu_option(
-                first_row + row_index,
-                row,
-                index == scroll.selected
-            );
+        draw_menu_header(mode == Mode::Programs ? "FILES [PROGRAMS]" : "FILES [DIRECTORY]",
+                         "UP/DN SELECT  SHIFT+UP/DN PAGE  LEFT/RIGHT MODE");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        char row[112] = {};
+        file_paths::compact_root_path(directory,53,
+            file_paths::CompactPathPolicy::FullName,row,sizeof(row),true);
+        draw_menu_message(first - 1, row);
+        for (int r = 0; r < visible; ++r) {
+            const int at = scroll.offset + r;
+            const auto* entry=at<static_cast<int>(count)?&entries[at]:nullptr;
+            draw_file_option(first+r,entry,count&&at==scroll.selected,true,
+                r==0?(scan_ok?"(EMPTY DIRECTORY)":storage::last_error()):nullptr);
         }
-
-        char position[80] = {};
-        if (count != 0) {
-            std::snprintf(
-                position, sizeof(position),
-                "%d-%d / %u",
-                scroll.offset + 1,
-                menu_scroll::last_exclusive(
-                    scroll, static_cast<int>(count), visible),
-                static_cast<unsigned>(count)
-            );
-        }
-        draw_menu_message(first_row + visible, position);
-        draw_menu_message(
-            first_row + visible + 1,
-            mode == Mode::Programs
-                ? "ENTER LOAD  R RUN  E EDIT  N RENAME"
-                : "P PLAY/STOP  N RENAME  DEL DELETE"
-        );
-        draw_menu_message(
-            first_row + visible + 2,
-            mode == Mode::Programs
-                ? "DEL DELETE  I INFO  F REFRESH  ESC BACK"
-                : "I INFO  F REFRESH  LEFT/RIGHT  ESC"
-        );
-
-        char info_row[112] = {};
+        std::snprintf(row, sizeof(row), "Batch %u  %u items%s  M mkdir  HOME root",
+                      static_cast<unsigned>(batch / kMenuFileCount + 1u),
+                      static_cast<unsigned>(count), more ? " +" : "");
+        draw_menu_message(first + visible, row);
+        draw_menu_message(first + visible + 1, "ENTER OPEN/LOAD  R RUN  E EDIT  N RENAME");
+        draw_menu_message(first + visible + 2, "DEL DELETE  I INFO  F REFRESH  P PLAY/STOP");
+        draw_menu_message(first + visible + 3, "ESC/BACKSPACE PARENT; ESC AT ROOT EXITS");
         if (info_visible) {
-            std::snprintf(
-                info_row, sizeof(info_row), "Info: %s", inline_info.name);
-            draw_menu_message(first_row + visible + 4, info_row);
-            std::snprintf(
-                info_row, sizeof(info_row), "Type: %s",
-                inline_info.directory ? "DIRECTORY" :
-                audio::has_extension_ci(inline_info.name, ".BAS")
-                    ? "BASIC PROGRAM" :
-                audio::has_extension_ci(inline_info.name, ".WAV")
-                    ? "WAV AUDIO" :
-                audio::has_extension_ci(inline_info.name, ".MP3")
-                    ? "MP3 AUDIO" : "FILE");
-            draw_menu_message(first_row + visible + 5, info_row);
-            if (!inline_info.directory) {
-                std::snprintf(
-                    info_row, sizeof(info_row), "Size: %lu bytes",
-                    static_cast<unsigned long>(inline_info.size));
-                draw_menu_message(first_row + visible + 6, info_row);
-            } else {
-                draw_menu_message(first_row + visible + 6, "");
-            }
+            char path[file_paths::display_capacity]={};
+            file_paths::format_root_path(info_path,path,sizeof(path));
+            std::snprintf(row,sizeof(row),"%.53s",path);
+            draw_menu_message(first+visible+4,row);
+            draw_menu_message(first+visible+5,std::strlen(path)>53?path+53:"");
+            std::snprintf(row, sizeof(row), "%s  %lu bytes",
+                          inline_info.directory ? "DIRECTORY" : "FILE",
+                          static_cast<unsigned long>(inline_info.size));
+            draw_menu_message(first + visible + 6, row);
         } else {
-            if (playing_name[0]) {
-                std::snprintf(
-                    info_row, sizeof(info_row),
-                    "Playing: %.70s", playing_name);
-                draw_menu_message(first_row + visible + 4, info_row);
-            } else {
-                draw_menu_message(first_row + visible + 4, "");
-            }
-            draw_menu_message(first_row + visible + 5, "");
-            draw_menu_message(first_row + visible + 6, "");
+            char preview_label[80];file_paths::compact_root_path(playing_name,44,
+                file_paths::CompactPathPolicy::FullName,preview_label,sizeof(preview_label));
+            std::snprintf(row, sizeof(row), "%s%s", *playing_name ? "Playing: " : "", preview_label);
+            draw_menu_message(first + visible + 4, row);
+            draw_menu_message(first + visible + 5, "");
+            draw_menu_message(first + visible + 6, "");
         }
-
         const int key = platform::get_char();
         if (key == kKeyLeft || key == kKeyRight) {
-            if (playing_name[0]) {
-                platform::audio_stop();
-                playing_name[0] = '\0';
+            stop_preview(); mode = mode == Mode::Programs ? Mode::Directory : Mode::Programs;
+            reset_view(); continue;
+        }
+        if (key == kKeyHome) {
+            stop_preview(); directory[0] = '\0'; reset_view(); continue;
+        }
+        if (key == kKeyEscape || key == 0x1b || key == 8 || key == 127) {
+            stop_preview();
+            if (!*directory) return false;
+            std::snprintf(restore_selection, sizeof(restore_selection), "%s", file_paths::basename(directory));
+            (void)file_paths::parent(directory, directory, sizeof(directory));
+            reset_view(); continue;
+        }
+        if (key == kKeyDown && more && count && scroll.selected == static_cast<int>(count - 1u)) {
+            stop_preview(); batch += count; scroll = {}; refresh = true; info_visible = false; continue;
+        }
+        if (key == kKeyUp && batch && scroll.selected == 0) {
+            stop_preview(); batch = batch >= kMenuFileCount ? batch - kMenuFileCount : 0;
+            scroll.selected = static_cast<int>(kMenuFileCount - 1u);
+            refresh = true; info_visible = false; continue;
+        }
+        if (handle_menu_scroll_key(key, scroll, static_cast<int>(count), visible)) {
+            info_visible = false; continue;
+        }
+        if (key == 'f' || key == 'F') { stop_preview(); reset_view(); continue; }
+        if (key == 3 && *playing_name) { stop_preview(); refresh = true; continue; }
+        if (key == 'm' || key == 'M') {
+            stop_preview();
+            char name[80] = {}, path[80] = {};
+            if (prompt_text("NEW DIRECTORY (name or /path): ", name, sizeof(name))) {
+                if (!file_paths::join(directory, name, path, sizeof(path))) show_error("MKDIR", "BAD OR TOO LONG PATH");
+                else if (!storage::create_directory(path)) show_error("MKDIR", storage::last_error());
             }
-            mode = mode == Mode::Programs ? Mode::Directory : Mode::Programs;
-            scroll = menu_scroll::State{};
-            info_visible = false;
-            scan_requested = true;
-            continue;
+            reset_view(); continue;
         }
-        if (handle_menu_scroll_key(
-                key, scroll, static_cast<int>(count), visible)) {
-            info_visible = false;
-            continue;
+        if (!count) continue;
+        const auto entry = entries[scroll.selected]; // dialogs may reuse screen/scratch
+        char selected_path[80] = {};
+        if (!file_paths::join(directory, entry.name, selected_path, sizeof(selected_path))) {
+            show_error("FILES", "PATH TOO LONG"); continue;
         }
-        if (key == 'f' || key == 'F') {
-            if (playing_name[0]) {
-                platform::audio_stop();
-                playing_name[0] = '\0';
+        if (key_is_enter(key) && entry.directory) {
+            stop_preview();
+            std::memcpy(directory, selected_path, std::strlen(selected_path) + 1u);
+            reset_view(); continue;
+        }
+        if ((key == 'p' || key == 'P') && !entry.directory) {
+            if (!audio::playable_audio_filename(entry.name)) {
+                show_error("AUDIO", "SELECT A WAV OR MP3 FILE"); continue;
             }
-            info_visible = false;
-            scan_requested = true;
-            continue;
-        }
-        if (key == 3 && playing_name[0]) {
-            platform::audio_stop();
-            playing_name[0] = '\0';
-            info_visible = false;
-            continue;
-        }
-        if (key == kKeyEscape || key == 0x1b) {
-            if (playing_name[0]) platform::audio_stop();
-            return false;
-        }
-        if (count == 0) continue;
-
-        const char* selected_name = mode == Mode::Programs
-            ? menu_file_scratch.names[scroll.selected]
-            : menu_file_scratch.entries[scroll.selected].name;
-        const bool selected_directory = mode == Mode::Directory &&
-            menu_file_scratch.entries[scroll.selected].directory;
-
-        if ((key == 'p' || key == 'P') &&
-            mode == Mode::Directory && !selected_directory) {
-            if (!audio::playable_audio_filename(selected_name)) {
-                show_error("AUDIO", "SELECT A WAV OR MP3 FILE");
-                continue;
+            if (file_paths::same(playing_name, selected_path)) { stop_preview(); refresh = true; }
+            else {
+                stop_preview();
+                if (platform::audio_wavplay(selected_path))
+                    std::memcpy(playing_name, selected_path, std::strlen(selected_path) + 1u);
+                else show_error("AUDIO", platform::audio_last_error());
             }
-            if (playing_name[0] && ci_equal(playing_name, selected_name)) {
-                platform::audio_stop();
-                playing_name[0] = '\0';
-            } else if (platform::audio_wavplay(selected_name)) {
-                std::snprintf(
-                    playing_name, sizeof(playing_name), "%s", selected_name);
-            } else {
-                show_error("AUDIO", platform::audio_last_error());
-            }
-            info_visible = false;
-            continue;
+            info_visible = false; continue;
         }
-
-        if (key_is_enter(key) && mode == Mode::Programs) {
-            char filename[kMenuFilenameSize] = {};
-            std::snprintf(filename, sizeof(filename), "%s", selected_name);
-            leave_menu_screen();
-            load_named_program(filename, false);
-            return true;
-        }
-        if ((key == 'r' || key == 'R') && mode == Mode::Programs) {
-            char filename[kMenuFilenameSize] = {};
-            std::snprintf(filename, sizeof(filename), "%s", selected_name);
-            leave_menu_screen();
-            load_named_program(filename, true);
-            return true;
-        }
-        if ((key == 'e' || key == 'E') && mode == Mode::Programs) {
-            char filename[kMenuFilenameSize] = {};
-            std::snprintf(filename, sizeof(filename), "%s", selected_name);
-            if (!storage::load_program(filename, program_)) {
-                show_error("EDIT", storage::last_error());
-                continue;
+        const bool basic = !entry.directory && audio::has_extension_ci(entry.name, ".BAS");
+        const bool run = key == 'r' || key == 'R';
+        const bool edit = key == 'e' || key == 'E';
+        if (basic && (key_is_enter(key) || run || edit)) {
+            stop_preview();
+            if (!may_replace_program()) continue;
+            draw_menu_header("LOADING", "READING PROGRAM");
+            draw_menu_message((settings_.status_enabled ? console_layout::status_rows : 0) + 4, selected_path);
+            if (!storage::load_program(selected_path, program_)) {
+                show_error("LOAD FAILED", storage::last_error()); continue;
             }
             set_current_filename(program_.filename(), false);
             leave_menu_screen();
-            open_full_screen_editor();
+            if (edit) open_full_screen_editor();
+            else if (run) run_program();
             return true;
         }
-
         if (key == 'i' || key == 'I') {
-            if (mode == Mode::Directory) {
-                inline_info = menu_file_scratch.entries[scroll.selected];
-            } else if (!storage::root_entry_info(
-                           selected_name, inline_info)) {
-                show_error("FILE INFO", storage::last_error());
-                info_visible = false;
-                continue;
+            if (*playing_name) inline_info = entry; // preserve streaming lease
+            else if (!storage::root_entry_info(selected_path, inline_info)) {
+                show_error("INFO", storage::last_error()); continue;
             }
-            info_visible = true;
-            continue;
+            std::memcpy(info_path, selected_path, std::strlen(selected_path) + 1u);
+            info_visible = true; continue;
         }
-
         if (key == 'n' || key == 'N') {
-            if (playing_name[0]) {
-                platform::audio_stop();
-                playing_name[0] = '\0';
+            stop_preview();
+            char new_name[80] = {}, target[80] = {}, normalized[80] = {};
+            if (!prompt_text("RENAME / MOVE (name or /path): ", new_name, sizeof(new_name), entry.name)) continue;
+            if (!file_paths::join(directory, new_name, target, sizeof(target))) {
+                show_error("RENAME", "BAD OR TOO LONG PATH"); continue;
             }
-            if (selected_directory) {
-                show_error("RENAME", "DIRECTORY RENAME NOT AVAILABLE");
-                continue;
-            }
-            char prompt[128] = {};
-            std::snprintf(
-                prompt, sizeof(prompt), "RENAME\r\n\r\nOld: %s\r\nNew: ",
-                selected_name);
-            char new_name[kMenuFilenameSize] = {};
-            if (!prompt_text(
-                    prompt, new_name, sizeof(new_name), selected_name)) {
-                continue;
-            }
-            char normalized_name[kMenuFilenameSize] = {};
-            const char* rename_target = new_name;
-            if (mode == Mode::Programs) {
-                if (!file_management::normalize_program_name(
-                        new_name, normalized_name, sizeof(normalized_name))) {
-                    show_error("RENAME FAILED", "BAD FILENAME");
-                    continue;
+            if (basic) {
+                if (!file_management::normalize_program_name(target, normalized, sizeof(normalized))) {
+                    show_error("RENAME", "BAD PROGRAM PATH"); continue;
                 }
-                rename_target = normalized_name;
+                std::memcpy(target, normalized, std::strlen(normalized) + 1u);
             }
-            const bool renaming_current =
-                program_files::equal(selected_name, current_filename_);
-            if (!storage::rename_root_file(
-                    selected_name, rename_target, current_filename_)) {
-                show_error("RENAME FAILED", storage::last_error());
-            } else if (renaming_current &&
-                       !program_.note_source_renamed(
-                           selected_name, rename_target)) {
-                char session_error[96] = {};
-                std::snprintf(
-                    session_error, sizeof(session_error), "%s",
-                    program_.error());
-                if (!storage::rename_root_file(
-                        rename_target, selected_name,
-                        selected_name, true)) {
-                    show_error(
-                        "RENAME RECOVERY FAILED",
-                        "CHECK SOURCE FILE AND SESSION");
-                } else {
-                    show_error("RENAME FAILED", session_error);
-                }
-            } else if (renaming_current) {
-                set_current_filename(
-                    program_.filename(), program_.is_dirty());
+            const bool affects_current = file_paths::same_or_child(program_.filename(), selected_path);
+            const bool renamed = entry.directory
+                ? storage::rename_directory(selected_path, target, current_filename_)
+                : storage::rename_root_file(selected_path, target, current_filename_);
+            if (!renamed) show_error("RENAME FAILED", storage::last_error());
+            else if (affects_current && !program_.note_source_renamed(selected_path, target)) {
+                const bool rolled_back = entry.directory
+                    ? storage::rename_directory(target, selected_path, current_filename_)
+                    : storage::rename_root_file(target, selected_path, selected_path, true);
+                show_error(rolled_back ? "RENAME CANCELLED" : "RENAME RECOVERY REQUIRED",
+                           rolled_back ? "SESSION UPDATE FAILED - ORIGINAL NAME RESTORED"
+                                       : "CHECK SAVED FILE AND SESSION PATH");
+            } else if (affects_current) {
+                set_current_filename(program_.filename(), program_.is_dirty());
             }
-            info_visible = false;
-            scan_requested = true;
-            continue;
+            reset_view(); continue;
         }
-
         if (key == kKeyDelete) {
-            if (playing_name[0]) {
-                platform::audio_stop();
-                playing_name[0] = '\0';
-            }
-            if (selected_directory) {
-                show_error("DELETE", "DIRECTORY DELETE NOT AVAILABLE");
-                continue;
-            }
-            char filename[kMenuFilenameSize] = {};
-            std::snprintf(filename, sizeof(filename), "%s", selected_name);
-            if (!confirm_delete(filename)) continue;
-            if (!storage::delete_root_file(filename, current_filename_)) {
-                show_error("DELETE FAILED", storage::last_error());
-            }
-            info_visible = false;
-            scan_requested = true;
-            continue;
+            stop_preview();
+            if (!confirm_delete(selected_path, entry.directory)) continue;
+            const bool deleted = entry.directory
+                ? storage::delete_directory(selected_path, current_filename_)
+                : storage::delete_root_file(selected_path, current_filename_);
+            if (!deleted) show_error("DELETE FAILED", storage::last_error());
+            reset_view(); continue;
         }
-
-        const int quick = mode == Mode::Programs
-            ? function_key_index(key) : -1;
+        const int quick = basic ? function_key_index(key) : -1;
         if (quick >= 0) {
-            bool run = true;
-            if (choose_quick_mode(run)) {
-                assign_quick_key(quick, selected_name, run);
-            }
+            stop_preview();
+            bool quick_run = true;
+            if (choose_quick_mode(quick_run)) assign_quick_key(quick, selected_path, quick_run);
         }
     }
 }
@@ -2542,13 +2409,15 @@ void Repl::menu_quick_keys() {
 
         for (int i = 0; i < kQuickKeyCount; ++i) {
             const QuickKey& key = settings_.quick[i];
-            char row[96] = {};
+            char row[96] = {},label[36]={};
+            if(key.filename[0])file_paths::compact_root_path(key.filename,35,
+                file_paths::CompactPathPolicy::FullName,label,sizeof(label));
             std::snprintf(
                 row,
                 sizeof(row),
                 "F%-2d %-35.35s %s",
                 i + 1,
-                key.filename[0] ? key.filename : "<not assigned>",
+                key.filename[0] ? label : "<not assigned>",
                 key.filename[0]
                     ? (key.run ? "RUN" : "LOAD")
                     : ""
@@ -4176,6 +4045,76 @@ void Repl::menu_system_info() {
         }
         draw_menu_message(row++, text);
 
+        const auto keyboard =
+            platform::get_internal_keyboard_diagnostics();
+        std::snprintf(
+            text,
+            sizeof(text),
+            "Keyboard        %s",
+            keyboard.status
+        );
+        draw_menu_message(row++, text);
+        if (!keyboard.bios_reply_received) {
+            std::snprintf(text, sizeof(text), "Keyboard BIOS   UNAVAILABLE");
+        } else if (keyboard.bios_version == 0) {
+            std::snprintf(text, sizeof(text), "Keyboard BIOS   UNREPORTED");
+        } else {
+            std::snprintf(
+                text, sizeof(text), "Keyboard BIOS   0x%02X",
+                static_cast<unsigned>(keyboard.bios_version)
+            );
+        }
+        draw_menu_message(row++, text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "Keyboard I2C    %s",
+            keyboard.last_error
+        );
+        draw_menu_message(row++, text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "Keyboard stats  E:%lu C:%lu R:%lu/%lu",
+            static_cast<unsigned long>(keyboard.total_errors),
+            static_cast<unsigned long>(keyboard.consecutive_errors),
+            static_cast<unsigned long>(keyboard.recoveries),
+            static_cast<unsigned long>(keyboard.recovery_attempts)
+        );
+        draw_menu_message(row++, text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "KBD boot        %s A:%lu",
+            keyboard.startup_phase,
+            static_cast<unsigned long>(keyboard.startup_attempts)
+        );
+        draw_menu_message(row++, text);
+        std::snprintf(
+            text,
+            sizeof(text),
+            "KBD lines       SDA:%d SCL:%d READY:%s",
+            keyboard.sda_high ? 1 : 0,
+            keyboard.scl_high ? 1 : 0,
+            keyboard.ever_ready ? "YES" : "NO"
+        );
+        draw_menu_message(row++, text);
+        if (keyboard.first_try_recorded && keyboard.first_ack_recorded) {
+            std::snprintf(
+                text, sizeof(text), "KBD timing      TRY:%lu ACK:%lu ms",
+                static_cast<unsigned long>(keyboard.first_try_ms),
+                static_cast<unsigned long>(keyboard.first_ack_ms)
+            );
+        } else if (keyboard.first_try_recorded) {
+            std::snprintf(
+                text, sizeof(text), "KBD timing      TRY:%lu ACK:NEVER",
+                static_cast<unsigned long>(keyboard.first_try_ms)
+            );
+        } else {
+            std::snprintf(text, sizeof(text), "KBD timing      TRY:- ACK:-");
+        }
+        draw_menu_message(row++, text);
+
         std::snprintf(
             text,
             sizeof(text),
@@ -4471,7 +4410,11 @@ void Repl::menu_program_storage() {
             program_.suspended()?" (SUSPENDED)":"");
         draw_menu_message(top+1,row);
         std::snprintf(row,sizeof(row),"SD : %s",storage::card_present()?(storage::available()?"READY":"NOT MOUNTED"):"NOT AVAILABLE");draw_menu_message(top+2,row);
-        std::snprintf(row,sizeof(row),"Program: %.38s%s",current_filename_,program_dirty_?"*":"");draw_menu_message(top+3,row);
+        char program_label[80]={};
+        if(has_current_filename())file_paths::compact_root_path(current_filename_,44-(program_dirty_?1u:0u),
+            file_paths::CompactPathPolicy::ProgramName,program_label,sizeof(program_label));
+        else std::snprintf(program_label,sizeof(program_label),"UNTITLED");
+        std::snprintf(row,sizeof(row),"Program: %s%s",program_label,program_dirty_?"*":"");draw_menu_message(top+3,row);
         std::snprintf(
             row,sizeof(row),
             "Lines: %lu/%lu  Max body: %lu",
@@ -4541,8 +4484,9 @@ bool Repl::confirm_program_overwrite(const char* filename) {
         const int top =
             (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
         char text[96] = {};
-        std::snprintf(text, sizeof(text), "%.70s", filename ? filename : "");
-        draw_menu_message(top, text);
+        char path[file_paths::display_capacity]={};file_paths::format_root_path(filename,path,sizeof(path));
+        std::snprintf(text,sizeof(text),"%.53s",path);draw_menu_message(top,text);
+        draw_menu_message(top+1,std::strlen(path)>53?path+53:"");
         draw_menu_option(top + 2, "Cancel", selected == 0);
         draw_menu_option(top + 3, "Overwrite", selected == 1);
 
@@ -4577,7 +4521,9 @@ void Repl::menu_save_program(bool save_as) {
             return;
         }
         char text[96] = {};
-        std::snprintf(text, sizeof(text), "SAVED %.70s", program_.filename());
+        char label[80];file_paths::compact_root_path(program_.filename(),47,
+            file_paths::CompactPathPolicy::FullName,label,sizeof(label));
+        std::snprintf(text, sizeof(text), "SAVED %s", label);
         wait_message("SAVE PROGRAM", text);
         return;
     }
@@ -4597,7 +4543,9 @@ void Repl::menu_save_program(bool save_as) {
     }
 
     char text[96] = {};
-    std::snprintf(text, sizeof(text), "SAVED %.70s", program_.filename());
+    char label[80];file_paths::compact_root_path(program_.filename(),47,
+            file_paths::CompactPathPolicy::FullName,label,sizeof(label));
+        std::snprintf(text, sizeof(text), "SAVED %s", label);
     wait_message("SAVE PROGRAM AS", text);
 }
 
@@ -5765,6 +5713,7 @@ void Repl::show_system_menu() {
         None,
         Files,
         Editor,
+        NewProgram,
         SaveProgram,
         SaveProgramAs,
         QuickLoadKeys,
@@ -5796,6 +5745,7 @@ void Repl::show_system_menu() {
     static const ControlItem items[] = {
         {"Files", ControlAction::Files, false},
         {"Editor", ControlAction::Editor, false},
+        {"New Program", ControlAction::NewProgram, true},
         {"Program", ControlAction::None, false},
         {"Save Program", ControlAction::SaveProgram, true},
         {"Save Program As", ControlAction::SaveProgramAs, true},
@@ -5914,6 +5864,43 @@ void Repl::show_system_menu() {
             }
         } else if (action == ControlAction::Editor) {
             open_full_screen_editor();
+        } else if (action == ControlAction::NewProgram) {
+            int selected=0; bool cancel=false;
+            while(true) {
+                draw_menu_header("EDITOR - NEW PROGRAM","UP/DOWN SELECT  ENTER  ESC BACK");
+                draw_menu_option(6,"Classic BASIC",selected==0);
+                draw_menu_option(7,"Structured BASIC",selected==1);
+                if(program_.is_dirty()||program_dirty_)draw_menu_message(9,"Current changes: save before replacing.");
+                const int key=platform::get_char();
+                if(key==kKeyEscape||key==0x1b){cancel=true;break;}
+                if(key==kKeyUp||key==kKeyDown)selected=1-selected;
+                if(key_is_enter(key))break;
+            }
+            if(!cancel) {
+                bool replace=true;
+                if(program_.is_dirty()||program_dirty_) {
+                    int choice=2;
+                    while(true) {
+                        draw_menu_header("REPLACE CURRENT PROGRAM","UP/DOWN  ENTER");
+                        draw_menu_option(6,"Save then replace",choice==0);
+                        draw_menu_option(7,"Discard then replace",choice==1);
+                        draw_menu_option(8,"Cancel",choice==2);
+                        const int key=platform::get_char();
+                        if(key==kKeyUp)choice=(choice+2)%3;
+                        if(key==kKeyDown)choice=(choice+1)%3;
+                        if(key==kKeyEscape||key==0x1b){replace=false;break;}
+                        if(key_is_enter(key)) {
+                            replace=choice==1||(choice==0&&save_current_program());break;
+                        }
+                    }
+                }
+                if(replace) {
+                    if(program_.new_program(selected?ProgramSourceMode::Structured:ProgramSourceMode::ClassicNumbered)) {
+                        vm_.clear_direct_state();set_current_filename("UNTITLED",false);
+                        open_full_screen_editor();
+                    } else print_program_error();
+                }
+            }
         } else if (action == ControlAction::SaveProgram) menu_save_program(false);
         else if (action == ControlAction::SaveProgramAs) menu_save_program(true);
         else if (action == ControlAction::QuickLoadKeys) menu_quick_keys();
@@ -5942,6 +5929,15 @@ void Repl::show_system_menu() {
 }
 
 void Repl::open_full_screen_editor() {
+    if (!program_.ready()) {
+        print_program_error();
+        return;
+    }
+    // Loading, editing, NEW or changing mode invalidates the old source position.
+    if (compile_error_revision_ != program_.revision() ||
+        compile_error_mode_ != program_.source_mode()) {
+        compile_error_location_ = 0;
+    }
     void* memory = std::malloc(sizeof(FullScreenEditor));
     if (!memory) {
         platform::put_string("?OUT OF MEMORY\r\n");
@@ -5950,7 +5946,7 @@ void Repl::open_full_screen_editor() {
     auto* editor = new(memory) FullScreenEditor(
         program_, current_filename_, sizeof(current_filename_), program_dirty_);
     full_screen_editor_active_ = true;
-    const bool ok = editor->run();
+    const bool ok = editor->run(compile_error_location_);
     full_screen_editor_active_ = false;
     editor->~FullScreenEditor();
     std::free(memory);
@@ -6157,7 +6153,7 @@ void Repl::run_xmodem_transfer(
         return;
     }
     platform::put_string(receive ? "XMODEM RECEIVE: " : "XMODEM SEND: ");
-    platform::put_string(filename);
+    put_root_path(filename);
     platform::put_string(receive ? "\r\nWAITING FOR SENDER...\r\n" :
                                    "\r\nWAITING FOR RECEIVER...\r\n");
     platform::put_string(receive ?
@@ -6248,7 +6244,7 @@ void Repl::run_ymodem_transfer(
     }
     platform::put_string(receive?"YMODEM RECEIVE\r\nWAITING FOR SENDER...\r\n":"YMODEM SEND: ");
     if(!receive){
-        platform::put_string(filename);char size[64];
+        put_root_path(filename);char size[64];
         std::snprintf(size,sizeof(size),"\r\nSIZE: %lu BYTES\r\nWAITING FOR RECEIVER...\r\n",
             static_cast<unsigned long>(context.file.size()));platform::put_string(size);
     }
@@ -6302,7 +6298,7 @@ void Repl::run_ymodem_transfer(
     context.file.abort();transfer_lease.close();
     platform::put_string("\r\n");
     if(receive&&result.filename[0]){
-        platform::put_string(result.files>1?"LAST FILE: ":"FILE: ");platform::put_string(result.filename);
+        platform::put_string(result.files>1?"LAST FILE: ":"FILE: ");put_root_path(result.filename);
         char size[48];std::snprintf(size,sizeof(size),"\r\nSIZE: %lu BYTES\r\n",static_cast<unsigned long>(context.expected));
         platform::put_string(size);
     }

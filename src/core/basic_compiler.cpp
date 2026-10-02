@@ -1,11 +1,16 @@
+#include "local_numeric_fusion.hpp"
 #include "basic_compiler.hpp"
 
 #include <cctype>
+#include <initializer_list>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
 namespace rmb {
+#ifdef RMB_OPTIMIZER_TEST
+bool optimizer_test_disabled=false;
+#endif
 
 namespace {
 
@@ -100,7 +105,14 @@ struct CompileControl {
     WhileEntry while_stack[16] = {};
     std::size_t while_depth = 0;
 
-    std::size_t do_stack[16] = {};
+    struct DoEntry { std::size_t start=0; int exit=-1; };
+    struct IfEntry {
+        int pending=-1,end=-1; bool seen_else=false;
+        std::size_t for_depth=0,while_depth=0,do_depth=0;
+    };
+    IfEntry if_stack[16]={};
+    std::size_t if_depth=0;
+    DoEntry do_stack[16] = {};
     std::size_t do_depth = 0;
 };
 
@@ -111,31 +123,38 @@ bool numeric_slot(const CompiledProgram& program, int slot) {
 }
 
 void optimize_program(CompiledProgram& program) {
-    bool target[kMaxOps] = {};
+    std::uint8_t target[kMaxOps] = {};
 
-    // Line starts and control-flow destinations must remain independently
-    // executable.  Superinstructions may cover only straight-line tails.
-    for (std::size_t i = 0; i < program.line_count; ++i) {
-        const int pc = program.line_at(i).pc;
-        if (pc >= 0 && static_cast<std::size_t>(pc) < program.code_count) {
-            target[pc] = true;
-        }
+    // bit 1: Classic independently addressable line; bit 2: real flow entry.
+    // Structured source_rows are diagnostic locations, not executable entries.
+    auto mark=[&](int pc,unsigned bits=2u) {
+        if(pc>=0&&static_cast<std::size_t>(pc)<program.code_count)target[pc]|=bits;
+    };
+    for(std::size_t i=0;i<program.line_count;++i)mark(program.line_at(i).pc,1u);
+    for(std::size_t i=0;i<program.function_count;++i) {
+        mark(program.functions[i].entry_pc);mark(program.functions[i].end_pc);
     }
-
-    for (std::size_t i = 0; i < program.code_count; ++i) {
-        const Op& op = program.code[i];
-        int pc = -1;
-
-        if (op.code == OpCode::JMP ||
-            op.code == OpCode::JZ ||
-            op.code == OpCode::GOSUB) {
-            pc = op.a;
-        } else if (op.code == OpCode::FOR_CHECK) {
-            pc = op.b;
-        }
-
-        if (pc >= 0 && static_cast<std::size_t>(pc) < program.code_count) {
-            target[pc] = true;
+    for(std::size_t i=0;i<program.code_count;++i) {
+        const auto& op=program.code[i];
+        switch(op.code) {
+        case OpCode::JMP:case OpCode::JZ:case OpCode::GOSUB:
+        case OpCode::CEQ_NUM_JZ:case OpCode::CNE_NUM_JZ:case OpCode::CLT_NUM_JZ:
+        case OpCode::CLE_NUM_JZ:case OpCode::CGT_NUM_JZ:case OpCode::CGE_NUM_JZ:
+        case OpCode::NOT_NUM_JZ:case OpCode::AND_NUM_JZ:case OpCode::OR_NUM_JZ:
+        case OpCode::SQ2_GT_CONST_OR_JZ:case OpCode::SUMSQ_GT_CONST_JZ:
+            mark(op.a);mark(static_cast<int>(i+1));break;
+        case OpCode::COMPLEX_ITER_OR_JZ:case OpCode::COMPLEX_ITER_SUMSQ_JZ:
+            mark(op.b&0xfff);break;
+        case OpCode::FOR_CHECK:case OpCode::FOR_LOCAL_CHECK:
+            mark(op.b);mark(static_cast<int>(i));mark(static_cast<int>(i+1));break;
+        case OpCode::FOR_INIT:case OpCode::FOR_LOCAL_INIT:
+        case OpCode::FOR_INCR:case OpCode::FOR_LOCAL_INCR:
+        case OpCode::CALL_USER:case OpCode::RETURN_USER:
+        case OpCode::FUNCTION_FALLTHROUGH:case OpCode::RETSUB:case OpCode::HALT:
+            mark(static_cast<int>(i));mark(static_cast<int>(i+1));break;
+        case OpCode::ON_GOTO:case OpCode::ON_GOSUB:
+            mark(static_cast<int>(i));mark(static_cast<int>(i+1+op.a));break;
+        default:break;
         }
     }
 
@@ -147,13 +166,90 @@ void optimize_program(CompiledProgram& program) {
         return true;
     };
 
+    auto flow_is_straight=[&](std::size_t start,std::size_t length) {
+        if(start+length>program.code_count)return false;
+        for(std::size_t i=start+1;i<start+length;++i)if(target[i]&2u)return false;
+        return true;
+    };
+
+    // Function numeric expressions use separate 7-bit local operands.
+    // No DIV/domain functions/string operations are folded here.
+    for(std::size_t f=0;f<program.function_count;++f) {
+        const auto& fn=program.functions[f];
+        for(std::size_t i=fn.entry_pc;i<static_cast<std::size_t>(fn.end_pc);++i) {
+            auto code=[&](unsigned j,OpCode wanted) {
+                return i+j<program.code_count&&program.code[i+j].code==wanted;
+            };
+            auto fold=[&](LocalNumericPattern pattern,unsigned length,
+                          std::initializer_list<int> slots,int constant=-1) {
+                if(!tail_is_straight(i,length))return false;
+                Op fused;fused.code=OpCode::LOCAL_NUM_FUSED;
+                fused.flags=static_cast<std::uint8_t>(pattern);fused.s=length;
+                unsigned index=0;
+                for(int slot:slots) {
+                    if(slot<0||static_cast<unsigned>(slot)>=fn.numeric_local_count)return false;
+                    if(index<4)fused.a|=slot<<(index*7);else fused.b|=slot<<((index-4)*7);
+                    ++index;
+                }
+                if(constant>=0)fused.b=constant;
+                if(!valid_local_numeric(fused,fn.numeric_local_count,program.number_count))return false;
+                program.code[i]=fused;i+=length-1;return true;
+            };
+            auto a=[&](unsigned j){return program.code[i+j].a;};
+            if(code(0,OpCode::LOAD_LOCAL_NUM)) {
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::MUL_NUM)&&
+                   code(3,OpCode::LOAD_LOCAL_NUM)&&code(4,OpCode::LOAD_LOCAL_NUM)&&
+                   code(5,OpCode::MUL_NUM)&&code(6,OpCode::SUB_NUM)&&
+                   code(7,OpCode::LOAD_LOCAL_NUM)&&code(8,OpCode::ADD_NUM)&&code(9,OpCode::STORE_LOCAL_NUM)&&
+                   fold(LocalNumericPattern::ProductsDifferenceAdd,10,{a(9),a(0),a(1),a(3),a(4),a(7)}))continue;
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::LOAD_LOCAL_NUM)&&
+                   code(3,OpCode::MUL_NUM)&&code(4,OpCode::ADD_NUM)&&code(5,OpCode::STORE_LOCAL_NUM)&&
+                   fold(LocalNumericPattern::AddProduct,6,{a(5),a(0),a(1),a(2)}))continue;
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::MUL_NUM)&&code(3,OpCode::LOAD_LOCAL_NUM)&&
+                   code(4,OpCode::ADD_NUM)&&code(5,OpCode::STORE_LOCAL_NUM)&&
+                   fold(LocalNumericPattern::ProductAdd,6,{a(5),a(3),a(0),a(1)}))continue;
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::PUSH_NUM)&&code(3,OpCode::MUL_NUM)&&
+                   code(4,OpCode::ADD_NUM)&&code(5,OpCode::STORE_LOCAL_NUM)&&
+                   fold(LocalNumericPattern::AddConstantProduct,6,{a(5),a(0),a(1)},a(2)))continue;
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&i+2<program.code_count) {
+                    const auto arith=program.code[i+2].code;
+                    if(arith==OpCode::ADD_NUM||arith==OpCode::SUB_NUM||arith==OpCode::MUL_NUM) {
+                        const auto kind=arith==OpCode::ADD_NUM?LocalNumericPattern::AddPush:
+                            arith==OpCode::SUB_NUM?LocalNumericPattern::SubPush:LocalNumericPattern::MulPush;
+                        if(code(3,OpCode::STORE_LOCAL_NUM)&&fold(static_cast<LocalNumericPattern>(
+                            static_cast<unsigned>(kind)+3),4,{a(3),a(0),a(1)}))continue;
+                        if(fold(kind,3,{a(0),a(1)}))continue;
+                    }
+                }
+                if(code(1,OpCode::PUSH_NUM)&&i+2<program.code_count) {
+                    const auto arith=program.code[i+2].code;
+                    if(arith==OpCode::ADD_NUM||arith==OpCode::SUB_NUM||arith==OpCode::MUL_NUM) {
+                        const auto kind=arith==OpCode::ADD_NUM?LocalNumericPattern::AddConstant:
+                            arith==OpCode::SUB_NUM?LocalNumericPattern::SubConstant:LocalNumericPattern::MulConstant;
+                        if(fold(kind,3,{a(0)},a(1)))continue;
+                    }
+                }
+                if(code(1,OpCode::STORE_LOCAL_NUM)&&fold(LocalNumericPattern::Move,2,{a(1),a(0)}))continue;
+            }
+            if(code(0,OpCode::PUSH_NUM)) {
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::MUL_NUM)&&code(3,OpCode::LOAD_LOCAL_NUM)&&
+                   code(4,OpCode::MUL_NUM)&&code(5,OpCode::LOAD_LOCAL_NUM)&&code(6,OpCode::ADD_NUM)&&
+                   code(7,OpCode::STORE_LOCAL_NUM)&&
+                   fold(LocalNumericPattern::ConstantProductAdd,8,{a(7),a(1),a(3),a(5)},a(0)))continue;
+                if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::MUL_NUM)&&
+                   fold(LocalNumericPattern::ConstantMul,3,{a(1)},a(0)))continue;
+                if(code(1,OpCode::STORE_LOCAL_NUM)&&fold(LocalNumericPattern::Constant,2,{a(1)},a(0)))continue;
+            }
+        }
+    }
+
     for (std::size_t i = 0; i < program.code_count; ++i) {
         Op& first = program.code[i];
 
         // A*B - C*D + E -> DST
         // This is the dominant ZXNEXT expression in Mandelbrot/Julia loops.
-        if (tail_is_straight(i, 10) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 10) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::MUL_NUM &&
             program.code[i + 3].code == OpCode::LOAD_NUM &&
@@ -192,8 +288,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // ADDEND + LHS*RHS -> DST
-        if (tail_is_straight(i, 6) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 6) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::LOAD_NUM &&
             program.code[i + 3].code == OpCode::MUL_NUM &&
@@ -223,8 +319,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // LHS*RHS + ADDEND -> DST (same execution opcode).
-        if (tail_is_straight(i, 6) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 6) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::MUL_NUM &&
             program.code[i + 3].code == OpCode::LOAD_NUM &&
@@ -254,8 +350,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // (CONST*A)*B + C -> DST. Keep left-associative FP evaluation order.
-        if (tail_is_straight(i, 8) &&
-            first.code == OpCode::PUSH_NUM &&
+        if (first.code == OpCode::PUSH_NUM &&
+            tail_is_straight(i, 8) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::MUL_NUM &&
             program.code[i + 3].code == OpCode::LOAD_NUM &&
@@ -290,8 +386,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // X*X>C OR Y*Y>C, immediately consumed by JZ.
-        if (tail_is_straight(i, 12) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 12) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::MUL_NUM &&
             program.code[i + 3].code == OpCode::PUSH_NUM &&
@@ -328,8 +424,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // X*X + Y*Y > C, immediately consumed by JZ.
-        if (tail_is_straight(i, 10) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 10) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::MUL_NUM &&
             program.code[i + 3].code == OpCode::LOAD_NUM &&
@@ -393,8 +489,8 @@ void optimize_program(CompiledProgram& program) {
 
         // LOAD R,G,B / COLOR / LOAD X,Y / PSET
         // -> one dispatch. Slots fit in 6 bits because kMaxSymbols == 64.
-        if (tail_is_straight(i, 7) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 7) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::LOAD_NUM &&
             program.code[i + 3].code == OpCode::CALLFN &&
@@ -433,8 +529,8 @@ void optimize_program(CompiledProgram& program) {
 
         // LOAD lhs, LOAD rhs, ADD/SUB/MUL, STORE dst
         // -> one dispatch and no VM stack traffic.
-        if (tail_is_straight(i, 4) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 4) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 3].code == OpCode::STORE_NUM) {
             const int lhs = first.a;
@@ -492,8 +588,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // LOAD lhs, LOAD rhs, ADD/SUB/MUL -> direct push of the result.
-        if (tail_is_straight(i, 3) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 3) &&
             program.code[i + 1].code == OpCode::LOAD_NUM) {
             const int lhs = first.a;
             const int rhs = program.code[i + 1].a;
@@ -518,8 +614,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // LOAD src, STORE dst -> direct numeric move.
-        if (tail_is_straight(i, 2) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 2) &&
             program.code[i + 1].code == OpCode::STORE_NUM) {
             const int src = first.a;
             const int dst = program.code[i + 1].a;
@@ -669,6 +765,8 @@ void optimize_program(CompiledProgram& program) {
             continue;
         }
 
+        if(!flow_is_straight(i,20+(has_extra_move?2:0)+condition_slots))continue;
+
         first.code = or_escape
             ? OpCode::COMPLEX_ITER_OR_JZ
             : OpCode::COMPLEX_ITER_SUMSQ_JZ;
@@ -712,7 +810,7 @@ void optimize_program(CompiledProgram& program) {
         // G=INT(A*B) / COLOR G,G,G / PSET X,Y
         // Raw slot layout remains 5 + 4 + 3 = 12 slots even when the first
         // multiplication has already become MUL_VV_PUSH.
-        if (i + 11 < program.code_count) {
+        if (i + 11 < program.code_count && flow_is_straight(i,12)) {
             int lhs = -1;
             int rhs = -1;
 
@@ -733,10 +831,19 @@ void optimize_program(CompiledProgram& program) {
                 program.code[i + 4].code == OpCode::STORE_NUM) {
                 const int gray = program.code[i + 4].a;
 
-                if (program.code[i + 5].code == OpCode::LOAD_NUM &&
+                // RGB fusion retains raw tail slots; compose it into the larger
+                // gray pipeline instead of letting first-pass order block fusion.
+                const auto& color=program.code[i+5];
+                const auto packed=static_cast<std::uint32_t>(color.a);
+                const bool color_start=(color.code==OpCode::LOAD_NUM&&color.a==gray)||
+                    (color.code==OpCode::RGB_PSET_VV&&(packed&63u)==static_cast<unsigned>(gray)&&
+                     ((packed>>6)&63u)==static_cast<unsigned>(gray)&&
+                     ((packed>>12)&63u)==static_cast<unsigned>(gray)&&
+                     ((packed>>18)&63u)==static_cast<unsigned>(program.code[i+9].a)&&
+                     ((packed>>24)&63u)==static_cast<unsigned>(program.code[i+10].a));
+                if (color_start &&
                     program.code[i + 6].code == OpCode::LOAD_NUM &&
                     program.code[i + 7].code == OpCode::LOAD_NUM &&
-                    program.code[i + 5].a == gray &&
                     program.code[i + 6].a == gray &&
                     program.code[i + 7].a == gray &&
                     program.code[i + 8].code == OpCode::CALLFN &&
@@ -775,7 +882,7 @@ void optimize_program(CompiledProgram& program) {
         // R=MIN(CAP,I*KR), G=MIN(CAP,I*KG), B=MIN(CAP,I*KB),
         // COLOR R,G,B, PSET X,Y.
         // Each color assignment occupies six original IL slots.
-        if (i + 24 < program.code_count) {
+        if (i + 24 < program.code_count && flow_is_straight(i,25)) {
             int source_slot = -1;
             int dst[3] = {-1, -1, -1};
             int mul[3] = {0, 0, 0};
@@ -958,6 +1065,7 @@ void optimize_program(CompiledProgram& program) {
     // specialization still collapses to one dispatch.
     for (std::size_t i = 0; i < program.code_count; ++i) {
         if (i + 11 >= program.code_count) break;
+        if(!flow_is_straight(i,12))continue;
 
         Op& first = program.code[i];
 
@@ -1039,6 +1147,7 @@ void optimize_program(CompiledProgram& program) {
     // preceding multiplication was represented.
     for (std::size_t i = 0; i < program.code_count; ++i) {
         if (i + 8 >= program.code_count) break;
+        if(!flow_is_straight(i,9))continue;
 
         Op& first = program.code[i];
         if (first.code != OpCode::FN1_NUM ||
@@ -1093,8 +1202,8 @@ void optimize_program(CompiledProgram& program) {
         Op& first = program.code[i];
 
         // Retry A + B*C -> DST after the earlier passes.
-        if (tail_is_straight(i, 6) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 6) &&
             program.code[i + 1].code == OpCode::LOAD_NUM &&
             program.code[i + 2].code == OpCode::LOAD_NUM &&
             program.code[i + 3].code == OpCode::MUL_NUM &&
@@ -1124,8 +1233,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // Constant assignment.
-        if (tail_is_straight(i, 2) &&
-            first.code == OpCode::PUSH_NUM &&
+        if (first.code == OpCode::PUSH_NUM &&
+            tail_is_straight(i, 2) &&
             program.code[i + 1].code == OpCode::STORE_NUM &&
             first.a >= 0 &&
             static_cast<std::size_t>(first.a) < program.number_count &&
@@ -1140,8 +1249,8 @@ void optimize_program(CompiledProgram& program) {
         }
 
         // Variable op constant. The VM can also consume a following STORE_NUM.
-        if (tail_is_straight(i, 3) &&
-            first.code == OpCode::LOAD_NUM &&
+        if (first.code == OpCode::LOAD_NUM &&
+            tail_is_straight(i, 3) &&
             program.code[i + 1].code == OpCode::PUSH_NUM &&
             program.code[i + 1].a >= 0 &&
             static_cast<std::size_t>(program.code[i + 1].a) <
@@ -1190,8 +1299,28 @@ struct Parser {
     CompiledProgram* out = nullptr;
     CompileControl* control = nullptr;
     std::int32_t line = 0;
+    int scope=-1;
     char error[96] = {};
 
+    int resolve_symbol(const char* name) {
+        if(out->source_mode==ProgramSourceMode::Structured && out->find_function(name,true)>=0) {
+            set_error("FUNCTION / SCALAR NAME COLLISION");return -1;
+        }
+        if(scope>=0) {
+            const auto& fn=out->functions[scope];
+            for(std::size_t i=0;i<out->symbol_count;++i)
+                if((fn.global_mask&(std::uint64_t{1}<<i))&&!std::strcmp(name,out->symbols[i].name))
+                    return static_cast<int>(i);
+            const int local=out->add_local(scope,name);
+            if(local<0){set_error("FUNCTION LOCAL LIMIT / OUT OF MEMORY");return -1;}
+            return static_cast<int>(kMaxSymbols)+local;
+        }
+        return out->find_or_add_symbol(name);
+    }
+    const Symbol& symbol(int slot) const {
+        return slot>=static_cast<int>(kMaxSymbols)
+            ?out->functions[scope].locals[slot-kMaxSymbols].symbol:out->symbols[slot];
+    }
     static char upper(char c) {
         return (c >= 'a' && c <= 'z')
             ? static_cast<char>(c - 'a' + 'A')
@@ -1257,14 +1386,15 @@ struct Parser {
             return false;
         }
 
-        std::size_t n = 0;
+        std::size_t n = 0;bool overflow=false;
         while (std::isalnum(static_cast<unsigned char>(*p)) ||
                *p == '_' || *p == '$') {
-            if (n + 1 < capacity) name[n++] = upper(*p);
+            if (n + 1 < capacity) name[n++] = upper(*p);else overflow=true;
             ++p;
         }
 
         name[n] = '\0';
+        if(overflow&&out&&out->source_mode==ProgramSourceMode::Structured){set_error("IDENTIFIER TOO LONG");return false;}
         return n != 0;
     }
 
@@ -1280,7 +1410,33 @@ struct Parser {
         op.a = a;
         op.b = b;
         op.s = s;
+        if(scope>=0) {
+        if(code==OpCode::FOR_INCR && a<0 && control->for_depth &&
+           control->for_stack[control->for_depth-1].slot>=static_cast<int>(kMaxSymbols))
+            op.code=OpCode::FOR_LOCAL_INCR;
+        const bool local=a>=static_cast<int>(kMaxSymbols);
+        if(local) {
+            OpCode converted=code;
+            switch(code) {
+                case OpCode::LOAD_NUM:converted=OpCode::LOAD_LOCAL_NUM;break;
+                case OpCode::STORE_NUM:converted=OpCode::STORE_LOCAL_NUM;break;
+                case OpCode::LOAD_STR:converted=OpCode::LOAD_LOCAL_STR;break;
+                case OpCode::STORE_STR:converted=OpCode::STORE_LOCAL_STR;break;
+                case OpCode::FOR_INIT:converted=OpCode::FOR_LOCAL_INIT;break;
+                case OpCode::FOR_CHECK:converted=OpCode::FOR_LOCAL_CHECK;break;
+                case OpCode::FOR_INCR:converted=OpCode::FOR_LOCAL_INCR;break;
+                default:break;
+            }
+            if(converted!=code) {
+                op.code=converted;op.a=out->functions[scope].locals[a-kMaxSymbols].slot;
+            }
+        }
+        if(code==OpCode::CALLFN && a==FnId::INPUT && b>=static_cast<int>(kMaxSymbols)) {
+            const auto& local_symbol=out->functions[scope].locals[b-kMaxSymbols];
+            op.code=OpCode::INPUT_LOCAL;op.a=local_symbol.slot;op.b=local_symbol.symbol.is_string?1:0;
+        }
 
+        }
         if (code == OpCode::PUSH_NUM) {
             const std::int32_t index = out->intern_number(d);
             if (index < 0) {
@@ -1298,6 +1454,9 @@ struct Parser {
     }
 
     bool emit_line_jump(OpCode code, std::int32_t target) {
+        if(out->source_mode==ProgramSourceMode::Structured) {
+            set_error("LINE BRANCH NOT ALLOWED IN STRUCTURED");return false;
+        }
         // b=1 identifies a BASIC line target that is resolved after compile.
         return emit(code, target, 1);
     }
@@ -1622,16 +1781,18 @@ struct Parser {
         }
 
         const int fid = function_id(name);
-
         skip_spaces();
         if (*p == '(') {
             ++p;
 
-            if (fid >= 0) {
-                return parse_function_call(fid, true);
+            if (fid >= 0) return parse_function_call(fid,true);
+            if(out->function_count) {
+                const int user_id=out->find_function(name);
+                if(user_id>=0)return parse_user_call(user_id);
             }
+            if(scope>=0){set_error("ARRAYS NOT SUPPORTED IN FUNCTION");return ExprType::Invalid;}
 
-            const int slot = out->find_or_add_symbol(name);
+            const int slot = resolve_symbol(name);
             if (slot < 0) {
                 set_error("TOO MANY VARIABLES");
                 return ExprType::Invalid;
@@ -1650,7 +1811,7 @@ struct Parser {
             if (!emit(OpCode::LOAD_ARR, slot, dims)) {
                 return ExprType::Invalid;
             }
-            return out->symbols[slot].is_string
+            return symbol(slot).is_string
                 ? ExprType::String
                 : ExprType::Number;
         }
@@ -1662,13 +1823,13 @@ struct Parser {
             return parse_function_call(fid, false);
         }
 
-        const int slot = out->find_or_add_symbol(name);
+        const int slot = resolve_symbol(name);
         if (slot < 0) {
             set_error("TOO MANY VARIABLES");
             return ExprType::Invalid;
         }
 
-        const bool is_string = out->symbols[slot].is_string;
+        const bool is_string = symbol(slot).is_string;
         if (!emit(is_string ? OpCode::LOAD_STR : OpCode::LOAD_NUM, slot)) {
             return ExprType::Invalid;
         }
@@ -1676,6 +1837,50 @@ struct Parser {
         return is_string ? ExprType::String : ExprType::Number;
     }
 
+    ExprType parse_user_call(int id) {
+        const auto& fn=out->functions[id];
+        std::size_t argc=0;
+        if(!match_char(')')) {
+            do {
+                const auto type=parse_expression();
+                if(type==ExprType::Invalid)return type;
+                if(argc>=fn.parameter_count){set_error("FUNCTION ARGUMENT COUNT");return ExprType::Invalid;}
+                const bool string=fn.locals[argc].symbol.is_string;
+                if(type!=(string?ExprType::String:ExprType::Number)) {
+                    set_error("FUNCTION ARGUMENT TYPE MISMATCH");return ExprType::Invalid;
+                }
+                ++argc;
+            } while(match_char(','));
+            if(!expect_char(')'))return ExprType::Invalid;
+        }
+        if(argc!=fn.parameter_count){set_error("FUNCTION ARGUMENT COUNT");return ExprType::Invalid;}
+        if(!emit(OpCode::CALL_USER,id,static_cast<int>(argc)))return ExprType::Invalid;
+        return fn.returns_string?ExprType::String:ExprType::Number;
+    }
+    bool compile_global() {
+        if(scope<0){set_error("GLOBAL OUTSIDE FUNCTION");return false;}
+        auto& fn=out->functions[scope];
+        if(fn.body_started){set_error("GLOBAL AFTER STATEMENT");return false;}
+        do {
+            char name[kSymbolNameLength]={};
+            if(!parse_identifier(name,sizeof(name))){set_error("EXPECTED GLOBAL VARIABLE");return false;}
+            if(out->find_function(name,true)>=0){set_error("FUNCTION / SCALAR NAME COLLISION");return false;}
+            for(std::size_t i=0;i<fn.local_count;++i)
+                if(!std::strcmp(fn.locals[i].symbol.name,name)){set_error("GLOBAL / LOCAL NAME COLLISION");return false;}
+            const int slot=out->find_or_add_symbol(name);
+            if(slot<0){set_error("TOO MANY VARIABLES");return false;}
+            fn.global_mask|=std::uint64_t{1}<<slot;
+        } while(match_char(','));
+        return true;
+    }
+    bool compile_function_return() {
+        if(scope<0){set_error("RETURN OUTSIDE FUNCTION");return false;}
+        skip_spaces();if(!*p||*p==':'){set_error("FUNCTION RETURN EXPRESSION REQUIRED");return false;}
+        const auto type=parse_expression();
+        const auto wanted=out->functions[scope].returns_string?ExprType::String:ExprType::Number;
+        if(type!=wanted){set_error("FUNCTION RETURN TYPE MISMATCH");return false;}
+        out->functions[scope].has_return=true;return emit(OpCode::RETURN_USER);
+    }
     bool compile_print() {
         skip_spaces();
 
@@ -1725,7 +1930,7 @@ struct Parser {
             return false;
         }
 
-        const int slot = out->find_or_add_symbol(name);
+        const int slot = resolve_symbol(name);
         if (slot < 0) {
             set_error("TOO MANY VARIABLES");
             return false;
@@ -1735,6 +1940,7 @@ struct Parser {
 
         int dims = 0;
         if (*p == '(') {
+            if(scope>=0){set_error("ARRAYS NOT SUPPORTED IN FUNCTION");return false;}
             ++p;
 
             if (parse_expression() == ExprType::Invalid) return false;
@@ -1758,7 +1964,7 @@ struct Parser {
 
         if (dims != 0) {
             const ExprType wanted =
-                out->symbols[slot].is_string
+                symbol(slot).is_string
                     ? ExprType::String
                     : ExprType::Number;
             if (rhs != wanted) {
@@ -1769,7 +1975,7 @@ struct Parser {
         }
 
         const ExprType wanted =
-            out->symbols[slot].is_string ? ExprType::String : ExprType::Number;
+            symbol(slot).is_string ? ExprType::String : ExprType::Number;
 
         if (rhs != wanted) {
             set_error("TYPE MISMATCH");
@@ -1814,7 +2020,7 @@ struct Parser {
             return false;
         }
 
-        const int slot = out->find_or_add_symbol(name);
+        const int slot = resolve_symbol(name);
         if (slot < 0) {
             set_error("TOO MANY VARIABLES");
             return false;
@@ -1824,6 +2030,7 @@ struct Parser {
     }
 
     bool compile_dim() {
+        if(scope>=0){set_error("ARRAYS NOT SUPPORTED IN FUNCTION");return false;}
         while (true) {
             char name[kSymbolNameLength] = {};
             if (!parse_identifier(name, sizeof(name))) {
@@ -1831,7 +2038,7 @@ struct Parser {
                 return false;
             }
 
-            const int slot = out->find_or_add_symbol(name);
+            const int slot = resolve_symbol(name);
             if (slot < 0) {
                 set_error("TOO MANY VARIABLES");
                 return false;
@@ -2016,6 +2223,13 @@ struct Parser {
         const std::size_t jz_pos = out->code_count;
         if (!emit(OpCode::JZ, -1)) return false;
 
+        skip_spaces();
+        if(*p=='\0' && out->source_mode==ProgramSourceMode::Structured) {
+            if(control->if_depth>=16){set_error("IF NESTING TOO DEEP");return false;}
+            control->if_stack[control->if_depth++]={static_cast<int>(jz_pos),-1,false,
+                control->for_depth,control->while_depth,control->do_depth};
+            return true;
+        }
         if (!compile_inline_branch()) return false;
 
         skip_spaces();
@@ -2040,6 +2254,7 @@ struct Parser {
     }
 
     bool compile_on_branch() {
+        if(out->source_mode==ProgramSourceMode::Structured){set_error("LINE BRANCH NOT ALLOWED IN STRUCTURED");return false;}
         if (parse_expression() != ExprType::Number) {
             set_error("ON SELECTOR MUST BE NUMERIC");
             return false;
@@ -2096,8 +2311,8 @@ struct Parser {
             return false;
         }
 
-        const int slot = out->find_or_add_symbol(name);
-        if (slot < 0 || out->symbols[slot].is_string) {
+        const int slot = resolve_symbol(name);
+        if (slot < 0 || symbol(slot).is_string) {
             set_error("BAD FOR VARIABLE");
             return false;
         }
@@ -2150,7 +2365,7 @@ struct Parser {
         char name[kSymbolNameLength] = {};
 
         if (parse_identifier(name, sizeof(name))) {
-            requested_slot = out->find_or_add_symbol(name);
+            requested_slot = resolve_symbol(name);
         } else {
             p = save;
         }
@@ -2216,36 +2431,50 @@ struct Parser {
     }
 
     bool compile_do() {
-        if (!control || control->do_depth >= 16) {
-            set_error("DO NESTING TOO DEEP");
-            return false;
+        if(!control||control->do_depth>=16){set_error("DO NESTING TOO DEEP");return false;}
+        CompileControl::DoEntry entry{out->code_count,-1};
+        if(match_word("WHILE")) {
+            if(parse_expression()!=ExprType::Number)return false;
+            entry.exit=static_cast<int>(out->code_count);
+            if(!emit(OpCode::JZ,-1))return false;
         }
-
-        control->do_stack[control->do_depth++] = out->code_count;
+        control->do_stack[control->do_depth++]=entry;return true;
+    }
+    bool compile_loop() {
+        if(!control||!control->do_depth){set_error("LOOP WITHOUT DO");return false;}
+        const auto entry=control->do_stack[--control->do_depth];
+        if(match_word("UNTIL")) {
+            if(parse_expression()!=ExprType::Number ||
+               !emit(OpCode::JZ,static_cast<int>(entry.start)))return false;
+        } else if(!emit(OpCode::JMP,static_cast<int>(entry.start)))return false;
+        if(entry.exit>=0)out->code[entry.exit].a=static_cast<int>(out->code_count);
         return true;
     }
-
-    bool compile_loop() {
-        if (!control || control->do_depth == 0) {
-            set_error("LOOP WITHOUT DO");
-            return false;
+    bool block_if_boundary(bool elseif_branch,bool end) {
+        if(out->source_mode!=ProgramSourceMode::Structured||!control->if_depth) {
+            set_error(end?"END IF WITHOUT IF":"ELSE WITHOUT IF");return false;
         }
-
-        const std::size_t start_pc =
-            control->do_stack[--control->do_depth];
-
-        if (match_word("UNTIL")) {
-            if (parse_expression() != ExprType::Number) return false;
-            return emit(
-                OpCode::JZ,
-                static_cast<std::int32_t>(start_pc)
-            );
+        auto& block=control->if_stack[control->if_depth-1];
+        if(block.for_depth!=control->for_depth||block.while_depth!=control->while_depth||
+           block.do_depth!=control->do_depth){set_error("CROSSED CONTROL BLOCK");return false;}
+        if(end) {
+            if(block.pending>=0)out->code[block.pending].a=static_cast<int>(out->code_count);
+            int jump=block.end;
+            while(jump>=0){const int next=out->code[jump].b;out->code[jump].a=static_cast<int>(out->code_count);out->code[jump].b=0;jump=next;}
+            --control->if_depth;return true;
         }
-
-        return emit(
-            OpCode::JMP,
-            static_cast<std::int32_t>(start_pc)
-        );
+        if(block.seen_else){set_error(elseif_branch?"ELSEIF AFTER ELSE":"DUPLICATE ELSE");return false;}
+        const int jump=static_cast<int>(out->code_count);
+        if(!emit(OpCode::JMP,-1,block.end))return false;
+        block.end=jump;
+        out->code[block.pending].a=static_cast<int>(out->code_count);
+        block.pending=-1;
+        if(elseif_branch) {
+            if(parse_expression()!=ExprType::Number||!match_word("THEN")){set_error("EXPECTED THEN");return false;}
+            skip_spaces();if(*p){set_error("BLOCK ELSEIF REQUIRES EOL");return false;}
+            block.pending=static_cast<int>(out->code_count);return emit(OpCode::JZ,-1);
+        }
+        block.seen_else=true;return true;
     }
 
     bool compile_statement() {
@@ -2259,26 +2488,37 @@ struct Parser {
         }
 
         const char* save = p;
+        const char initial = upper(*p);
 
-        if (match_word("REM")) {
+        if (initial == 'R' && match_word("REM")) {
             p += std::strlen(p);
             return true;
         }
 
-        if (match_word("PRINT")) return compile_print();
-        if (match_word("INPUT")) return compile_input();
-        if (match_word("LET")) return compile_assignment();
-        if (match_word("IF")) return compile_if();
-        if (match_word("FOR")) return compile_for();
-        if (match_word("NEXT")) return compile_next();
-        if (match_word("WHILE")) return compile_while();
-        if (match_word("WEND")) return compile_wend();
-        if (match_word("DO")) return compile_do();
-        if (match_word("LOOP")) return compile_loop();
-        if (match_word("DIM")) return compile_dim();
-        if (match_word("ON")) return compile_on_branch();
+        if(out->source_mode==ProgramSourceMode::Structured && match_word("GLOBAL"))return compile_global();
+        if(scope>=0)out->functions[scope].body_started=true;
+        if(upper(*p)=='F'&&peek_word("FUNCTION")) {set_error("FUNCTION REQUIRES STRUCTURED MODE");return false;}
+        if(out->source_mode==ProgramSourceMode::Structured) {
+            if(match_word("ELSEIF"))return block_if_boundary(true,false);
+            if(match_word("ELSE"))return block_if_boundary(false,false);
+            const char* saved=p;
+            if(match_word("END")&&match_word("IF"))return block_if_boundary(false,true);
+            p=saved;
+        }
+        if (initial == 'P' && match_word("PRINT")) return compile_print();
+        if (initial == 'I' && match_word("INPUT")) return compile_input();
+        if (initial == 'L' && match_word("LET")) return compile_assignment();
+        if (initial == 'I' && match_word("IF")) return compile_if();
+        if (initial == 'F' && match_word("FOR")) return compile_for();
+        if (initial == 'N' && match_word("NEXT")) return compile_next();
+        if (initial == 'W' && match_word("WHILE")) return compile_while();
+        if (initial == 'W' && match_word("WEND")) return compile_wend();
+        if (initial == 'D' && match_word("DO")) return compile_do();
+        if (initial == 'L' && match_word("LOOP")) return compile_loop();
+        if (initial == 'D' && match_word("DIM")) return compile_dim();
+        if (initial == 'O' && match_word("ON")) return compile_on_branch();
 
-        if (match_word("GOTO")) {
+        if (initial == 'G' && match_word("GOTO")) {
             std::int32_t target = 0;
             if (!parse_line_target(target)) {
                 set_error("BAD GOTO TARGET");
@@ -2287,7 +2527,7 @@ struct Parser {
             return emit_line_jump(OpCode::JMP, target);
         }
 
-        if (match_word("GOSUB")) {
+        if (initial == 'G' && match_word("GOSUB")) {
             std::int32_t target = 0;
             if (!parse_line_target(target)) {
                 set_error("BAD GOSUB TARGET");
@@ -2296,41 +2536,44 @@ struct Parser {
             return emit_line_jump(OpCode::GOSUB, target);
         }
 
-        if (match_word("RETURN")) return emit(OpCode::RETSUB);
+        if(initial=='R'&&match_word("RETURN")) {
+            if(out->source_mode==ProgramSourceMode::Structured)return compile_function_return();
+            return emit(OpCode::RETSUB);
+        }
 
-        if (match_word("SCREEN")) return compile_call_statement(FnId::SCREEN);
-        if (match_word("CLS")) return compile_call_statement(FnId::GCLS);
-        if (match_word("COLORHSV")) return compile_call_statement(FnId::GCOLORHSV);
-        if (match_word("COLOR")) return compile_call_statement(FnId::GCOLOR);
-        if (match_word("PSET")) return compile_call_statement(FnId::GPSET);
-        if (match_word("LINE")) return compile_line_graphics();
-        if (match_word("CIRCLE")) return compile_call_statement(FnId::GCIRCLE);
-        if (match_word("BOX")) return compile_call_statement(FnId::GBOX);
-        if (match_word("PAINT")) return compile_call_statement(FnId::GPAINT);
-        if (match_word("FLUSH")) return compile_call_statement(FnId::GFLUSH);
-        if (match_word("SLEEP")) return compile_call_statement(FnId::GSLEEP);
-        if (match_word("PAUSE")) return compile_call_statement(FnId::PAUSE);
-        if (match_word("BEEP")) return compile_call_statement(FnId::BEEP);
-        if (match_word("PLAY")) return compile_play();
-        if (match_word("WAVPLAY")) return compile_call_statement(FnId::WAVPLAY);
-        if (match_word("WAVSTOP")) return emit(OpCode::CALLFN, FnId::WAVSTOP, 0);
-        if (match_word("WAVPAUSE")) return emit(OpCode::CALLFN, FnId::WAVPAUSE, 0);
-        if (match_word("WAVRESUME")) return emit(OpCode::CALLFN, FnId::WAVRESUME, 0);
-        if (match_word("I2C")) {
+        if (initial == 'S' && match_word("SCREEN")) return compile_call_statement(FnId::SCREEN);
+        if (initial == 'C' && match_word("CLS")) return compile_call_statement(FnId::GCLS);
+        if (initial == 'C' && match_word("COLORHSV")) return compile_call_statement(FnId::GCOLORHSV);
+        if (initial == 'C' && match_word("COLOR")) return compile_call_statement(FnId::GCOLOR);
+        if (initial == 'P' && match_word("PSET")) return compile_call_statement(FnId::GPSET);
+        if (initial == 'L' && match_word("LINE")) return compile_line_graphics();
+        if (initial == 'C' && match_word("CIRCLE")) return compile_call_statement(FnId::GCIRCLE);
+        if (initial == 'B' && match_word("BOX")) return compile_call_statement(FnId::GBOX);
+        if (initial == 'P' && match_word("PAINT")) return compile_call_statement(FnId::GPAINT);
+        if (initial == 'F' && match_word("FLUSH")) return compile_call_statement(FnId::GFLUSH);
+        if (initial == 'S' && match_word("SLEEP")) return compile_call_statement(FnId::GSLEEP);
+        if (initial == 'P' && match_word("PAUSE")) return compile_call_statement(FnId::PAUSE);
+        if (initial == 'B' && match_word("BEEP")) return compile_call_statement(FnId::BEEP);
+        if (initial == 'P' && match_word("PLAY")) return compile_play();
+        if (initial == 'W' && match_word("WAVPLAY")) return compile_call_statement(FnId::WAVPLAY);
+        if (initial == 'W' && match_word("WAVSTOP")) return emit(OpCode::CALLFN, FnId::WAVSTOP, 0);
+        if (initial == 'W' && match_word("WAVPAUSE")) return emit(OpCode::CALLFN, FnId::WAVPAUSE, 0);
+        if (initial == 'W' && match_word("WAVRESUME")) return emit(OpCode::CALLFN, FnId::WAVRESUME, 0);
+        if (initial == 'I' && match_word("I2C")) {
             if (!match_word("SCAN")) {
                 set_error("EXPECTED SCAN");
                 return false;
             }
             return emit(OpCode::CALLFN, FnId::I2CSCAN, 0);
         }
-        if (match_word("I2CWRITE")) return compile_call_statement(FnId::I2CWRITE);
-        if (match_word("LOCATE")) return compile_call_statement(FnId::LOCATE);
-        if (match_word("GLOCATE")) return compile_call_statement(FnId::GLOCATE);
-        if (match_word("GPRINT")) return compile_call_statement(FnId::GPRINT);
-        if (match_word("GDEF")) return compile_gdef();
-        if (match_word("GPALETTE")) return compile_gpalette();
-        if (match_word("RANDOMIZE")) return compile_call_statement(FnId::RANDOMIZE);
-        if (match_word("SAVEIMAGE")) return compile_call_statement(FnId::GSAVE);
+        if (initial == 'I' && match_word("I2CWRITE")) return compile_call_statement(FnId::I2CWRITE);
+        if (initial == 'L' && match_word("LOCATE")) return compile_call_statement(FnId::LOCATE);
+        if (initial == 'G' && match_word("GLOCATE")) return compile_call_statement(FnId::GLOCATE);
+        if (initial == 'G' && match_word("GPRINT")) return compile_call_statement(FnId::GPRINT);
+        if (initial == 'G' && match_word("GDEF")) return compile_gdef();
+        if (initial == 'G' && match_word("GPALETTE")) return compile_gpalette();
+        if (initial == 'R' && match_word("RANDOMIZE")) return compile_call_statement(FnId::RANDOMIZE);
+        if (initial == 'S' && match_word("SAVEIMAGE")) return compile_call_statement(FnId::GSAVE);
 
         {
             const char* save_pos = p;
@@ -2342,7 +2585,7 @@ struct Parser {
             }
         }
 
-        if (match_word("END") || match_word("STOP")) {
+        if ((initial=='E'&&match_word("END")) || (initial=='S'&&match_word("STOP"))) {
             return emit(OpCode::HALT);
         }
 
@@ -2407,9 +2650,62 @@ CompileResult BasicCompiler::compile_source(
     if (count > kMaxSdProgramLines) {
         return fail_result(0, "TOO MANY PROGRAM LINES");
     }
-    if (!output.reserve_lines(count)) return fail_result(0, "OUT OF MEMORY");
+    output.source_mode=source?source->source_mode():ProgramSourceMode::ClassicNumbered;
+    const bool structured=output.source_mode==ProgramSourceMode::Structured;
+    auto failure=[&](std::int32_t location,const char* message) {
+        auto result=fail_result(structured?0:location,message);
+        result.source_mode=output.source_mode;result.row=structured?location:0;return result;
+    };
+    if(structured ? !output.reserve_source_rows(count) : !output.reserve_lines(count))
+        return failure(0,"OUT OF MEMORY");
 
     CompileControl control;
+    int active_function=-1;
+    // Pass 1: collect every signature before resolving any expression call.
+    if(structured) {
+        for(std::size_t i=0;i<count;++i) {
+            std::int32_t id=0;const char* body=nullptr;std::size_t length=0;
+            if(!source->read_line_text(i,id,body,length))return failure(static_cast<int>(i+1),source->error());
+            Parser signature;signature.p=body;signature.out=&output;
+            if(signature.match_word("FUNCTION")) {
+                if(active_function>=0)return failure(static_cast<int>(i+1),"NESTED FUNCTION");
+                char name[kSymbolNameLength]={};
+                if(!signature.parse_identifier(name,sizeof(name))||!signature.expect_char('('))
+                    return failure(static_cast<int>(i+1),"BAD FUNCTION SIGNATURE");
+                char stem[kSymbolNameLength];std::strcpy(stem,name);
+                const auto n=std::strlen(stem);if(n&&stem[n-1]=='$')stem[n-1]=0;
+                char string_builtin[kSymbolNameLength+1];std::snprintf(string_builtin,sizeof(string_builtin),"%s$",stem);
+                if(function_id(name)>=0 || function_id(stem)>=0 || function_id(string_builtin)>=0)
+                    return failure(static_cast<int>(i+1),"BUILT-IN FUNCTION COLLISION");
+                if(output.find_function(name,true)>=0)
+                    return failure(static_cast<int>(i+1),"DUPLICATE FUNCTION");
+                active_function=output.add_function(name);
+                if(active_function<0)return failure(static_cast<int>(i+1),"FUNCTION LIMIT / OUT OF MEMORY");
+                auto& fn=output.functions[active_function];fn.source_row=static_cast<int>(i+1);
+                if(!signature.match_char(')')) {
+                    do {
+                        char param[kSymbolNameLength]={};
+                        if(fn.parameter_count>=kMaxFunctionParameters ||
+                           !signature.parse_identifier(param,sizeof(param)))
+                            return failure(static_cast<int>(i+1),"FUNCTION PARAMETER LIMIT / BAD PARAMETER");
+                        for(std::size_t j=0;j<fn.local_count;++j)
+                            if(!std::strcmp(fn.locals[j].symbol.name,param))
+                                return failure(static_cast<int>(i+1),"DUPLICATE PARAMETER");
+                        if(output.add_local(active_function,param)<0)
+                            return failure(static_cast<int>(i+1),"OUT OF MEMORY");
+                        ++fn.parameter_count;
+                    } while(signature.match_char(','));
+                    if(!signature.expect_char(')'))return failure(static_cast<int>(i+1),"BAD FUNCTION SIGNATURE");
+                }
+                signature.skip_spaces();if(*signature.p)return failure(static_cast<int>(i+1),"BAD FUNCTION SIGNATURE");
+            } else if(signature.match_word("END")&&signature.match_word("FUNCTION")) {
+                if(active_function<0)return failure(static_cast<int>(i+1),"END FUNCTION WITHOUT FUNCTION");
+                signature.skip_spaces();if(*signature.p)return failure(static_cast<int>(i+1),"UNEXPECTED TEXT");
+                output.functions[active_function].end_row=static_cast<int>(i+1);active_function=-1;
+            }
+        }
+        if(active_function>=0)return failure(output.functions[active_function].source_row,"FUNCTION WITHOUT END FUNCTION");
+    }
 
     for (std::size_t i = 0; i < count; ++i) {
         std::int32_t stored_number = 0;
@@ -2418,36 +2714,70 @@ CompileResult BasicCompiler::compile_source(
         if (source && !source->read_line_text(
                 i, stored_number, stored_text, stored_length))
             return fail_result(0, source->error());
-        const auto number = source ? stored_number : 10;
+        const auto number = structured ? static_cast<std::int32_t>(i+1) : source ? stored_number : 10;
         const char* text = source ? stored_text : direct_line;
 
+        if(structured)output.source_rows[output.source_row_count++]={number,static_cast<std::int32_t>(output.code_count),active_function};
+        else {
         output.line_at(output.line_count).line = number;
         output.line_at(output.line_count).pc =
             static_cast<std::int32_t>(output.code_count);
         ++output.line_count;
+        }
 
         Parser parser;
         parser.p = text;
         parser.out = &output;
         parser.control = &control;
         parser.line = number;
+        parser.scope=active_function;
+        if(structured) {
+            for(std::size_t f=0;f<output.function_count;++f) {
+                auto& fn=output.functions[f];
+                if(fn.source_row!=number)continue;
+                if(active_function>=0||control.for_depth||control.while_depth||control.do_depth||control.if_depth)
+                    return failure(number,"FUNCTION MUST BE TOP LEVEL");
+                active_function=static_cast<int>(f);
+                Op skip;skip.code=OpCode::JMP;skip.a=-1;
+                if(!output.emit(skip))return failure(number,"PROGRAM TOO COMPLEX");
+                fn.entry_pc=static_cast<std::int32_t>(output.code_count);
+                output.source_rows[output.source_row_count-1].function_id=active_function;
+                break;
+            }
+            if(active_function>=0) {
+                auto& fn=output.functions[active_function];
+                if(number==fn.source_row)continue;
+                if(number==fn.end_row) {
+                    if(control.for_depth||control.while_depth||control.do_depth||control.if_depth)
+                        return failure(number,"UNTERMINATED BLOCK IN FUNCTION");
+                    if(!fn.has_return)return failure(number,"FUNCTION RETURN MISSING");
+                    Op fallthrough;fallthrough.code=OpCode::FUNCTION_FALLTHROUGH;
+                    if(!output.emit(fallthrough))return failure(number,"PROGRAM TOO COMPLEX");
+                    fn.end_pc=static_cast<std::int32_t>(output.code_count);
+                    output.code[fn.entry_pc-1].a=fn.end_pc;
+                    active_function=-1;continue;
+                }
+                parser.scope=active_function;
+            }
+        }
 
         if (!parser.compile_line()) {
-            return fail_result(
+            return failure(
                 number,
                 parser.error[0] ? parser.error : "SYNTAX ERROR"
             );
         }
     }
 
+    if(control.if_depth!=0)return failure(static_cast<std::int32_t>(count),"IF WITHOUT END IF");
     if (control.for_depth != 0) {
-        return fail_result(0, "FOR WITHOUT NEXT");
+        return failure(structured?static_cast<int>(count):0, "FOR WITHOUT NEXT");
     }
     if (control.while_depth != 0) {
-        return fail_result(0, "WHILE WITHOUT WEND");
+        return failure(structured?static_cast<int>(count):0, "WHILE WITHOUT WEND");
     }
     if (control.do_depth != 0) {
-        return fail_result(0, "DO WITHOUT LOOP");
+        return failure(structured?static_cast<int>(count):0, "DO WITHOUT LOOP");
     }
 
     if (output.code_count == 0 ||
@@ -2476,6 +2806,9 @@ CompileResult BasicCompiler::compile_source(
         op.b = 0;
     }
 
+#ifdef RMB_OPTIMIZER_TEST
+    if(!optimizer_test_disabled)
+#endif
     optimize_program(output);
 
     CompileResult result;

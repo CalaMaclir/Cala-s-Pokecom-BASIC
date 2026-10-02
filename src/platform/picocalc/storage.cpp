@@ -1,9 +1,11 @@
 #include "storage.hpp"
 #include "file_management.hpp"
+#include "file_path.hpp"
 #include "program_file_guard.hpp"
 #include "safe_file.hpp"
 
 #include <cctype>
+#include <cerrno>
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
@@ -50,6 +52,33 @@ std::uint32_t msc_blocks = 0;
 blockdevice_t* sd_device = nullptr;
 filesystem_t* fat_fs = nullptr;
 char error_text[96] = "SD NOT INITIALIZED";
+bool mount_device_init_failed = false;
+
+int mount_firmware_fs() {
+    // Called only in the foreground with our sole FAT root unmounted.
+    // Initialize separately: a failure here never assigns the FAT context id,
+    // so invoking FAT unmount in that case would index its volume table at -1.
+    mount_device_init_failed = false;
+    if (!sd_device->is_initialized) {
+        const int error = sd_device->init(sd_device);
+        if (error != 0) {
+            mount_device_init_failed = true;
+            errno = error < 0 ? -error : EIO;
+            return -1;
+        }
+    }
+    const int result = fs_mount("/", fat_fs, sd_device);
+    if (result == -1) {
+        const int original_error = errno;
+        // Pinned pico-vfs reserves its FAT volume before f_mount and leaves it
+        // reserved on failure. VFS has no root entry yet, so fs_unmount("/")
+        // cannot release it. The device initialized above and the sole FAT
+        // volume is ours; FAT mount therefore assigned a valid context id.
+        (void)fat_fs->unmount(fat_fs);
+        errno = original_error;
+    }
+    return result;
+}
 
 void set_error(const char* text) {
     std::snprintf(error_text, sizeof(error_text), "%s", text ? text : "SD ERROR");
@@ -202,7 +231,7 @@ bool begin_usb_host_ownership() {
     const std::uint64_t blocks = bytes / usb_block_size();
     if (synced != 0 || bytes == 0 || bytes % usb_block_size() != 0 ||
         blocks > std::numeric_limits<std::uint32_t>::max()) {
-        if (fs_mount("/", fat_fs, sd_device) != -1) {
+        if (mount_firmware_fs() != -1) {
             mounted = true;
             storage_owner.store(Owner::Firmware, std::memory_order_release);
         } else {
@@ -274,7 +303,7 @@ void poll() {
         return;
     }
     if ((sd_device->sync && sd_device->sync(sd_device) != 0) ||
-        fs_mount("/", fat_fs, sd_device) == -1) {
+        mount_firmware_fs() == -1) {
         storage_owner.store(Owner::Unavailable, std::memory_order_release);
         usb_event.store(UsbEvent::IoError, std::memory_order_release);
         set_error("SD REMOUNT FAILED AFTER USB EJECT");
@@ -308,7 +337,7 @@ bool recover_firmware_ownership() {
     }
     if (!card_present() || !sd_device ||
         (sd_device->sync && sd_device->sync(sd_device) != 0) ||
-        fs_mount("/", fat_fs, sd_device) == -1) {
+        mount_firmware_fs() == -1) {
         storage_owner.store(Owner::Unavailable, std::memory_order_release);
         set_error("SD RECOVERY FAILED");
         return false;
@@ -420,9 +449,10 @@ bool init() {
         return false;
     }
 
-    const int result = fs_mount("/", fat_fs, sd_device);
+    const int result = mount_firmware_fs();
     if (result == -1) {
-        set_error("SD MOUNT FAILED");
+        std::snprintf(error_text, sizeof(error_text), "SD %s FAILED (%d)",
+            mount_device_init_failed ? "INIT" : "MOUNT", errno);
         return false;
     }
 
@@ -493,6 +523,36 @@ bool load_program(const char* name, ProgramStore& program) {
     const bool ok = program.load(name);
     set_error(ok ? "OK" : program.error());
     return ok;
+}
+
+
+bool list_directory(const char* directory, bool programs_only) {
+    char normalized[80] = {};
+    if (!file_paths::normalize(directory, normalized, sizeof(normalized), true)) {
+        set_error("BAD DIRECTORY PATH"); return false;
+    }
+    DirectoryEntry items[16];
+    std::size_t skip = 0;
+    bool more = false;
+    do {
+        const std::size_t count = collect_directory_entries(normalized, programs_only,
+            items, 16, skip, &more);
+        if (std::strcmp(last_error(), "OK") != 0) return false;
+        for (std::size_t i = 0; i < count; ++i) {
+            if (platform::break_requested()) {
+                platform::put_string("[LIST BREAK]\r\n");
+                return true;
+            }
+            char row[112] = {};
+            if (items[i].directory) std::snprintf(row, sizeof(row), "[DIR] %s\r\n", items[i].name);
+            else std::snprintf(row, sizeof(row), "%s  %lu\r\n", items[i].name,
+                               static_cast<unsigned long>(items[i].size));
+            platform::put_string(row);
+        }
+        skip += count;
+    } while (more);
+    if (!skip) platform::put_string("(no files)\r\n");
+    return true;
 }
 
 bool list_program_files() {
@@ -672,10 +732,79 @@ std::size_t collect_root_entries(
     return count;
 }
 
+
+std::size_t collect_directory_entries(
+    const char* directory, bool programs_only, DirectoryEntry* output,
+    std::size_t max_entries, std::size_t skip, bool* more
+) {
+    if (more) *more = false;
+    if (!output || !max_entries || !file_paths::valid_relative(directory, true)) {
+        set_error("BAD DIRECTORY PATH");
+        return 0;
+    }
+    if (!regular_io_allowed() || !init() || !try_lock()) return 0;
+    struct Unlock { ~Unlock() { unlock(); } } unlock_on_exit;
+    char path[192] = {};
+    if (!file_paths::physical("/", directory, path, sizeof(path), true)) {
+        set_error("BAD DIRECTORY PATH");
+        return 0;
+    }
+    DIR* dir = opendir(path);
+    if (!dir) { set_error("DIRECTORY NOT FOUND - HOME RETURNS TO ROOT"); return 0; }
+    std::size_t eligible = 0, count = 0;
+    bool ok = true;
+    while (true) {
+        errno = 0;
+        dirent* ent = readdir(dir);
+        if (!ent) { if (errno) ok = false; break; }
+        const char* name = ent->d_name;
+        if (!SafeFileWriter::valid_root_name(name) || !program_files::visible_in_directory(name)) continue;
+        char relative[80] = {}, physical[192] = {};
+        if (!file_paths::join(directory, name, relative, sizeof(relative)) ||
+            !file_paths::physical("/", relative, physical, sizeof(physical))) continue;
+        struct stat value = {};
+        if (stat(physical, &value) != 0) { ok = false; break; }
+        const bool is_directory = S_ISDIR(value.st_mode);
+        if (!is_directory && (!S_ISREG(value.st_mode) || (programs_only && !has_bas_extension(name)))) continue;
+        if (eligible++ < skip) continue;
+        if (count == max_entries) { if (more) *more = true; break; }
+        DirectoryEntry& item = output[count++];
+        item = {};
+        std::memcpy(item.name, name, std::strlen(name) + 1u);
+        item.directory = is_directory;
+        item.size = is_directory ? 0u : static_cast<std::uint32_t>(value.st_size);
+    }
+    if (closedir(dir) != 0) ok = false;
+    set_error(ok ? "OK" : "DIRECTORY READ FAILED");
+    return ok ? count : 0;
+}
+
+bool create_directory(const char* path) {
+    if (!regular_io_allowed() || !init() || !try_lock()) return false;
+    const auto result = file_management::create_directory("/", path);
+    unlock();
+    set_error(file_management::message(result));
+    return result == file_management::Result::Success;
+}
+bool delete_directory(const char* path, const char* current_file) {
+    if (!regular_io_allowed() || !init() || !try_lock()) return false;
+    const auto result = file_management::delete_directory("/", path, current_file);
+    unlock();
+    set_error(file_management::message(result));
+    return result == file_management::Result::Success;
+}
+bool rename_directory(const char* old_path, const char* new_path, const char* current_file) {
+    if (!regular_io_allowed() || !init() || !try_lock()) return false;
+    const auto result = file_management::rename_directory("/", old_path, new_path, current_file);
+    unlock();
+    set_error(file_management::message(result));
+    return result == file_management::Result::Success;
+}
+
 bool root_entry_info(const char* name, DirectoryEntry& output) {
     output = DirectoryEntry{};
     if (!regular_io_allowed() || !init()) return false;
-    if (!SafeFileWriter::valid_root_name(name) ||
+    if (!file_paths::valid_relative(name) ||
         !program_files::visible_in_directory(name)) {
         set_error("BAD FILENAME");
         return false;

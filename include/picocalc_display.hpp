@@ -10,6 +10,8 @@ constexpr int text_columns = 53;
 constexpr int text_rows = 40;
 
 void init();
+void enter_standby();
+void leave_standby();
 void clear(uint32_t rgb = 0x000000);
 void put_char(char c);
 void put_string(const char* text);

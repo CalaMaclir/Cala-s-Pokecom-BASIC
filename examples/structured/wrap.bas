@@ -1,0 +1,5 @@
+FUNCTION WRAP$(S$)
+    RETURN "["+S$+"]"
+END FUNCTION
+
+PRINT WRAP$("CPB")

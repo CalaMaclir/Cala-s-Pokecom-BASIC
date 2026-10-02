@@ -6,8 +6,8 @@
 
 namespace rmb {
 
-// Transactional writer for one file in the SD root. Data is written to a
-// fixed staging file and becomes visible only after flush/close and rename.
+// Transactional writer for a canonical SD-relative file. Staging stays in
+// the target directory; publication follows flush/close and rename.
 class SafeFileWriter {
 public:
     ~SafeFileWriter();

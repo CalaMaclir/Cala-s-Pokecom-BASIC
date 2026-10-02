@@ -36,6 +36,9 @@ struct VmResult {
     bool ok = false;
     bool interrupted = false;
     std::int32_t pc = 0;
+    std::int32_t source_row = 0, call_source_row = 0;
+    std::uint16_t call_depth = 0;
+    char function_name[kSymbolNameLength] = {};
     char message[96] = {};
 };
 
@@ -94,6 +97,7 @@ private:
     VmProfileMode profile_mode_ = VmProfileMode::Off;
     VmProfileReport profile_ = {};
 
+    template<bool UserFunctions>
     VmResult run_impl(const CompiledProgram& program, bool direct_mode);
     bool load_direct_state(DirectScalar* state);
     bool store_direct_state(const DirectScalar* state);

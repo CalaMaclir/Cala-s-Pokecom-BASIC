@@ -129,6 +129,28 @@ void draw_text_span(
 );
 
 bool get_battery_status(int& percent, bool& charging);
+
+struct InternalKeyboardDiagnostics {
+    const char* status = "UNKNOWN";
+    const char* last_error = "NONE";
+    std::uint32_t total_errors = 0;
+    std::uint32_t consecutive_errors = 0;
+    std::uint32_t recovery_attempts = 0;
+    std::uint32_t recoveries = 0;
+    bool bios_reply_received = false;
+    std::uint8_t bios_version = 0;
+    const char* startup_phase = "BOOT QUIET";
+    bool ever_ready = false;
+    bool sda_high = false;
+    bool scl_high = false;
+    bool first_try_recorded = false;
+    bool first_ack_recorded = false;
+    std::uint32_t first_try_ms = 0;
+    std::uint32_t first_ack_ms = 0;
+    std::uint32_t startup_attempts = 0;
+};
+
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics();
 bool caps_lock_enabled();
 bool shift_held();
 bool get_datetime(DateTime& value);
@@ -185,4 +207,3 @@ bool graphics_palette_rgb24(int index, std::uint32_t rgb);
 void graphics_palette_reset();
 
 } // namespace rmb::platform
-

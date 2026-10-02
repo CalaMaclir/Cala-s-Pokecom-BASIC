@@ -2,6 +2,7 @@
 #include "audio_buffer_policy.hpp"
 #include "audio_file_policy.hpp"
 #include "platform.hpp"
+#include "file_path.hpp"
 #include "storage.hpp"
 
 #define MINIMP3_IMPLEMENTATION
@@ -739,11 +740,11 @@ bool audio_wavplay(const char* filename) {
         return false;
     }
 
-    char path[96] = {};
-    if (filename[0] == '/') {
-        std::snprintf(path, sizeof(path), "%s", filename);
-    } else {
-        std::snprintf(path, sizeof(path), "/%s", filename);
+    char path[96] = {}, relative[80] = {};
+    if (!file_paths::normalize(filename, relative, sizeof(relative)) ||
+        !file_paths::physical("/", relative, path, sizeof(path))) {
+        set_error("BAD AUDIO PATH");
+        return false;
     }
 
     auto open_selected_file = [&]() {

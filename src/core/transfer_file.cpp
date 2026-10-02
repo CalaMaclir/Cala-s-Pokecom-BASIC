@@ -1,5 +1,6 @@
 #include "transfer_file.hpp"
 #include "program_file_guard.hpp"
+#include "file_path.hpp"
 #include <cctype>
 #include <cstring>
 #include <sys/stat.h>
@@ -21,7 +22,7 @@ bool TransferFile::open(const char* name, bool receive, const char* root,const c
         error_ = "FILE IN USE"; return false;
     }
     error_ = "BAD FILENAME";
-    if (!SafeFileWriter::valid_root_name(name) ||
+    if (!(receive ? SafeFileWriter::valid_root_name(name) : file_paths::valid_relative(name)) ||
         equal_name(name, "XMODEM.TMP") || equal_name(name, "XMODEM.BAK") ||
         equal_name(name, "YMODEM.TMP") || equal_name(name, "YMODEM.BAK")) return false;
     if (std::snprintf(target_, sizeof(target_), "%s%s", root, name) >= int(sizeof(target_))) return false;

@@ -1,6 +1,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include "source_mode.hpp"
 
 namespace rmb {
 constexpr std::size_t kMaxRamProgramLines = 256;
@@ -38,6 +39,7 @@ constexpr std::uint32_t kPsramProgramStoreBytes =
     kPsramProgramIndexBytes + kPsramProgramTextBytes;
 
 struct SdProgramStore {
+    ProgramSourceMode source_mode = ProgramSourceMode::ClassicNumbered;
     struct Entry {
         std::int32_t number;
         std::uint32_t offset;
@@ -90,7 +92,16 @@ public:
     bool ready() const;
     bool set_line(std::int32_t number, const char* text);
     bool erase_line(std::int32_t number);
+    // Atomically replace/delete two numbered lines. nullptr deletes; "" is
+    // an existing empty line. Used for editor split/join and compound undo.
+    bool replace_line_pair(std::int32_t first, const char* first_text,
+                           std::int32_t second, const char* second_text);
     bool clear();
+    bool new_program(ProgramSourceMode mode);
+    ProgramSourceMode source_mode() const { return source_mode_; }
+    // Row transaction: at most two replacement rows; no BASIC targets.
+    bool replace_source_rows(std::size_t first, std::size_t remove,
+                             const char* const* rows, std::size_t insert);
     bool read_line(std::size_t index, ProgramLine& out) const;
     bool read_line_metadata(
         std::size_t index,
@@ -134,6 +145,8 @@ public:
     // Root injection for host filesystem tests; firmware uses the SD root.
     void set_root(const char* root) { root_ = root; }
 private:
+    struct RowEdit { std::size_t first, remove, insert; const char* const* rows; };
+    ProgramSourceMode source_mode_ = ProgramSourceMode::ClassicNumbered;
     struct PendingEdit {
         std::int32_t number = 0;
         const char* text = nullptr;
@@ -178,19 +191,25 @@ private:
                             const char*& text, std::size_t& length) const;
     bool snapshot(const char* target, const ProgramStore& source,
                   SdProgramStore& index, std::size_t& count, std::size_t& bytes,
-                  const PendingEdit* edit = nullptr, bool remove = false);
-    bool scan(const char* name, SdProgramStore& index, std::size_t& count) const;
+                  const PendingEdit* edit = nullptr, bool remove = false,
+                  const PendingEdit* second_edit = nullptr,
+                  const RowEdit* row_edit = nullptr);
+    bool scan(const char* name, SdProgramStore& index, std::size_t& count,
+              ProgramSourceMode empty_mode = ProgramSourceMode::ClassicNumbered) const;
     bool verify(const SdProgramStore& index, std::size_t count) const;
     struct SessionMetadata {
         char work[80] = {};
         char filename[80] = {};
         bool dirty = false;
+        ProgramSourceMode source_mode = ProgramSourceMode::ClassicNumbered;
     };
     bool read_session_file(const char* name, SessionMetadata& session) const;
-    bool write_session(const char* work, const char* filename, bool dirty);
+    bool write_session(const char* work, const char* filename, bool dirty,
+                       ProgramSourceMode mode);
     bool recover_session_locked(ProgramStorageMode mode);
     bool publish_sd(SdProgramStore* next, std::size_t count, std::size_t bytes,
                     const char* filename, bool dirty);
+    bool preserve_unverified_work_locked();
     bool cleanup_orphans_locked(const char* active_work,
                                 const char* session_work);
     bool new_work_name(char* name) const;

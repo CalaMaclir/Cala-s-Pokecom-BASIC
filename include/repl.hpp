@@ -14,6 +14,7 @@
 #include "vm.hpp"
 
 namespace rmb {
+namespace storage { struct DirectoryEntry; }
 
 class Repl {
 public:
@@ -74,10 +75,15 @@ private:
     bool program_dirty_ = false;
     bool full_screen_editor_active_ = false;
     std::uint32_t last_run_ms_ = 0;
+    // Compile diagnostics are only valid for this exact source revision/mode.
+    std::uint64_t compile_error_revision_ = 0;
+    std::int32_t compile_error_location_ = 0;
+    ProgramSourceMode compile_error_mode_ = ProgramSourceMode::ClassicNumbered;
 
     void print_banner();
     void print_prompt();
     void process_line(char* line);
+    void process_numbered_line(char* input);
     void list_program();
     void run_program();
     void run_direct_line(const char* line);
@@ -134,6 +140,7 @@ private:
     void menu_psram_diagnostics();
 
     bool pick_program_file(char* output, std::size_t capacity);
+    bool pick_path_file(char* output, std::size_t capacity, const char* title, bool programs_only);
     bool pick_transfer_file(char* output, std::size_t capacity, const char* title);
     bool choose_quick_mode(bool& run);
     bool pick_wifi_network(char* ssid, std::size_t capacity, bool& secure);
@@ -153,6 +160,8 @@ private:
 
     void draw_menu_header(const char* title, const char* help);
     void draw_menu_option(int row, const char* text, bool selected);
+    void draw_file_option(int row,const storage::DirectoryEntry* entry,bool selected,
+                          bool show_size,const char* empty=nullptr);
     void draw_menu_message(int row, const char* text);
     void leave_menu_screen();
 
