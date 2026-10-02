@@ -31,18 +31,23 @@ struct Peer {
     std::string name;
     std::uint32_t expected=0;
     unsigned finish_calls=0;
+    unsigned read_calls=0,bulk_calls=0,bulk_chunks=0;
+    std::size_t bulk_chunk_limit=64;
+    std::vector<std::size_t> write_sizes;
     bool begin_ok=true,write_ok=true,finish_ok=true;
     bool finished=false,active=false;
     std::function<void(Peer&,std::uint8_t)> on_output;
 
-    IO io(){return {this,
+    IO io(bool bulk=false,bool coalesce=false){return {this,
         [](void* p,unsigned){
             auto& s=*static_cast<Peer*>(p);
+            ++s.read_calls;
             if(s.input.empty())return rmb::xmodem::timeout;
             int c=s.input.front();s.input.pop_front();return c;
         },
         [](void* p,const std::uint8_t* b,std::size_t n){
             auto& s=*static_cast<Peer*>(p);
+            s.write_sizes.push_back(n);
             s.output.insert(s.output.end(),b,b+n);
             if(s.on_output)
                 for(std::size_t i=0;i<n;++i)s.on_output(s,b[i]);
@@ -74,7 +79,26 @@ struct Peer {
             if(!s.begin_ok)return false;
             s.name=name;s.expected=size;s.data.clear();
             s.finished=false;s.active=true;return true;
-        }
+        },
+        [](void* p,std::uint8_t* b,std::size_t n,unsigned){
+            auto& s=*static_cast<Peer*>(p);
+            ++s.bulk_calls;
+            std::size_t received=0;
+            while(received<n){
+                ++s.bulk_chunks;
+                const std::size_t chunk=std::min(
+                    s.bulk_chunk_limit,n-received);
+                for(std::size_t i=0;i<chunk;++i){
+                    if(s.input.empty())return rmb::xmodem::timeout;
+                    const int value=s.input.front();s.input.pop_front();
+                    if(value<0)return value;
+                    b[received++]=static_cast<std::uint8_t>(value);
+                }
+            }
+            return static_cast<int>(received);
+        },
+        bulk,
+        coalesce
     };}
 
     void packet(std::uint8_t marker,std::uint8_t sequence,
@@ -314,6 +338,16 @@ int main(){
      auto io=peer.io();
      assert(receive(io).error==Error::None);
      assert(peer.data==original);}
+
+    // The optimized path reads each packet as header/payload/CRC bulk ranges.
+    // The mock deliberately supplies 64-byte natural chunks internally.
+    {Peer peer;auto original=bytes(1025);
+     peer.transfer("BULK.BIN",original);
+     auto io=peer.io(true,false);
+     auto r=receive(io);
+     assert(r.error==Error::None&&peer.data==original);
+     assert(peer.bulk_calls>=9&&peer.bulk_chunks>peer.bulk_calls);
+     assert(peer.read_calls<20);}
 
     {Peer peer;auto original=bytes(2028);
      auto r=interactive_receive(
@@ -679,6 +713,23 @@ int main(){
      auto io=peer.io();
      assert(send(io,"RETRY.BIN",1).error==Error::None);}
 
+    // ON emits each header/data packet as exactly one transport write.
+    {Peer peer;peer.source=bytes(1);
+     peer.input={'C',ACK,'C',ACK,NAK,ACK,'C',ACK};
+     auto io=peer.io(false,true);
+     assert(send(io,"COALESCE.BIN",1).error==Error::None);
+     assert(std::count(peer.write_sizes.begin(),peer.write_sizes.end(),133)==2);
+     assert(std::count(peer.write_sizes.begin(),peer.write_sizes.end(),1029)==1);}
+
+    // OFF preserves the legacy prefix/payload/CRC segmented write path.
+    {Peer peer;peer.source=bytes(1);
+     peer.input={'C',ACK,'C',ACK,NAK,ACK,'C',ACK};
+     auto io=peer.io(false,false);
+     assert(send(io,"SEGMENTED.BIN",1).error==Error::None);
+     assert(std::find(peer.write_sizes.begin(),peer.write_sizes.end(),1029)
+            ==peer.write_sizes.end());
+     assert(std::count(peer.write_sizes.begin(),peer.write_sizes.end(),3)>=3);}
+
     {Peer peer;peer.source=bytes(1);
      peer.input={'C',ACK,'C',CAN};
      auto io=peer.io();
@@ -754,7 +805,7 @@ int main(){
     std::filesystem::remove_all(root);
 
     std::puts(
-        "YMODEM single/batch, exact size, retry, duplicate, "
-        "cancel and file safety tests passed"
+        "YMODEM bulk RX, coalesced/segmented TX, single/batch, exact size, "
+        "retry, duplicate, cancel and file safety tests passed"
     );
 }

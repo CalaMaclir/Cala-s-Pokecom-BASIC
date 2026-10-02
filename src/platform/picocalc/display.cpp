@@ -39,6 +39,7 @@ int pen_y = 0;
 int text_scroll_y = 0;
 bool fixed_status_area = true;
 bool fixed_function_key_bar = true;
+bool display_sleeping = false;
 
 int scroll_top_pixels() {
     return fixed_status_area ? status_pixels : 0;
@@ -731,10 +732,38 @@ void init() {
     gpio_set_input_hysteresis_enabled(miso_pin, true);
 
     controller_init();
+    display_sleeping = false;
     configure_hw_scroll();
     clear_text_shadow();
     std::memset(graphics_nonblack, 0, sizeof(graphics_nonblack));
     clear(bg);
+}
+
+void enter_standby() {
+    if (display_sleeping) return;
+
+    // Stop controller scan/power rather than only dimming the backlight.
+    // ILI9488/ST7365-compatible DCS keeps GRAM contents in Sleep In.
+    end_pixel_stream();
+    write_command(0x28); // Display OFF
+    write_command(0x10); // Sleep IN
+
+    // Sleep Out must not follow Sleep In immediately. Keeping the timing
+    // here makes the display API safe even if future callers wake at once.
+    sleep_ms(120);
+    display_sleeping = true;
+}
+
+void leave_standby() {
+    if (!display_sleeping) return;
+
+    // Restore the controller before the keyboard MCU restores the backlight,
+    // avoiding a lit-but-not-yet-scanning panel during wake.
+    write_command(0x11); // Sleep OUT
+    sleep_ms(120);
+    write_command(0x29); // Display ON
+    sleep_ms(20);
+    display_sleeping = false;
 }
 
 void clear(uint32_t rgb) {

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "source_mode.hpp"
 
 namespace rmb {
 
@@ -73,6 +74,10 @@ enum class OpCode : std::uint8_t {
     SUB_VC_PUSH,                 // push(var - constant)
     DIV_VC_PUSH,                 // push(var / constant)
 
+    LOAD_LOCAL_NUM, STORE_LOCAL_NUM, LOAD_LOCAL_STR, STORE_LOCAL_STR,
+    CALL_USER, RETURN_USER, FUNCTION_FALLTHROUGH,
+    FOR_LOCAL_INIT, FOR_LOCAL_CHECK, FOR_LOCAL_INCR, INPUT_LOCAL,
+    LOCAL_NUM_FUSED, // seven-bit local operands; raw IL tails/source PCs remain intact
     HALT
 };
 
@@ -185,7 +190,34 @@ struct LinePc {
     std::int32_t pc = 0;
 };
 
+constexpr std::size_t kMaxUserFunctions=32;
+constexpr std::size_t kMaxFunctionLocals=128;
+constexpr std::size_t kMaxFunctionParameters=8;
+constexpr std::size_t kMaxFunctionCallDepth=16;
+struct LocalSymbol { Symbol symbol{}; std::uint16_t slot=0; };
+struct FunctionInfo {
+    char name[kSymbolNameLength]={};
+    std::int32_t entry_pc=0, end_pc=0, source_row=0, end_row=0;
+    std::uint64_t global_mask=0;
+    std::uint16_t parameter_count=0, local_count=0, numeric_local_count=0, string_local_count=0;
+    bool returns_string=false, has_return=false, body_started=false;
+    LocalSymbol* locals=nullptr;
+    std::size_t frame_bytes() const { return numeric_local_count*sizeof(BasicNumber)+string_local_count*128u; }
+};
+struct SourceRowPc {
+    std::int32_t row = 0, pc = 0, function_id = -1;
+};
 struct CompiledProgram {
+    FunctionInfo* functions=nullptr;
+    std::size_t function_count=0;
+    int add_function(const char* name);
+    int find_function(const char* name,bool base_name=false) const;
+    int add_local(std::size_t function,const char* name);
+    ProgramSourceMode source_mode = ProgramSourceMode::ClassicNumbered;
+    SourceRowPc* source_rows = nullptr;
+    std::size_t source_row_count = 0;
+    bool reserve_source_rows(std::size_t count);
+
     Op code[kMaxOps] = {};
     std::size_t code_count = 0;
 

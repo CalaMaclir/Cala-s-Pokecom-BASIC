@@ -1,6 +1,7 @@
 #include "program_store.hpp"
 #include "program_file_guard.hpp"
 #include "file_management.hpp"
+#include "file_path.hpp"
 #include "safe_file.hpp"
 #include "editor_perf.hpp"
 #include "storage.hpp"
@@ -12,6 +13,7 @@
 #include <cerrno>
 #include <new>
 #include <memory>
+#include <algorithm>
 #include <dirent.h>
 #include <sys/stat.h>
 
@@ -64,7 +66,7 @@ bool parse_text(
         n=n*10+(*p++-'0'); if(n>INT32_MAX) return false;
     }
     if(canonical) { if(*p==' ') ++p; }
-    else while (*p==' ' || *p=='\t') ++p;
+    else if (*p==' ' || *p=='\t') ++p;
     length=std::strlen(p);
     while(length && (p[length-1]=='\r' || p[length-1]=='\n'))
         p[--length]=0;
@@ -79,7 +81,8 @@ bool read_sd_entry(
     std::int32_t& number,
     const char*& text,
     std::size_t& length,
-    bool canonical
+    bool canonical,
+    ProgramSourceMode mode = ProgramSourceMode::ClassicNumbered
 ) {
     if(!file || !scratch || capacity==0 ||
        std::fseek(file,entry.offset,SEEK_SET)!=0 ||
@@ -90,9 +93,14 @@ bool read_sd_entry(
     char* body=nullptr;
     std::int32_t parsed=0;
     std::size_t body_length=0;
-    if(!parse_text(
-            scratch,parsed,body,body_length,canonical,
-            kMaxSdProgramLineLength) ||
+    bool valid = false;
+    if (mode == ProgramSourceMode::Structured) {
+        body = scratch; parsed = entry.number; body_length = std::strlen(body);
+        while (body_length && (body[body_length-1]=='\r' || body[body_length-1]=='\n'))
+            body[--body_length]=0;
+        valid = body_length < kMaxSdProgramLineLength;
+    } else valid = parse_text(scratch,parsed,body,body_length,canonical,kMaxSdProgramLineLength);
+    if(!valid ||
        parsed!=entry.number || body_length!=entry.length ||
        hash_line(parsed,body,body_length)!=entry.hash) return false;
     number=parsed;
@@ -662,8 +670,8 @@ bool ProgramStore::normalize(const char* input,char* output) const {
     return true;
 }
 bool ProgramStore::ready() const {
-    if(backend_==ProgramBackend::Ram) return true;
     if(suspended_) return fail("PROGRAM STORAGE SUSPENDED - RESUME IN MENU");
+    if(backend_==ProgramBackend::Ram) return true;
     if(!storage::available() || !storage::card_present()) return fail("SD CARD REMOVED - PROGRAM STORAGE SUSPENDED",true);
     return true;
 }
@@ -675,7 +683,7 @@ bool ProgramStore::set_dirty(bool value) {
         Lease lease;if(!lease.locked)return fail(storage::last_error());
         // Keep the recovery metadata consistent with the in-memory flag.
         // This is only written when the state changes, never per keystroke.
-        if(!write_session(sd_->work,filename_,value))return false;
+        if(!write_session(sd_->work,filename_,value,source_mode_))return false;
     }
     dirty_=value;error_="OK";return true;
 }
@@ -711,7 +719,7 @@ bool ProgramStore::read_text_unlocked(
     editor_perf::sd_open();
     bool ok=read_sd_entry(
         f,entry,sd_->scratch,sizeof(sd_->scratch),
-        number,text,length,program_files::reserved(sd_->work));
+        number,text,length,program_files::reserved(sd_->work),sd_->source_mode);
     if(std::fclose(f)!=0)ok=false;
     if(ok) sd_cache_store(i,entry,text,length);
     if(!ok)
@@ -800,7 +808,7 @@ bool ProgramStore::visit_line_range(
         std::size_t length=0;
         if(!read_sd_entry(
                 file,sd_->lines[index],sd_->scratch,sizeof(sd_->scratch),
-                number,body,length,program_files::reserved(sd_->work))) {
+                number,body,length,program_files::reserved(sd_->work),sd_->source_mode)) {
             ok=false;
             break;
         }
@@ -836,19 +844,29 @@ bool ProgramStore::new_work_name(char* name) const {
 // live only after SafeFileWriter has flushed, closed and committed the file.
 bool ProgramStore::snapshot(
     const char* target,const ProgramStore& source,SdProgramStore& index,
-    std::size_t& count,std::size_t& bytes,const PendingEdit* edit,bool remove
+    std::size_t& count,std::size_t& bytes,const PendingEdit* edit,bool remove,
+    const PendingEdit* second_edit, const RowEdit* row_edit
 ) {
+    index.source_mode = source.source_mode_;
     SafeFileWriter writer;
     if(!writer.open(target,"RMBEDIT",root_))return fail(writer.error());
-    count=0;bytes=0;bool inserted=false;
+    count=0;bytes=0;
+    const PendingEdit* edits[2] = {edit, second_edit};
+    const std::size_t edit_count = second_edit ? 2u : edit ? 1u : 0u;
+    if (edit_count == 2 && edits[0]->number > edits[1]->number)
+        std::swap(edits[0], edits[1]);
+    std::size_t edit_index = 0;
+    auto removed = [&](const PendingEdit* item) {
+        return item->text == nullptr || (item == edit && remove);
+    };
     auto emit=[&](std::int32_t number,const char* text,std::size_t length) {
         if(count>=kMaxSdProgramLines)return fail("SD PROGRAM FULL");
         if(length>=kMaxSdProgramLineLength)return fail("SD LINE TOO LONG");
         if(!index.reserve(count+1))return fail("OUT OF MEMORY");
         char prefix[16];
-        const int prefix_length=std::snprintf(
+        const int prefix_length=source.source_mode_ == ProgramSourceMode::Structured ? 0 : std::snprintf(
             prefix,sizeof(prefix),"%ld ",static_cast<long>(number));
-        if(prefix_length<=0||prefix_length>=static_cast<int>(sizeof(prefix)))
+        if(prefix_length<0||prefix_length>=static_cast<int>(sizeof(prefix)))
             return fail("BAD BASIC LINE");
         const std::uint8_t newline='\n';
         index.lines[count++]={
@@ -866,22 +884,37 @@ bool ProgramStore::snapshot(
         bytes+=static_cast<std::size_t>(prefix_length)+length+1;
         return true;
     };
-    for(std::size_t i=0;i<source.count_;++i) {
+    if (row_edit) {
+        for (std::size_t i=0;i<=source.count_;++i) {
+            if (i==row_edit->first)
+                for(std::size_t j=0;j<row_edit->insert;++j)
+                    if(!emit(static_cast<std::int32_t>(count+1),row_edit->rows[j],
+                             std::strlen(row_edit->rows[j]))) return false;
+            if(i==source.count_) break;
+            if(i>=row_edit->first && i<row_edit->first+row_edit->remove) continue;
+            std::int32_t id=0; const char* body=nullptr; std::size_t length=0;
+            if(!source.read_text_unlocked(i,id,body,length) ||
+               !emit(static_cast<std::int32_t>(count+1),body,length)) return false;
+        }
+    } else for(std::size_t i=0;i<source.count_;++i) {
         std::int32_t number=0;const char* text=nullptr;std::size_t length=0;
         if(!source.read_text_unlocked(i,number,text,length))
             return fail(source.error(),&source==this&&source.suspended());
-        if(edit&&!inserted&&edit->number<=number) {
-            if(!remove&&!emit(
-                   edit->number,edit->text,edit->length))
+        bool replaced = false;
+        while (edit_index < edit_count && edits[edit_index]->number <= number) {
+            const PendingEdit* item = edits[edit_index++];
+            if (!removed(item) && !emit(item->number, item->text, item->length))
                 return false;
-            inserted=true;
+            replaced = replaced || item->number == number;
         }
-        if(edit&&edit->number==number)continue;
+        if (replaced) continue;
         if(!emit(number,text,length))return false;
     }
-    if(edit&&!inserted&&!remove&&
-       !emit(edit->number,edit->text,edit->length))
-        return false;
+    while (edit_index < edit_count) {
+        const PendingEdit* item = edits[edit_index++];
+        if (!removed(item) && !emit(item->number, item->text, item->length))
+            return false;
+    }
     if(!writer.commit())return fail(writer.error());
     std::snprintf(index.work,sizeof(index.work),"%s",target);
     if(program_files::reserved(target)&&!verify(index,count)) {
@@ -904,9 +937,14 @@ bool ProgramStore::verify(
         if(raw_length==sizeof(index.scratch)-1&&
            index.scratch[raw_length-1]!='\n'){ok=false;break;}
         char* body=nullptr;std::size_t length=0;std::int32_t number=0;
-        if(n>=count||
-           !parse_text(index.scratch,number,body,length,true,
-                       kMaxSdProgramLineLength)||
+        bool parsed=false;
+        if (index.source_mode==ProgramSourceMode::Structured) {
+            body=index.scratch; number=n<count?index.lines[n].number:0;
+            length=std::strlen(body);
+            while(length && (body[length-1]=='\r'||body[length-1]=='\n'))body[--length]=0;
+            parsed=length<kMaxSdProgramLineLength;
+        } else parsed=parse_text(index.scratch,number,body,length,true,kMaxSdProgramLineLength);
+        if(n>=count||!parsed||
            index.lines[n].offset!=offset||
            index.lines[n].number!=number||
            index.lines[n].length!=length||
@@ -925,7 +963,8 @@ bool ProgramStore::read_session_file(
     session=SessionMetadata{};
     char path[192];std::snprintf(path,sizeof(path),"%s%s",root_,name);
     FILE* file=std::fopen(path,"rb");if(!file)return false;
-    char line[192];bool version=false,work=false,filename=false,dirty=false,ok=true;
+    char line[192];bool version=false,work=false,filename=false,dirty=false,source_mode=false,ok=true;
+    int format=1;
     while(std::fgets(line,sizeof(line),file)) {
         const std::size_t length=std::strlen(line);
         if(length==sizeof(line)-1&&line[length-1]!='\n'){ok=false;break;}
@@ -936,14 +975,14 @@ bool ProgramStore::read_session_file(
         if(!equals){ok=false;break;}
         *equals++=0;
         if(program_files::equal(line,"version")) {
-            if(version||std::strcmp(equals,"1")!=0){ok=false;break;}
-            version=true;
+            if(version||(std::strcmp(equals,"1")&&std::strcmp(equals,"2"))){ok=false;break;}
+            format=*equals-'0'; version=true;
         } else if(program_files::equal(line,"work")) {
             if(work||!work_file_name(equals)){ok=false;break;}
             std::snprintf(session.work,sizeof(session.work),"%s",equals);work=true;
         } else if(program_files::equal(line,"file")) {
             if(filename||(*equals&&
-               (!SafeFileWriter::valid_root_name(equals)||
+               (!file_paths::valid_relative(equals)||
                 program_files::reserved(equals)))){ok=false;break;}
             std::snprintf(session.filename,sizeof(session.filename),"%s",equals);
             filename=true;
@@ -951,19 +990,25 @@ bool ProgramStore::read_session_file(
             if(dirty||(std::strcmp(equals,"0")&&std::strcmp(equals,"1")))
                 {ok=false;break;}
             session.dirty=*equals=='1';dirty=true;
+        } else if(program_files::equal(line,"source_mode")) {
+            if(source_mode||(std::strcmp(equals,"0")&&std::strcmp(equals,"1"))){ok=false;break;}
+            session.source_mode=*equals=='1'?ProgramSourceMode::Structured:ProgramSourceMode::ClassicNumbered;
+            source_mode=true;
         } else {ok=false;break;}
     }
-    if(std::ferror(file)||std::fclose(file)!=0)ok=false;
-    return ok&&version&&work&&filename&&dirty;
+    if(std::ferror(file))ok=false;
+    if(std::fclose(file)!=0)ok=false;
+    if(format==1)session.source_mode=ProgramSourceMode::ClassicNumbered;
+    return ok&&version&&work&&filename&&dirty&&(format==1 || source_mode);
 }
 bool ProgramStore::write_session(
-    const char* work,const char* filename,bool dirty
+    const char* work,const char* filename,bool dirty,ProgramSourceMode mode
 ) {
     if(!work_file_name(work)||!filename)return fail("BAD SESSION STATE");
     char text[256];
     const int length=std::snprintf(
-        text,sizeof(text),"version=1\nwork=%s\nfile=%s\ndirty=%d\n",
-        work,filename,dirty?1:0);
+        text,sizeof(text),"version=2\nwork=%s\nfile=%s\ndirty=%d\nsource_mode=%d\n",
+        work,filename,dirty?1:0,mode==ProgramSourceMode::Structured?1:0);
     if(length<=0||length>=static_cast<int>(sizeof(text)))
         return fail("BAD SESSION STATE");
     // A completed SafeFileWriter commit may leave its old backup when only
@@ -985,6 +1030,36 @@ bool ProgramStore::write_session(
                      static_cast<std::size_t>(length))||!writer.commit())
         return fail("SESSION WRITE ERROR");
     return true;
+}
+bool ProgramStore::preserve_unverified_work_locked() {
+    // An unreadable/mismatched session must not erase its last editing source.
+    // Retain every work file as an ordinary, loadable recovery BAS before cleanup.
+    unsigned serial=0;
+    for(;;) {
+        DIR* directory=opendir(root_);
+        if(!directory)return fail("SESSION PRESERVATION ERROR");
+        char name[80]={};
+        while(dirent* entry=readdir(directory)) {
+            if(work_file_name(entry->d_name)) {
+                std::snprintf(name,sizeof(name),"%s",entry->d_name);break;
+            }
+        }
+        closedir(directory);
+        if(!*name)return true;
+        char source[192],target[192];
+        std::snprintf(source,sizeof(source),"%s%s",root_,name);
+        bool selected=false;
+        for(;serial<10000;++serial) {
+            std::snprintf(target,sizeof(target),"%sRECOVER%04u.BAS",root_,serial);
+            struct stat value;
+            if(stat(target,&value)!=0) {
+                if(errno!=ENOENT)return fail("SESSION PRESERVATION ERROR");
+                selected=true;++serial;break;
+            }
+        }
+        if(!selected||std::rename(source,target)!=0)
+            return fail("SESSION PRESERVATION ERROR");
+    }
 }
 bool ProgramStore::cleanup_orphans_locked(
     const char* active_work,const char* session_work
@@ -1028,12 +1103,12 @@ bool ProgramStore::publish_sd(
     // The candidate is complete and verified before the atomic metadata switch.
     // If power fails after RMBASIC.SES commits, the next boot can safely adopt
     // this snapshot even if the volatile pointer was not yet changed.
-    if(!write_session(next->work,published_filename,dirty)) {
+    if(!write_session(next->work,published_filename,dirty,next->source_mode)) {
         remove_work(root_,next->work);
         return false;
     }
     SdProgramStore* old=sd_;
-    sd_=next;count_=count;bytes_=bytes;backend_=ProgramBackend::Sd;
+    sd_=next;source_mode_=next->source_mode;count_=count;bytes_=bytes;backend_=ProgramBackend::Sd;
     invalidate_sd_cache();
     suspended_=false;dirty_=dirty;session_recovered_=false;
     std::snprintf(filename_,sizeof(filename_),"%s",published_filename);
@@ -1052,7 +1127,8 @@ bool ProgramStore::recover_session_locked(ProgramStorageMode mode) {
         if(!read_session_file(metadata,session))return false;
         index.reset(allocate_backend<SdProgramStore>());
         if(!index)return false;
-        if(!scan(session.work,*index,count)||!verify(*index,count))return false;
+        if(!scan(session.work,*index,count,session.source_mode)||
+           index->source_mode!=session.source_mode||!verify(*index,count))return false;
         char path[192];std::snprintf(path,sizeof(path),"%s%s",root_,session.work);
         struct stat value;
         if(stat(path,&value)!=0||value.st_size<0)return false;
@@ -1085,7 +1161,7 @@ bool ProgramStore::recover_session_locked(ProgramStorageMode mode) {
     }
     std::remove(temp);
     SdProgramStore* old=sd_;
-    sd_=next.release();count_=count;bytes_=bytes;backend_=ProgramBackend::Sd;
+    sd_=next.release();source_mode_=sd_->source_mode;count_=count;bytes_=bytes;backend_=ProgramBackend::Sd;
     invalidate_sd_cache();
     mode_=mode;suspended_=false;dirty_=session.dirty;session_recovered_=true;
     std::snprintf(filename_,sizeof(filename_),"%s",session.filename);
@@ -1107,51 +1183,53 @@ bool ProgramStore::recover_session(
     return recover_session_locked(mode);
 }
 bool ProgramStore::scan(
-    const char* name,SdProgramStore& index,std::size_t& count
+    const char* name,SdProgramStore& index,std::size_t& count,
+    ProgramSourceMode empty_mode
 ) const {
     char path[192];std::snprintf(path,sizeof(path),"%s%s",root_,name);
     FILE* f=std::fopen(path,"rb");if(!f)return fail("FILE NOT FOUND");
-    count=0;bool ok=true;std::uint32_t position=0;
-    while(true) {
-        const auto offset=position;
-        if(!std::fgets(index.scratch,sizeof(index.scratch),f))break;
-        const auto raw_length=std::strlen(index.scratch);
-        position+=static_cast<std::uint32_t>(raw_length);
-        if(raw_length==sizeof(index.scratch)-1&&
-           index.scratch[raw_length-1]!='\n') {
+    bool numbered=false,plain=false,ok=true;
+    while(std::fgets(index.scratch,sizeof(index.scratch),f)) {
+        const std::size_t n=std::strlen(index.scratch);
+        if(n==sizeof(index.scratch)-1 && index.scratch[n-1]!='\n') {
             ok=fail("SD LINE TOO LONG");break;
         }
-        char* p=index.scratch;
-        while(*p&&std::isspace(static_cast<unsigned char>(*p)))++p;
+        const char* p=index.scratch;
+        while(*p && std::isspace(static_cast<unsigned char>(*p)))++p;
         if(!*p)continue;
-        char* body=nullptr;std::size_t length=0;std::int32_t number=0;
-        if(!parse_text(
-               p,number,body,length,program_files::reserved(name),
-               kMaxSdProgramLineLength)) {
-            ok=fail("BAD BASIC FILE / SD LINE TOO LONG");break;
+        if(std::isdigit(static_cast<unsigned char>(*p)))numbered=true;
+        else plain=true;
+        if(numbered&&plain){ok=fail("MIXED SOURCE MODE");break;}
+    }
+    if(std::ferror(f))ok=fail("SD READ ERROR");
+    index.source_mode=numbered?ProgramSourceMode::ClassicNumbered:
+                      plain?ProgramSourceMode::Structured:empty_mode;
+    std::rewind(f); count=0;std::uint32_t position=0;
+    while(ok && std::fgets(index.scratch,sizeof(index.scratch),f)) {
+        const auto raw_length=std::strlen(index.scratch);
+        const auto offset=position;
+        position+=static_cast<std::uint32_t>(raw_length);
+        char* body=index.scratch;std::size_t length=raw_length;
+        std::int32_t number=static_cast<std::int32_t>(count+1);
+        if(index.source_mode==ProgramSourceMode::ClassicNumbered) {
+            char* p=body;while(*p&&std::isspace(static_cast<unsigned char>(*p)))++p;
+            if(!*p)continue;
+            if(!parse_text(body,number,body,length,program_files::reserved(name),
+                           kMaxSdProgramLineLength)){ok=fail("BAD BASIC FILE / SD LINE TOO LONG");break;}
+        } else {
+            while(length&&(body[length-1]=='\r'||body[length-1]=='\n'))body[--length]=0;
+            if(length>=kMaxSdProgramLineLength){ok=fail("SD LINE TOO LONG");break;}
         }
-        std::size_t pos=0;
-        while(pos<count&&index.lines[pos].number<number)++pos;
+        std::size_t pos=0;while(pos<count&&index.lines[pos].number<number)++pos;
         const bool exists=pos<count&&index.lines[pos].number==number;
-        // A BASIC file is a persisted source document, not a sequence of
-        // interactive commands. Keep an empty numbered line so the editor's
-        // "10 " snapshot survives save/load. Direct-mode "10" deletion is
-        // still handled by the REPL before ProgramStore is called.
         if(!exists) {
-            if(count==kMaxSdProgramLines) {
-                ok=fail("SD PROGRAM FULL");break;
-            }
-            if(!index.reserve(count+1)) {
-                ok=fail("OUT OF MEMORY");break;
-            }
+            if(count==kMaxSdProgramLines){ok=fail("SD PROGRAM FULL");break;}
+            if(!index.reserve(count+1)){ok=fail("OUT OF MEMORY");break;}
             for(auto j=count;j>pos;--j)index.lines[j]=index.lines[j-1];
             ++count;
         }
-        index.lines[pos]={
-            number,static_cast<std::uint32_t>(offset),
-            hash_line(number,body,length),
-            static_cast<std::uint16_t>(length)
-        };
+        index.lines[pos]={number,static_cast<std::uint32_t>(offset),
+            hash_line(number,body,length),static_cast<std::uint16_t>(length)};
     }
     if(std::ferror(f))ok=fail("SD READ ERROR");
     if(std::fclose(f)!=0)ok=fail("SD READ ERROR");
@@ -1184,6 +1262,7 @@ bool ProgramStore::initialize(ProgramStorageMode mode) {
     // Session recovery has been decided before cleanup. Invalid/missing
     // metadata never blocks boot; start an empty verified workspace.
     session_recovered_=false;error_="OK";
+    if(!preserve_unverified_work_locked())return false;
     cleanup_orphans_locked(nullptr,nullptr);
     BackendPtr<SdProgramStore> next(allocate_backend<SdProgramStore>());
     if(!next)return fail("OUT OF MEMORY");
@@ -1211,6 +1290,7 @@ bool ProgramStore::switch_mode(ProgramStorageMode mode,bool discard) {
         ProgramStore next;
         next.backend_=ProgramBackend::Ram;
         next.mode_=mode;
+        next.source_mode_=source_mode_;
         if(!next.ensure_ram_store()) return fail("OUT OF MEMORY");
 
         if(!discard) {
@@ -1248,7 +1328,7 @@ bool ProgramStore::switch_mode(ProgramStorageMode mode,bool discard) {
     BackendPtr<SdProgramStore> next(allocate_backend<SdProgramStore>());
     if(!next) return fail("OUT OF MEMORY");
     char work[80]; if(!new_work_name(work)) return false;
-    ProgramStore empty; std::size_t count,bytes;
+    ProgramStore empty; empty.source_mode_=source_mode_; std::size_t count,bytes;
     if(!snapshot(work,discard?empty:*this,*next,count,bytes)) return false;
     const char* next_filename=discard?"":filename_;
     const bool next_dirty=discard?false:dirty_;
@@ -1266,7 +1346,7 @@ bool ProgramStore::resume() {
     BackendPtr<SdProgramStore> check(allocate_backend<SdProgramStore>());
     if(!check) return fail("OUT OF MEMORY");
     std::size_t count;
-    if(!scan(sd_->work,*check,count)) return fail("SD WORK FILE MISSING - STORAGE SUSPENDED",true);
+    if(!scan(sd_->work,*check,count,source_mode_)) return fail("SD WORK FILE MISSING - STORAGE SUSPENDED",true);
     bool changed=count!=count_;
     for(std::size_t i=0;!changed&&i<count;++i) {
         const auto& a=check->lines[i];
@@ -1306,8 +1386,9 @@ bool ProgramStore::resume_after_usb() {
         ProgramStore input;input.root_=root_;input.backend_=ProgramBackend::Sd;
         input.sd_=allocate_backend<SdProgramStore>();
         if(!input.sd_)return fail("OUT OF MEMORY",true);
-        if(!scan(filename_,*input.sd_,input.count_))
+        if(!scan(filename_,*input.sd_,input.count_,source_mode_))
             return fail("PROGRAM FILE CHANGED OR MISSING - STORAGE SUSPENDED",true);
+        input.source_mode_=input.sd_->source_mode;
         if(!snapshot(work,input,*next,count,bytes))
             return fail("PROGRAM FILE CHANGED OR MISSING - STORAGE SUSPENDED",true);
     } else {
@@ -1331,6 +1412,167 @@ bool ProgramStore::edit_sd(
     if(!publish_sd(next.get(),count,bytes,filename_,true))return false;
     next.release();return true;
 }
+
+bool ProgramStore::replace_line_pair(
+    std::int32_t first, const char* first_text,
+    std::int32_t second, const char* second_text
+) {
+    if (first < 0 || second < 0 || first == second) return fail("BAD LINE PAIR");
+    if (!ready()) return false;
+    if (backend_ == ProgramBackend::Ram && !ensure_ram_store())
+        return fail("OUT OF MEMORY");
+    const char* supplied[2] = {first_text, second_text};
+    const std::int32_t numbers[2] = {first, second};
+    std::size_t lengths[2] = {};
+    for (int j = 0; j < 2; ++j) {
+        if (!supplied[j]) continue;
+        lengths[j] = std::strlen(supplied[j]);
+        if (lengths[j] > line_length_capacity() ||
+            std::strpbrk(supplied[j], "\r\n")) return fail("LINE TOO LONG OR INVALID");
+    }
+    // Copy caller text before any borrowed ProgramStore scratch is reused.
+    struct Texts {
+        char next[2][kMaxSdProgramLineLength] = {};
+        char old[2][kMaxSdProgramLineLength] = {};
+    };
+    BackendPtr<Texts> text(allocate_backend<Texts>());
+    if (!text) return fail("OUT OF MEMORY");
+    for (int j = 0; j < 2; ++j)
+        if (supplied[j]) std::memcpy(text->next[j], supplied[j], lengths[j] + 1u);
+
+    bool exists[2] = {};
+    std::size_t next_count = count_;
+    for (std::size_t i = 0; i < count_; ++i) {
+        std::int32_t n = 0;
+        std::size_t length = 0;
+        if (!read_line_metadata(i, n, length)) return false;
+        for (int j = 0; j < 2; ++j) if (n == numbers[j]) {
+            exists[j] = true;
+            --next_count;
+        }
+    }
+    for (int j = 0; j < 2; ++j) if (supplied[j]) ++next_count;
+    if (next_count > line_capacity()) return fail("PROGRAM FULL - EDIT NOT APPLIED");
+
+    if (backend_ == ProgramBackend::Sd) {
+        Lease lease;
+        if (!lease.locked) return fail(storage::last_error());
+        BackendPtr<SdProgramStore> next(allocate_backend<SdProgramStore>());
+        if (!next) return fail("OUT OF MEMORY");
+        PendingEdit a{first, supplied[0] ? text->next[0] : nullptr, lengths[0]};
+        PendingEdit b{second, supplied[1] ? text->next[1] : nullptr, lengths[1]};
+        std::size_t count = 0, bytes = 0;
+        char work[80];
+        if (!new_work_name(work) || !snapshot(work, *this, *next, count, bytes,
+                                             &a, false, &b)) return false;
+        if (!publish_sd(next.get(), count, bytes, filename_, true)) return false;
+        next.release();
+        return true;
+    }
+
+    if (!ram_psram_) {
+        // No allocation or I/O after preflight: compact in place, then insert.
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < count_; ++i) {
+            if (ram_->lines[i].number != first && ram_->lines[i].number != second)
+                ram_->lines[kept++] = ram_->lines[i];
+        }
+        for (int j = 0; j < 2; ++j) if (supplied[j]) {
+            std::size_t at = 0;
+            while (at < kept && ram_->lines[at].number < numbers[j]) ++at;
+            std::memmove(ram_->lines + at + 1, ram_->lines + at,
+                         (kept - at) * sizeof(ProgramLine));
+            ram_->lines[at].number = numbers[j];
+            std::memcpy(ram_->lines[at].text, text->next[j], lengths[j] + 1u);
+            ++kept;
+        }
+        count_ = kept;
+        bytes_ = 0;
+        for (std::size_t i = 0; i < count_; ++i) bytes_ += line_bytes(ram_->lines[i]);
+    } else {
+        // The source remains compact: copy only indexes and the two edited
+        // bodies, never the 2 MiB program. Retain before-images for rollback.
+        const std::size_t capacity = std::max<std::size_t>(1, std::max(count_, next_count));
+        auto* old = static_cast<PsramProgramIndexEntry*>(
+            std::malloc(capacity * 2u * sizeof(PsramProgramIndexEntry)));
+        if (!old) return fail("OUT OF MEMORY");
+        auto* next = old + capacity;
+        if (count_ && !psram::read(ram_psram_base_, old,
+                                 count_ * sizeof(PsramProgramIndexEntry))) {
+            std::free(old);
+            return fail("PSRAM READ ERROR");
+        }
+        std::uint16_t old_slot[2] = {};
+        std::size_t old_length[2] = {};
+        bool used[kMaxPsramProgramLines] = {};
+        std::size_t kept = 0;
+        for (std::size_t i = 0; i < count_; ++i) {
+            const auto& entry = old[i];
+            if (entry.slot >= kMaxPsramProgramLines ||
+                entry.length >= kMaxPsramProgramLineLength) {
+                std::free(old);
+                return fail("PSRAM INDEX ERROR");
+            }
+            int changed = entry.number == first ? 0 : entry.number == second ? 1 : -1;
+            if (changed >= 0) {
+                const char* original = nullptr;
+                if (!psram_read_text(entry, original)) {
+                    std::free(old);
+                    return fail("PSRAM READ ERROR");
+                }
+                std::memcpy(text->old[changed], original, entry.length + 1u);
+                old_slot[changed] = entry.slot;
+                old_length[changed] = entry.length;
+            } else {
+                used[entry.slot] = true;
+                next[kept++] = entry;
+            }
+        }
+        bool ok = true;
+        for (int j = 0; j < 2 && ok; ++j) if (supplied[j]) {
+            std::size_t slot = 0;
+            while (slot < kMaxPsramProgramLines && used[slot]) ++slot;
+            if (slot == kMaxPsramProgramLines) { ok = false; break; }
+            used[slot] = true;
+            ok = psram_write_text(static_cast<std::uint16_t>(slot),
+                                  text->next[j], lengths[j]);
+            next[kept++] = {numbers[j], hash_line(numbers[j], text->next[j], lengths[j]),
+                static_cast<std::uint16_t>(slot), static_cast<std::uint16_t>(lengths[j])};
+        }
+        if (ok) {
+            std::sort(next, next + kept, [](const auto& a, const auto& b) {
+                return a.number < b.number;
+            });
+            if (kept) ok = psram::write(ram_psram_base_, next,
+                                       kept * sizeof(PsramProgramIndexEntry));
+        }
+        if (!ok) {
+            bool restored = true;
+            for (int j = 0; j < 2; ++j) if (exists[j]) {
+                const bool written = psram_write_text(old_slot[j], text->old[j], old_length[j]);
+                restored = written && restored;
+            }
+            if (count_) {
+                const bool written = psram::write(ram_psram_base_, old,
+                                                  count_ * sizeof(PsramProgramIndexEntry));
+                restored = written && restored;
+            }
+            std::free(old);
+            return fail(restored ? "PSRAM EDIT FAILED - ORIGINAL RESTORED"
+                                 : "PSRAM RECOVERY REQUIRED", !restored);
+        }
+        bytes_ = 0;
+        for (std::size_t i = 0; i < kept; ++i)
+            bytes_ += line_bytes(next[i].number, nullptr, next[i].length);
+        count_ = kept;
+        std::free(old);
+    }
+    dirty_ = true;
+    bump_revision();
+    error_ = "OK";
+    return true;
+}
+
 bool ProgramStore::set_line(std::int32_t number,const char* text) {
     if(!text)return fail("BAD LINE");
     const std::size_t length=std::strlen(text);
@@ -1414,7 +1656,7 @@ bool ProgramStore::clear() {
     if(backend_==ProgramBackend::Sd) {
         Lease lease; if(!lease.locked) return fail(storage::last_error());
         char work[80]; if(!new_work_name(work)) return false;
-        ProgramStore empty; std::size_t count,bytes;
+        ProgramStore empty; empty.source_mode_=source_mode_; std::size_t count,bytes;
         BackendPtr<SdProgramStore> next(allocate_backend<SdProgramStore>());
         if(!next) return fail("OUT OF MEMORY");
         if(!snapshot(work,empty,*next,count,bytes)) return false;
@@ -1449,7 +1691,7 @@ bool ProgramStore::load(const char* name) {
             allocate_backend<SdProgramStore>());
         if(!source) return fail("OUT OF MEMORY");
         std::size_t source_count=0;
-        if(!scan(filename,*source,source_count)) return false;
+        if(!scan(filename,*source,source_count,source_mode_)) return false;
 
         if(!ram_psram_) {
             if(source_count>kMaxRamProgramLines)
@@ -1497,7 +1739,7 @@ bool ProgramStore::load(const char* name) {
                     number,
                     body,
                     length,
-                    false)) {
+                    false,source->source_mode)) {
                 ok=false;
                 break;
             }
@@ -1546,6 +1788,7 @@ bool ProgramStore::load(const char* name) {
         if(!ok) return fail(
             ram_psram_ ? "PSRAM LOAD ERROR" : "SD READ ERROR");
 
+        source_mode_=source->source_mode;
         count_=source_count;
         bytes_=loaded_bytes;
         std::snprintf(filename_,sizeof(filename_),"%s",filename);
@@ -1558,7 +1801,8 @@ bool ProgramStore::load(const char* name) {
     }
     ProgramStore input; input.root_=root_;input.backend_=ProgramBackend::Sd;
     input.sd_=allocate_backend<SdProgramStore>();if(!input.sd_) return fail("OUT OF MEMORY");
-    if(!scan(filename,*input.sd_,input.count_)) return false;
+    if(!scan(filename,*input.sd_,input.count_,source_mode_)) return false;
+    input.source_mode_=input.sd_->source_mode;
     char work[80];if(!new_work_name(work)) return false;
     BackendPtr<SdProgramStore> next(allocate_backend<SdProgramStore>());
     if(!next) return fail("OUT OF MEMORY");
@@ -1567,24 +1811,21 @@ bool ProgramStore::load(const char* name) {
     if(!publish_sd(next.get(),count,bytes,filename,false))return false;
     next.release();protect();return true;
 }
-bool ProgramStore::note_source_renamed(
-    const char* old_name,
-    const char* new_name
-) {
-    if(!old_name || !new_name ||
-       !program_files::equal(filename_,old_name)) return true;
-    char normalized[80];
-    if(!normalize(new_name,normalized)) return false;
-    if(backend_==ProgramBackend::Sd) {
-        if(!ready() || !sd_ || !work_file_name(sd_->work))
-            return fail("BAD SESSION STATE");
+bool ProgramStore::note_source_renamed(const char* old_name, const char* new_name) {
+    if (!old_name || !new_name || !*filename_ ||
+        !file_paths::same_or_child(filename_, old_name)) return true;
+    char normalized[80] = {};
+    if (!file_paths::relocate(filename_, old_name, new_name, normalized, sizeof(normalized)))
+        return fail("RENAMED SOURCE PATH TOO LONG");
+    if (backend_ == ProgramBackend::Sd) {
+        if (!ready() || !sd_ || !work_file_name(sd_->work)) return fail("BAD SESSION STATE");
         Lease lease;
-        if(!lease.locked) return fail(storage::last_error());
-        if(!write_session(sd_->work,normalized,dirty_)) return false;
+        if (!lease.locked) return fail(storage::last_error());
+        if (!write_session(sd_->work, normalized, dirty_,source_mode_)) return false;
     }
-    std::snprintf(filename_,sizeof(filename_),"%s",normalized);
+    std::memcpy(filename_, normalized, std::strlen(normalized) + 1u);
     protect();
-    error_="OK";
+    error_ = "OK";
     return true;
 }
 
@@ -1597,8 +1838,9 @@ bool ProgramStore::save(const char* name) {
     std::size_t count,bytes;
     if(!snapshot(filename,*this,*index,count,bytes)) return false;
     if(backend_==ProgramBackend::Sd &&
-       !write_session(sd_->work,filename,false))return false;
+       !write_session(sd_->work,filename,false,source_mode_))return false;
     std::snprintf(filename_,sizeof(filename_),"%s",filename);
     dirty_=false;session_recovered_=false;protect();return true;
 }
+#include "program_source_rows.inc"
 } // namespace rmb

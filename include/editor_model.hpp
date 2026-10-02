@@ -13,6 +13,8 @@ namespace rmb {
 class EditorDocument {
 public:
     virtual ~EditorDocument() = default;
+    virtual ProgramSourceMode source_mode() const { return ProgramSourceMode::ClassicNumbered; }
+    virtual bool replace_source_rows(std::size_t,std::size_t,const char* const*,std::size_t) { return false; }
     virtual std::size_t line_count() const = 0;
     virtual std::size_t max_body_length() const = 0;
     virtual bool line_metadata(
@@ -29,6 +31,9 @@ public:
     virtual bool set_line(std::int32_t number, const char* body) = 0;
     virtual bool erase_line(std::int32_t number) = 0;
     virtual const char* error() const = 0;
+    virtual bool replace_line_pair(std::int32_t, const char*, std::int32_t, const char*) {
+        return false;
+    }
 };
 
 struct EditorVisualPosition {
@@ -54,6 +59,7 @@ public:
         std::size_t visible_body_columns
     );
 
+    bool structured() const { return document_.source_mode()==ProgramSourceMode::Structured; }
     bool has_line() const { return has_line_; }
     std::size_t line_count() const { return document_.line_count(); }
     std::size_t current_index() const { return index_; }
@@ -109,11 +115,15 @@ public:
     bool page_down();
 
     bool insert_char(char value);
+    // Insert spaces to the next logical four-column tab stop, atomically.
+    bool insert_tab();
     bool backspace();
     bool delete_char();
 
     bool commit();
     bool insert_line(std::int32_t number);
+    bool split_line(std::int32_t new_number);
+    bool join_line(bool previous);
     bool delete_line();
     bool undo();
     bool redo();
@@ -159,6 +169,9 @@ private:
     bool history_fault_ = false;
     const char* error_ = "OK";
 
+    bool capture_rows(std::size_t first,std::size_t count,EditorHistorySnapshot& out);
+    bool structured_replace(std::size_t first,std::size_t remove,const char* const* rows,
+                            std::size_t insert,std::size_t focus,std::size_t cursor);
     bool fail(const char* message);
     void history_boundary();
     bool history_group_matches(EditGroup group) const;
@@ -171,6 +184,7 @@ private:
         const EditorHistorySnapshot& before,
         EditGroup group
     );
+    bool capture_other(std::int32_t number, EditorHistorySnapshot& snapshot);
     bool restore_snapshot(const EditorHistorySnapshot& snapshot);
     bool apply_history(bool redo);
     bool load_index(

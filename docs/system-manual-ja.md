@@ -1,8 +1,8 @@
 # Cala's Pokecom BASIC System
-## Version 0.91
+## Version 0.92
 ## System Manual / システムマニュアル
 
-本書は ClockworkPi PicoCalc 上の Cala's Pokecom BASIC（CPB）v0.91 の操作、設定、保存、通信、診断を説明します。BASIC 文法は `programming-reference-ja.md` を参照してください。
+本書は ClockworkPi PicoCalc 上の Cala's Pokecom BASIC（CPB）v0.92 の操作、設定、保存、通信、診断を説明します。BASIC 文法は `programming-reference-ja.md` を参照してください。
 
 ## 1. System Overview
 
@@ -28,11 +28,12 @@ CPB は PicoCalc 単体で BASIC プログラムを作成・実行・保存で�
 
 ## 3. Control Center
 
-空の`BASIC>` promptでHOME（Shift+Tab）を押すとControl Centerを開きます。v0.91ではカテゴリ見出しと項目を同一画面に展開し、メニューlabelの`...`は使用しません。
+空の`BASIC>` promptでHOME（Shift+Tab）を押すとControl Centerを開きます。v0.92ではカテゴリ見出しと項目を同一画面に展開し、メニューlabelの`...`は使用しません。
 
 ```text
 Files
 Editor
+    New Program
 Program
     Save Program
     Save Program As
@@ -70,7 +71,7 @@ Exit
 - Enter: open / execute
 - Esc / HOME: back / exit
 
-Network、Serial、Diagnosticsを含む各カテゴリは階層化され、たとえば`Serial -> Serial Config`、`Serial -> File Transfer`のように移動します。
+Network、Serial、Diagnosticsなどは同じ一覧のカテゴリ見出しと字下げで整理します。Serialの下のSerial Config／File Transferへカーソルを移動して開きます。
 
 ## 4. BASIC prompt
 
@@ -85,7 +86,7 @@ Network、Serial、Diagnosticsを含む各カテゴリは階層化され、た�
 - `NEW`: programとDirect stateをclear
 - `CLEAR`: Direct scalarだけをclear
 
-長いprogramではLOADや初回RUNのcompileに時間がかかる場合があるため、v0.91では進捗表示を先に出して操作を受け付けたことが分かるようにしています。
+長いprogramではLOADや初回RUNのcompileに時間がかかる場合があるため、v0.92では進捗表示を先に出して操作を受け付けたことが分かるようにしています。
 
 ## 5. Program Storage
 
@@ -113,22 +114,50 @@ Direct modeと通常promptの入力bufferは191文字のままです。source ba
 
 ## 7. Files
 
+一覧は属性欄5文字＋空白1文字＋名前です。通常ファイルは先頭6文字を空白にし、フォルダーと名前の位置を揃えます。サイズは右側に表示します。
+
+```text
+/sample/test
+[DIR] games
+[DIR] music
+      mandel.bas
+      julia.bas
+```
+
+未選択フォルダーは行末の余白まで専用配色、選択中は選択色を優先します。PROGRAMS／DIRECTORYとQuick Load／送信用pickerで同じ表示規則を使います。
+SDルートからの表示パスは先頭 `/` 付き、rootは `/`。狭い欄はbasenameを優先してdirectory部分を `..` で省略し、削除・上書き確認では完全パスを複数行で表示します。表示整形は保存・実行・Quick Load割当を変更しません。最下部F-keyはbasenameのみです。
+
+
 Files には2つのmodeがあります。
 
 | Mode | 用途 | 主な操作 |
 |---|---|---|
 | PROGRAMS | BASIC program中心 | Enter LOAD、R RUN、E EDIT、N RENAME、Del DELETE、I INFO、F REFRESH |
-| DIRECTORY | root上の全対象file | P PLAY/STOP、N RENAME、Del DELETE、I INFO、F REFRESH |
+| DIRECTORY | 現在フォルダーの全対象file | P PLAY/STOP、N RENAME、Del DELETE、I INFO、F REFRESH |
 
-Left / Right でmodeを切り替えます。v0.91 は root-only で、directory navigation は行いません。
+Left / Rightでmodeを切り替えます。両modeでフォルダーをたどれます。
 
-### ファイル名
+| 操作 | 内容 |
+|---|---|
+| Enter（フォルダー） | 子フォルダーへ移動 |
+| Esc / Backspace | 親へ移動。ルートでは終了 |
+| Home | SDルートへ戻る |
+| M | フォルダー作成 |
+| N | ファイル／フォルダーの改名・移動 |
+| Delete | 確認後に削除。空でないフォルダーは拒否 |
+| I / F | 完全パス・種類・サイズ情報／再一覧化 |
 
-- 最大79文字
-- ASCII の内部空白を許可
-- 先頭・末尾の空白とドットは禁止
-- `..`、`/`、`\\`、制御文字、非ASCII文字は禁止
-- program名は必要に応じて `.BAS` を補完
+一覧は128項目ごとのバッチで、上下端から次／前へ移動できます。並び替えはバッチ内です。操作前に音声プレビューを停止します。ロード前に未保存ソースのSave／Discard／Cancelを選びます。現在プログラムや親フォルダーの改名はsessionの保存先へ反映し、失敗時は元の名前への復旧を試みます。
+
+### ファイル名とパス
+
+- SDルート相対パスは区切りを含め最大79文字。表示用の先頭 `/` は内部名へ追加しません。
+- 各成分はASCII英数字、`_`、`-`、`.`、内部空白を利用できます。
+- 成分の先頭・末尾の空白／ドット、`..`、`.`成分、重複区切り、末尾区切り、バックスラッシュ、制御文字、非ASCII文字は禁止です。
+- `/` はフォルダー区切りです。単独ファイル名には使用しません。
+- program名は必要に応じて `.BAS` を補完します。
+
+Filesの改名・作成dialogは現在フォルダー相対、先頭 `/` はルート相対です。LOAD／SAVE／DIR／FILESとSave Asはルート相対の完全パスを使います。例：`SAVE "GAMES/DEMO"`。保存先はFilesの表示フォルダーを移動しても変わりません。HTTPと受信転送はルート単一ファイル名の制限を維持します。
 
 Rename と Delete は current program への影響を考慮して処理されます。Delete は確認画面を表示します。大文字・小文字だけを変える rename は FAT の条件により制限があります。
 
@@ -140,7 +169,7 @@ Rename と Delete は current program への影響を考慮して処理されま
 - `Control Center → Editor`
 - Files PROGRAMS で対象を選び `E`
 
-Editor は program 全体の複製を作らず、現在行用の約2 KiB buffer と ProgramStore を使用します。長い logical line は 320×320 LCD の幅に合わせて折り返されます。行番号prefixを除く本文は1画面41文字幅が目安です。
+Editor は program 全体の複製を作らず、現在行用の約2 KiB buffer と ProgramStore を使用します。長い logical line は 320×320 LCD の幅に合わせて折り返されます。Classicは行番号欄12文字＋本文41文字、Structuredは論理行番号5桁＋スペース2個＋本文46文字です。論理行番号は`00001`から始まり、各logical lineの最初のvisual rowだけに表示します。折り返しの継続行は番号欄を空白にして、本文の開始位置を揃えます。この番号はEditor表示専用で、BAS保存やLISTには付きません。
 
 ### Editorキー
 
@@ -149,6 +178,7 @@ Editor は program 全体の複製を作らず、現在行用の約2 KiB buffer 
 | Arrow keys | 文字・visual row単位の移動 |
 | Shift+Up / Shift+Down | 1画面移動 |
 | Home / End | logical lineの先頭 / 末尾 |
+| Tab | 次の4文字区切りまでスペースを挿入。1回のTabは1回のUndoで戻せる |
 | Backspace / Delete | 文字削除 |
 | F1 | Save。untitledならSave As |
 | F2 | Find |
@@ -162,17 +192,28 @@ Editor は program 全体の複製を作らず、現在行用の約2 KiB buffer 
 | F10 | Delete Line（確認あり） |
 | Esc | 終了。未保存なら確認 |
 
-Enter は logical line を分割しません。新しい行を追加する場合は F5 を使います。
+Enterはカーソル位置でlogical lineを分割し、論理行頭では前に空行を挿入します。Classicでは新しい行番号を指定します。Structuredでは行番号の入力は不要です。F5でも新しい行を挿入できます。Classicの番号は手動で指定し、自動再採番しません。先頭行が10なら、論理行頭でEnterを押して5の空行を前へ挿入できます。前行があれば「前行番号 < 新番号 < 現在番号」、途中分割では「現在番号 < 新番号 < 次行番号」を満たす必要があります。
+
+論理行頭のBackspaceは前行へ、論理行末のDeleteは次行と連結します。Classicは前の番号を残し、GOTO等の参照先を自動変更しません。コロン・空白は自動追加しません。行長上限超過、不正番号、空き番号なし、キャンセルでは元の行を保持します。分割・連結は各1回のUndo／Redoで往復できます。
+
+```text
+00001  REM
+00002  REM
+```
+
+Structuredの表示番号は論理行の先頭だけに付き、折り返し行の7文字欄は空白です。空行にも番号が付き、保存ソースへ表示番号を追加しません。
+
+RUNでコンパイルエラーが出た後に`EDIT`またはControl CenterのEditorを開くと、該当するStructured row／Classic行番号へ移動します。下部に`COMPILE ERROR AT ROW/LINE`を表示します。ソースの変更・LOAD・NEW・モード変更や次のRUNで古いエラー位置を無効にします。エラー表示自体はpromptに残ります。
 
 ### Undo / Redo
 
-PicoCalc PSRAM が利用できる場合、Editor は128 KiBを履歴用に取得し、おおむね31件の coalesced Undo と31件の Redo を保持します。連続入力はまとめられる場合があります。Editor Historyはエディタを閉じると破棄されます。program本体の保存先はProgram Storage backendに従い、INTERNAL PSRAM modeではprogram source自体もPSRAM ProgramStoreに保持されます。
+PicoCalc PSRAM が利用できる場合、Editor は256 KiBを履歴用に取得し、おおむね31件の coalesced Undo と31件の Redo を保持します。連続入力はまとめられる場合があります。Editor Historyはエディタを閉じると破棄されます。program本体の保存先はProgram Storage backendに従い、INTERNAL PSRAM modeではprogram source自体もPSRAM ProgramStoreに保持されます。
 
 PSRAMがない場合も編集と保存は利用できます。F4 / F9 は無効で、状態行に理由が表示されます。
 
 ### 性能
 
-v0.91 はカーソルだけの移動を部分再描画し、key repeat中の全画面描画を抑えます。SD viewport は1回の lease / open / close でまとめて読み出します。性能測定用 UF2 は通常利用向けではありません。
+v0.92 はカーソルだけの移動を部分再描画し、key repeat中の全画面描画を抑えます。SD viewport は1回の lease / open / close でまとめて読み出します。性能測定用 UF2 は通常利用向けではありません。
 
 ## 9. Quick Load Keys
 
@@ -202,7 +243,7 @@ RTC hardwareが見つからない場合は `RTC N/A` と表示されます。配
 
 ## 13. Audio Settings
 
-v0.91 のAudioは3層です。
+v0.92 のAudioは3層です。
 
 | 設定 | 範囲 / 既定 | 対象 |
 |---|---|---|
@@ -230,7 +271,7 @@ MP3開始時は必要に応じて200 MHzを自動要求し、停止後に元のc
 
 Bluetooth Classic HID / BLE HID Keyboard に対応します。Pair、Reconnect、Disconnect、Forget、JIS / US layoutを選択できます。Paired DevicesにはKeyboardとして登録された機器だけを表示します。
 
-v0.91のBluetoothはkeyboard入力用途です。旧版のClassic SPP file transferとは役割が異なります。
+v0.92のBluetoothはkeyboard入力用途です。旧版のClassic SPP file transferとは役割が異なります。
 
 ## 16. Wi-Fi File Server
 
@@ -247,7 +288,7 @@ File TransferのtransportはAUTO、USB CDC、UART0です。Bluetooth SPP/RFCOMM�
 | XMODEM | single-file | single-file |
 | YMODEM | single-file | single / multi-file batch |
 
-v0.91 Stage 1ではtransfer hot pathを次のように最適化しています。
+v0.92 Stage 1ではtransfer hot pathを次のように最適化しています。
 
 - YMODEM RX: header／payload／CRCをbulk exact-read
 - YMODEM TX: 133／1029-byte packetをcoalesceしてwrite
@@ -280,7 +321,7 @@ SDカードをPCへUSB Mass Storageとして公開します。開始前にprogra
 | FULL | 150 MHz | 起動時既定、通常利用 |
 | EXP | 200 MHz | 高負荷、MP3、実験的 |
 
-v0.91 はprofile切替時に必要ならCYW43関連のWi-Fi / Bluetooth / Board LED serviceを停止・再初期化します。利用者が先に手動停止する必要はありません。USB Mass Storage中、PSRAM診断や競合処理中は安全のため切替を拒否します。
+v0.92 はprofile切替時に必要ならCYW43関連のWi-Fi / Bluetooth / Board LED serviceを停止・再初期化します。利用者が先に手動停止する必要はありません。USB Mass Storage中、PSRAM診断や競合処理中は安全のため切替を拒否します。
 
 CPU profileは保存されず、再起動時は必ず150 MHzへ戻ります。
 
@@ -305,7 +346,7 @@ Pico 2 W のLEDはCYW43 deviceを共有します。OFF、ON、HEARTBEATを選べ
 - Compiled Cache VALID / EMPTY、hit / miss
 - DirectState PSRAM / SRAM fallback state
 
-v0.91のPSRAMは単一ownerではなくmulti-client allocatorで管理されます。INTERNAL ProgramStoreは通常約2 MiBをclaimし、Editor History、SD Cache、DirectState、Compiled Cacheと同時利用できます。VMのhot opcode実行は内部SRAMで行います。
+v0.92のPSRAMは単一ownerではなくmulti-client allocatorで管理されます。INTERNAL ProgramStoreは通常約2 MiBをclaimし、Editor History、SD Cache、DirectState、Compiled Cacheと同時利用できます。VMのhot opcode実行は内部SRAMで行います。
 
 ## 23. PSRAM Diagnostics
 
@@ -360,7 +401,7 @@ wifi_ntp_server=pool.ntp.org
 F1=DEMO.BAS,run
 ```
 
-`cpu_mhz` と `wifi_enabled=on` が旧設定に残っていても、v0.91は安全のため起動時にCPU 150 MHz、Wi-Fi OFFとします。
+`cpu_mhz` と `wifi_enabled=on` が旧設定に残っていても、v0.92は安全のため起動時にCPU 150 MHz、Wi-Fi OFFとします。
 
 ## 25. Troubleshooting
 
@@ -402,4 +443,29 @@ source、I2C address、配線、電源を確認し、I2C SCANでdeviceを確認�
 
 ### PDFと画面の表示が違う
 
-PDF表紙がVersion 0.91であることを確認してください。旧版ではControl Center構成、Program Storage容量、Serial設定が異なります。
+PDF表紙がVersion 0.92であることを確認してください。旧版ではControl Center構成、Program Storage容量、Serial設定が異なります。
+
+## Structured programの作成・編集（v0.92）
+
+Control CenterのEditor > New ProgramからClassic BASIC／Structured BASICを選びます。未保存sourceがあればSave／Discard／Cancelを選択します。Structured新規作成後はEditorが開きます。EDITは現在sourceをそのmodeで開きます。promptのNEWはClassicを作成します。
+
+Editor上部に[CLASSIC]／[STRUCTURED]を表示します。StructuredのROWはsource位置です。番号付き入力dialogを表示せず、Enterはカーソルで分割、論理行頭Enterは前へ空行挿入、行頭Backspace／論理行末Deleteは前／次行と連結します。colonや空白は自動挿入しません。F5は空行挿入、F4/F9はUndo/Redo、F7はrow移動です。保存／再LOADで空行とindentを保持します。Tabはカーソルのlogical columnを基準に次の4文字区切りまでスペースを挿入します。Tab文字自体は保存しません。行長上限に収まらない場合は一部だけ挿入せず、元の行を保持します。
+
+Structuredがactiveなとき、promptの10 PRINTなどの番号付き入力はSTRUCTURED PROGRAM - USE EDITORで拒否し、sourceを変更しません。Direct statementとREPL commandは従来どおり利用できます。LISTとBAS保存に仮想番号は付きません。外部fileもLOAD可能ですが、Classic／Structuredの混在は拒否します。空／空行だけのfileは現在sessionのmodeを保持します。
+
+Program Storage容量は従来と同じです。PSRAM INTERNAL／SDは1024行×2047文字、SRAM fallbackは256行×191文字です。session recovery、USB Storageからの復帰、file／parent-directory rename、Storage切替でもmodeを維持します。
+
+長いpathは表示幅に応じbasenameと末尾directoryを優先して..で省略します。表示だけの短縮であり、実際のpathとQuick Load assignmentは保持します。最下部F-keyは従来どおりbasenameだけを表示します。
+
+配布ZIPのexamples/structuredに機能確認programがあります。square=144、wrap=[CPB]、local_scope=16/100、global_scope=10/30/30、factorial=120、block_if=GOODを確認してください。depth_limitは深さ超過error、break_cleanupはEscで停止後に別programを正常RUNできることを確認します。正常例・意図的エラー例・中断例の操作はexamples/README.mdを参照してください。
+
+session metadataが破損し復元候補を検証できない場合、作業sourceをRECOVER0000.BASなどへ退避して空sessionを開始します。Filesから確認／LOADしてください。退避できなければsourceを削除せずerrorを返します。旧version 1 sessionはClassicとして読み込み、次の保存でversion 2へ移行します。
+
+
+## 26. STANDBYと更新時のsession
+
+STANDBY、POWER／Alt+P、System → Power / CPU → STANDBY NOWでRAMを保持した待機に入ります。本体キーで復帰します。USB Storage所有中は先にPCで取り外し、CPBへ返してください。LCDとキーボードのバックライトを消し、LCDもDisplay OFF／Sleep INへ移行し、復帰時に内容と明るさを戻します。
+
+Keyboard BIOS 1.7・build696でLCD消灯、キー復帰、10回連続の待機／復帰を確認しています。他のBIOSで同じ結果を保証するものではなく、CPB導入の一律必須条件としてBIOS更新を要求しません。STANDBYは完全電源断ではなく、消費電力の定量保証はしていません。
+
+session形式はversion 2です。旧version 1をClassicとして読込み、次回保存で移行します。Compiled Cacheはformat 3で、session形式とは別物です。旧形式・CRC不一致・ソース変更はcache missとなり再compileします。更新前は必要なBASと設定をSD／PCへ保存し、復元候補の内容を確認してから採用してください。USB Storageからの復帰は再indexとcache失効を行い、source modeを維持します。

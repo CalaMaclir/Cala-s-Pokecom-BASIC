@@ -8,7 +8,8 @@ namespace rmb {
 
 class CompiledProgramCache {
 public:
-    bool restore(std::uint64_t source_revision, CompiledProgram& output);
+    bool restore(std::uint64_t source_revision, CompiledProgram& output,
+                 ProgramSourceMode mode=ProgramSourceMode::ClassicNumbered);
     bool store(std::uint64_t source_revision, const CompiledProgram& program);
     void invalidate();
 

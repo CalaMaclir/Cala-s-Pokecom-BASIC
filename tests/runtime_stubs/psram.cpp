@@ -14,6 +14,9 @@ bool claim(Client, std::uint32_t, std::uint32_t&, std::uint32_t&) {
 }
 void release(Client) {}
 Client owner() { return Client::None; }
+const char* client_name(Client) { return "IDLE"; }
+std::size_t active_client_count() { return 0; }
+AllocationInfo allocation(Client) { return {}; }
 std::uint32_t used_bytes() { return 0; }
 bool read(std::uint32_t, void*, std::size_t) { return false; }
 bool write(std::uint32_t, const void*, std::size_t) { return false; }

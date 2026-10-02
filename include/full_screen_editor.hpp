@@ -14,6 +14,10 @@ public:
     explicit ProgramStoreEditorDocument(ProgramStore& program)
         : program_(program) {}
 
+    ProgramSourceMode source_mode() const override { return program_.source_mode(); }
+    bool replace_source_rows(std::size_t first,std::size_t remove,const char* const* rows,std::size_t insert) override {
+        return program_.replace_source_rows(first,remove,rows,insert);
+    }
     std::size_t line_count() const override { return program_.size(); }
     std::size_t max_body_length() const override {
         return program_.line_length_capacity();
@@ -40,6 +44,10 @@ public:
         return program_.erase_line(number);
     }
     const char* error() const override { return program_.error(); }
+    bool replace_line_pair(std::int32_t a, const char* at,
+                           std::int32_t b, const char* bt) override {
+        return program_.replace_line_pair(a, at, b, bt);
+    }
 
 private:
     ProgramStore& program_;
@@ -55,7 +63,8 @@ public:
     );
 
     // Runs synchronously and returns when the user exits the editor.
-    bool run();
+    // initial_line is a Classic line number or Structured one-based source row.
+    bool run(std::int32_t initial_line = 0);
 
 private:
     static constexpr int kColumns = 53;
@@ -65,7 +74,13 @@ private:
         kBodyLastRow - kBodyFirstRow + 1;
     // Signed 32-bit BASIC line numbers need 11 characters plus a separator.
     static constexpr int kPrefixColumns = 12;
-    static constexpr int kBodyColumns = kColumns - kPrefixColumns;
+    // Five display-only logical-row digits plus two source separators.
+    static constexpr int kStructuredPrefixColumns = 7;
+
+    int prefix_columns() const {
+        return model_.structured() ? kStructuredPrefixColumns : kPrefixColumns;
+    }
+    int body_columns() const { return kColumns - prefix_columns(); }
 
     ProgramStore& program_;
     char* filename_;
@@ -126,6 +141,7 @@ private:
     bool confirm_overwrite(const char* filename);
     bool save(bool save_as);
     bool insert_line();
+    bool split_line();
     bool find(bool next, bool previous = false);
     bool goto_line();
     bool exit_requested();

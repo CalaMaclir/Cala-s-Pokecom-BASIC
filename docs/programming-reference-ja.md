@@ -1,5 +1,5 @@
 # Cala's Pokecom BASIC System
-## Version 0.91
+## Version 0.92
 ## Programming Reference Manual / プログラミング・リファレンスマニュアル
 
 for ClockworkPi PicoCalc  
@@ -11,7 +11,7 @@ Copyright (C) 2026 Cala Maclir
 
 ## 1. BASIC Language Overview
 
-CPB BASICはline number付きのprogramと、line numberなしで直ちに実行するDirect modeを持ちます。
+CPB BASICは行番号付きClassic program、行番号なしStructured program、即時実行するDirect modeを持ちます。Structured programはEditorで作成・編集します。
 
 ```basic
 10 PRINT "HELLO"
@@ -21,7 +21,7 @@ CPB BASICはline number付きのprogramと、line numberなしで直ちに実行
 - keywordとidentifierはcase-insensitiveです。
 - statementはcolon（`:`）で区切れます。
 - commentは `REM` またはapostrophe（`'`）から行末までです。
-- line numberは0～2,147,483,647です。
+- Classicのline numberは0～2,147,483,647です。
 - 同じline numberの入力は既存lineを置換します。line numberだけなら削除します。
 - programの保存上限はProgram Storage backendに従います。PSRAM利用時のINTERNAL RAMとSDはともに1,024行・本文2,047 charactersです。PSRAMなしのINTERNAL SRAM fallbackは256行・本文191 charactersです。
 - `EDIT`でFull-Screen BASIC Editorを開けます。PSRAM INTERNAL／SDの2,047文字lineはEditorまたはPCで編集できます。Direct modeと通常prompt入力は191文字です。
@@ -72,7 +72,7 @@ CPB BASICはline number付きのprogramと、line numberなしで直ちに実行
 
 ## 4. Operator Precedence
 
-同じ優先順位のbinary operatorは左から評価されます。指数演算 `^` もVersion 0.91では左結合です。
+同じ優先順位のbinary operatorは左から評価されます。指数演算 `^` もVersion 0.92では左結合です。
 
 | 優先順位（高→低） | operator |
 |---:|---|
@@ -166,7 +166,7 @@ comparisonの結果は数値です。logical operatorのoperandも数値でな�
 30 LOOP UNTIL K=27
 ```
 
-## 7. Branch and Termination
+## 7. Branch and Termination（番号分岐はClassic専用）
 
 | 名称 | 分類 | 構文 | 説明 |
 |---|---|---|---|
@@ -459,8 +459,8 @@ BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もba
 | CLS | `CLS` | console／graphics画面をclear |
 | LOAD | `LOAD "name"` | BASIC sourceをload。開始時に`LOADING... (filename)`を表示 |
 | SAVE | `SAVE` / `SAVE "name"` | current fileへsave／Save As |
-| FILES | `FILES` | SD root一覧 |
-| DIR | `DIR` | FILESと同義 |
+| FILES | `FILES ["directory"]` | SDのBASIC一覧。省略時はroot、指定時は相対directory |
+| DIR | `DIR ["directory"]` | SDのfile／directory一覧 |
 | SD | `SD` / `SD STATUS` / `SD REMOUNT` | SD status／remount |
 | SCREENSHOT | `SCREENSHOT ["name"]` | LCD BMPをSDへ保存 |
 | XRECV | `XRECV "name"` | XMODEM receive |
@@ -479,7 +479,7 @@ BREAKはPLAY/WAVを停止します。END、STOP、通常のruntime error後もba
 
 `SAVE IMAGE` はBASIC statement、`SAVE` はREPL commandです。`EDIT` はprogram内には記述できません。
 
-### v0.91 storage / compile behavior
+### v0.92 storage / compile behavior
 
 Stored programの初回`RUN`ではsourceをcompileし、PSRAMが利用できる場合はCompiled Program cacheへ保存します。同じsourceを再度`RUN`するとcacheを復元して内部SRAMのexecution workspaceへ展開します。VMはPSRAM上のopcodeを直接実行しません。sourceを編集、LOAD、NEW、storage mode切替した場合はrevisionが変化し、古いcacheは再利用されません。
 
@@ -525,3 +525,99 @@ Direct scalar stateもPSRAMへ保存できますが、Direct statement実行時�
 `ABS`、`ASC`、`ATN`、`CHR$`、`CLAMP`、`COS`、`DEG`、`EXP`、`I2CREAD`、`INKEY`、`INSTR`、`INT`、`LEFT$`、`LEN`、`LOG`、`MAX`、`MID$`、`MIN`、`PI`、`PLAYING`、`POINT`、`RAD`、`RND`、`RNDI`、`RIGHT$`、`SGN`、`SIN`、`SPC`、`SQR`、`STR$`、`STRING$`、`TAB`、`TAN`、`TIMER`、`VAL`
 
 実行可能なより大きいsampleはrepositoryの `examples/` を参照してください。
+
+## 19. Structured BASIC
+
+LOADは空行を除く全行に番号があればClassic、全行に番号がなければStructuredと判定します。混在はMIXED SOURCE MODEで拒否し、現在sourceを保持します。空／空行だけのfileは現在sessionのmodeを保持します。Structured保存は行番号を付けず、空行・indent・本文を保持します（改行はLF）。LISTも番号なしです。StructuredではGOTO、GOSUB、ON GOTO/GOSUBを使用できません。Direct mode、Classicの番号入力／分岐／RETURNは従来どおりです。
+
+THEN直後が行末なら複数行IFです。statementが続けば従来のsingle-line IFです。
+
+```basic
+SCORE=75
+IF SCORE>=100 THEN
+    PRINT "CLEAR"
+ELSEIF SCORE>=50 THEN
+    PRINT "GOOD"
+ELSE
+    PRINT "TRY AGAIN"
+END IF
+```
+
+ELSEIFは複数、ELSEは省略可能です。IFは入れ子にでき、FOR/NEXT、WHILE/WEND、DO/LOOP、DO WHILE/LOOP、DO/LOOP UNTILと組み合わせられます。blockの欠落／二重ELSE／ELSE後ELSEIF／loop境界の交差はcompile errorです。keywordは大文字小文字を区別せず、indentは任意です。
+
+### FUNCTION / END FUNCTION / RETURN
+
+```basic
+PRINT SQUARE(12)
+FUNCTION SQUARE(X)
+    RETURN X*X
+END FUNCTION
+
+FUNCTION WRAP$(S$)
+    RETURN "["+S$+"]"
+END FUNCTION
+PRINT WRAP$("CPB")
+```
+
+FUNCTIONはStructured top-levelだけに置けます。定義より前から呼べます。definition bodyはmain実行で飛び越します。名前末尾$は文字列返値、その他は数値返値です。parameterも同じ型規則で値渡しです。括弧はzero-argument呼出しにも必要です。argument数／型とRETURN expressionの型はcompile時に検査します。
+
+数値localの初期値は0、文字列localは空です。parameter、代入先、未宣言の参照は関数localとなり、関数ごと／呼出しごとに独立します。同名globalを暗黙に参照しません。
+
+```basic
+SCORE=0
+FUNCTION ADD_SCORE(POINT)
+    GLOBAL SCORE
+    SCORE=SCORE+POINT
+    RETURN SCORE
+END FUNCTION
+PRINT ADD_SCORE(10)
+PRINT ADD_SCORE(20)
+PRINT SCORE
+```
+
+GLOBALはFUNCTION body先頭の実行statementより前に宣言し、read/write両方へ適用します。複数名はGLOBAL SCORE,NAME$のようにcommaで区切ります。commentと空行は実行statementではありません。parameter/localとGLOBALの同名は拒否します。関数内arrayは非対応です。
+
+RETURN expressionはFUNCTION内専用です。数値／文字列の型は一致させてください。RETURNなし、expressionなしはcompile errorです。RETURNを通らずEND FUNCTIONに到達するとFUNCTION RETURN MISSINGになります。Classic RETURNはGOSUBから戻る既存動作を維持します。
+
+関数名はcase-insensitiveで、FとF$は同一base nameです。duplicate、builtinとのbase-name衝突、同base-name scalarとの曖昧性は拒否します。Structured identifierは最大16文字です。
+
+| 制限 | 値 |
+|---|---:|
+| FUNCTION数 | 32 |
+| parameter数／関数 | 8 |
+| scalar local数／関数（parameterを含む） | 128 |
+| nested call／recursion depth | 16 |
+| string local／parameter／return | 127文字 |
+| global symbol数 | 64 |
+
+再帰を利用できます。17段目はFUNCTION CALL DEPTH、SRAM不足はOUT OF MEMORYとなります。大きいstring frameでは16段より前にSRAM不足となる場合があります。BREAK／runtime error／通常return後にframeは解放されます。
+
+```basic
+FUNCTION FACT(N)
+    IF N<=1 THEN
+        RETURN 1
+    END IF
+    RETURN N*FACT(N-1)
+END FUNCTION
+PRINT FACT(5)
+```
+
+期待値は120です。Structured errorはAT ROWを表示し、関数内ではIN FUNCTION、CALLED FROM ROWとDEPTHも表示します。ROWはsource中の位置であり、BASICの分岐行番号ではありません。Classic errorのIN 行番号は従来どおりです。
+
+
+## 20. 実装上限と非対応構文
+
+| 項目 | v0.92の制限 |
+|---|---|
+| IL命令 | 1,536 slots |
+| literal string pool | 6,144 bytes |
+| global symbol | 64 |
+| identifier | 最大16文字 |
+| source容量 | PSRAM INTERNAL／SDは1024×2047、SRAM fallbackは256×191 |
+| prompt／Direct入力 | 191文字 |
+
+ソース容量内でもIL／pool上限に達する場合があります。BAS保存はLF改行です。パスはSDルート相対で区切りを含め79文字です。PSRAMなしではEditor履歴を利用できません。
+
+FUNCTION内のlocal配列、GLOBAL配列アクセス、SUB、labels、STATIC、optional parameter、overload、moduleは非対応です。DATA／READ／RESTORE、INPUT強化、BASIC File I/O、TRACE／Debuggerはv0.93候補です。OTAとBASICネイティブコンパイラは含みません。
+
+v0.92は引き続きVMでBASICを実行します。FUNCTION有無に応じたVM内部C++実装の選択と融合命令で処理を改善しています。single precisionと丸め規則を維持し、新local数値helperではFMA contractionを禁止しています。PROFILE COUNTは機構確認用、通常速度はPROFILE OFFで測定してください。RUNの表示時間はVM実行で、compile-onlyやcache-onlyの時間を示しません。

@@ -1,0 +1,83 @@
+{
+  "accepted_sha": "2a7b1c568d7a6cbef8b9a34b438f05258f5ca84a",
+  "evidence_run": 36862470195,
+  "evidence_artifact": 11163310410,
+  "evidence_zip_sha256": "b861ee982144a76915bdae6087d177cb35474f752d5dd30c3a3c891a330fde83",
+  "cases": {
+    "examples/mandel_text.bas": {
+      "output_hash": 752854015,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/picocalc_mand.bas": {
+      "output_hash": 2166136261,
+      "graphics_hash": 2490614703,
+      "pixels": 102400
+    },
+    "examples/stage3/arithmetic-classic.bas": {
+      "output_hash": 3882862080,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/numeric-classic.bas": {
+      "output_hash": 12768514,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/fractal-classic.bas": {
+      "output_hash": 988850539,
+      "graphics_hash": 2490614703,
+      "pixels": 102400
+    },
+    "examples/stage3/arithmetic-colon.bas": {
+      "output_hash": 3882862080,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/arithmetic-rows.bas": {
+      "output_hash": 3882862080,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/arithmetic-function.bas": {
+      "output_hash": 3882862080,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/numeric-colon.bas": {
+      "output_hash": 12768514,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/numeric-rows.bas": {
+      "output_hash": 12768514,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/numeric-function.bas": {
+      "output_hash": 12768514,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    },
+    "examples/stage3/fractal-colon.bas": {
+      "output_hash": 988850539,
+      "graphics_hash": 2490614703,
+      "pixels": 102400
+    },
+    "examples/stage3/fractal-rows.bas": {
+      "output_hash": 988850539,
+      "graphics_hash": 2490614703,
+      "pixels": 102400
+    },
+    "examples/stage3/fractal-function.bas": {
+      "output_hash": 988850539,
+      "graphics_hash": 2490614703,
+      "pixels": 102400
+    },
+    "examples/stage3/tiny-function.bas": {
+      "output_hash": 1621458107,
+      "graphics_hash": 2166136261,
+      "pixels": 0
+    }
+  }
+}

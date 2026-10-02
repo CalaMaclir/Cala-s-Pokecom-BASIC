@@ -10,6 +10,8 @@ namespace rmb {
 struct CompileResult {
     bool ok = false;
     std::int32_t line = 0;
+    std::int32_t row = 0;
+    ProgramSourceMode source_mode = ProgramSourceMode::ClassicNumbered;
     char message[96] = {};
 };
 

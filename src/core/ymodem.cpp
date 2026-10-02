@@ -1,4 +1,5 @@
 #include "ymodem.hpp"
+#include "file_path.hpp"
 #include <cstdio>
 #include <cstring>
 #include <cctype>
@@ -335,6 +336,8 @@ Result receive(IO& io){
 }
 
 Result send(IO& io,const char* filename,std::uint32_t size){
+    if (!file_paths::valid_relative(filename)) return result(Error::Protocol, 0, filename);
+    filename = file_paths::basename(filename);
     bool ready=false;
     for(unsigned i=0;i<startup_retries;++i){
         int c=io.read(io.context,2000);

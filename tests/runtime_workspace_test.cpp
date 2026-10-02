@@ -12,6 +12,7 @@
 #include "full_screen_editor.hpp"
 #include "line_editor.hpp"
 #include "storage.hpp"
+#include "psram.hpp"
 
 namespace {
 std::string output;
@@ -61,6 +62,12 @@ int editor_cursor_position_calls = 0;
 int editor_cursor_positions_before_burst = 0;
 int editor_cursor_visibility_calls = 0;
 int editor_last_cursor_row = -1;
+bool capture_editor_text=false;
+std::vector<std::string> editor_text_rows;
+std::vector<std::pair<int, std::string>> editor_screen_rows;
+int editor_last_cursor_column = -1;
+std::string editor_last_span;
+int editor_last_span_columns = 0;
 
 void reset_editor_draw_counters() {
     editor_body_row_draws = 0;
@@ -82,6 +89,7 @@ void set_cursor_visible(bool) { ++editor_cursor_visibility_calls; }
 void set_cursor_position(int c, int row) {
     col = c;
     editor_last_cursor_row = row;
+    editor_last_cursor_column = c;
     ++editor_cursor_position_calls;
 }
 int text_rows() { return 40; }
@@ -126,6 +134,9 @@ bool function_key_bar_enabled() { return true; }
 bool shift_held() { return false; }
 bool caps_lock_enabled() { return false; }
 bool get_battery_status(int&, bool&) { return false; }
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics() {
+    return {"OK", "NONE", 0, 0, 0, 0};
+}
 bool get_datetime(DateTime&) { return false; }
 std::uint32_t system_clock_hz() { return 150000000; }
 std::uint32_t monotonic_millis() { return host_clock_ms; }
@@ -135,10 +146,14 @@ std::uint64_t monotonic_micros() {
 void sleep_millis(std::uint32_t ms) { host_clock_ms += ms; ++sleep_calls; }
 void draw_text_row(
     int row,
-    const char*,
+    const char* text,
     std::uint32_t,
     std::uint32_t
 ) {
+    if(capture_editor_text) {
+        editor_text_rows.emplace_back(text?text:"");
+        editor_screen_rows.emplace_back(row, text?text:"");
+    }
     if (row >= 3 && row <= 35) {
         ++editor_body_row_draws;
         if (editor_in_burst) ++editor_body_row_draws_in_burst;
@@ -148,11 +163,15 @@ void draw_text_row(
 void draw_text_span(
     int,
     int,
-    const char*,
-    int,
+    const char* text,
+    int columns,
     std::uint32_t,
     std::uint32_t
 ) {
+    if (capture_editor_text) {
+        editor_last_span = text ? text : "";
+        editor_last_span_columns = columns;
+    }
     if (editor_in_burst) ++editor_span_draws_in_burst;
 }
 void set_graphics_color(std::uint32_t) {}
@@ -302,11 +321,7 @@ namespace rmb { std::size_t LineEditor::read(char* b, std::size_t, CommandHistor
 static rmb::Repl repl;
 void workspace_empty() {
     assert(!repl.workspace_busy_);
-    assert(repl.compiled_.code_count == 0);
-    assert(repl.compiled_.symbol_count == 0);
-    assert(repl.compiled_.number_count == 0);
-    assert(repl.compiled_.line_count == 0);
-    assert(repl.compiled_.string_used == 1);
+    assert(repl.active_compiled_ == nullptr);
 }
 void direct(const char* s, const char* expected) {
     output.clear();
@@ -322,7 +337,9 @@ void source(std::initializer_list<const char*> lines) {
 void run(const char* prefix) {
     output.clear();
     repl.run_program();
-    assert(output.rfind(prefix,0) == 0);
+    const std::string expected =
+        std::string("RUN...\r\n") + prefix;
+    assert(output.rfind(expected,0) == 0);
     workspace_empty();
 }
 
@@ -387,6 +404,92 @@ void editor_navigation_render_policy() {
         assert(editor_body_row_draws == 33);
         assert(editor_last_cursor_row == 35);
     }
+
+    // Real editor rendering, wrap boundaries and cursor columns for both modes.
+    auto rendered = [](int row, const std::string& text) {
+        for (const auto& entry : editor_screen_rows)
+            if (entry.first == row && entry.second == text) return true;
+        return false;
+    };
+    capture_editor_text = true;
+    for (std::size_t length : {45u, 46u, 47u, 92u, 93u, 138u}) {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.new_program(rmb::ProgramSourceMode::Structured));
+        const std::string source = std::string(length - 1, 'A') + 'Z';
+        const char* rows[] = {source.c_str(), "", "  PRINT 1"};
+        assert(program.replace_source_rows(0, 0, rows, 2));
+        assert(program.replace_source_rows(2, 0, rows + 2, 1));
+        editor_screen_rows.clear();
+        run_editor_navigation_case(program, {0xd5, kEscape}, 0);
+        const int wraps = static_cast<int>((length + 45) / 46);
+        assert(rendered(3, "00001  " + source.substr(0, 46)));
+        for (int subrow = 1; subrow < wraps; ++subrow)
+            assert(rendered(3 + subrow, "       " + source.substr(subrow * 46, 46)));
+        assert(rendered(3 + wraps, "00002  "));
+        assert(rendered(4 + wraps, "00003    PRINT 1"));
+        assert(editor_last_cursor_row == 3 + wraps - 1);
+        assert(editor_last_cursor_column == (length % 46 == 0
+            ? 52 : 7 + static_cast<int>(length % 46)));
+        assert(program.size() == 3); // Logical numbers are display-only.
+        std::int32_t number; const char* body; std::size_t actual_length;
+        assert(program.read_line_text(0, number, body, actual_length));
+        assert(std::string(body, actual_length) == source);
+        editor_screen_rows.clear();
+        run_editor_navigation_case(program, {0xd5, 0xd2, kEscape}, 0);
+        assert(editor_last_cursor_row == 3 && editor_last_cursor_column == 7);
+    }
+    {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.set_line(10, "ABCDE"));
+        editor_screen_rows.clear();
+        run_editor_navigation_case(program, {kRight, kEscape}, 0);
+        assert(rendered(3, "         10 ABCDE"));
+        assert(editor_last_cursor_column == 13);
+    }
+    {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.new_program(rmb::ProgramSourceMode::Structured));
+        const char* row[] = {"PRINT 1"};
+        for (int i = 0; i < 40; ++i)
+            assert(program.replace_source_rows(program.size(), 0, row, 1));
+        run_editor_navigation_case(program, {kDown, kEscape}, 33);
+        assert(editor_body_row_draws_in_burst == 0);
+        assert(editor_span_draws_in_burst == 2);
+        assert(editor_last_span_columns == 7 && editor_last_span == "00035  ");
+        assert(editor_last_cursor_column == 7 && editor_last_cursor_row == 35);
+    }
+    {
+        // A viewport starting on a continuation has no repeated logical number.
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.new_program(rmb::ProgramSourceMode::Structured));
+        const std::string wrapped = std::string(46, 'A') + 'Z';
+        const char* row[] = {wrapped.c_str()};
+        for (int i = 0; i < 40; ++i)
+            assert(program.replace_source_rows(program.size(), 0, row, 1));
+        editor_screen_rows.clear();
+        run_editor_navigation_case(program, {kDown, kEscape}, 32);
+        assert(rendered(3, "       Z"));
+        assert(rendered(4, "00002  " + std::string(46, 'A')));
+        assert(editor_last_span_columns == 7 && editor_last_span == "       ");
+        assert(editor_body_row_draws_in_burst == 0);
+    }
+    {
+        rmb::ProgramStore program;
+        assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(program.new_program(rmb::ProgramSourceMode::Structured));
+        const char* row[] = {"PRINT 1"};
+        assert(program.replace_source_rows(0, 0, row, 1));
+        // Tab key enters the actual editor path.
+        run_editor_navigation_case(program, {0x09, kEscape, 0xb5, 0x0a}, 0);
+        std::int32_t number; const char* body; std::size_t length;
+        assert(program.read_line_text(0, number, body, length));
+        assert(std::string(body, length) == "    PRINT 1");
+    }
+    capture_editor_text = false;
 }
 
 int main(int argc, char** argv) {
@@ -486,7 +589,9 @@ int main(int argc, char** argv) {
         assert(repl.load_named_program("MY PROGRAM.BAS", false));
         assert(!std::strcmp(
             repl.current_filename_, "MY PROGRAM.BAS"));
-        assert(output.find("LOADED MY PROGRAM.BAS\r\n") == 0);
+        assert(output.find(
+            "LOADING... (/MY PROGRAM.BAS)\r\n"
+            "LOADED /MY PROGRAM.BAS\r\n") == 0);
         editor_keys = {0xb1};
         editor_key_index = 0;
         editor_repeat_count = 0;
@@ -495,7 +600,10 @@ int main(int argc, char** argv) {
             repl.current_filename_, "MY PROGRAM.BAS"));
         output.clear();
         assert(repl.load_named_program("MY PROGRAM.BAS", true));
-        assert(output.find("LOADED MY PROGRAM.BAS\r\n") == 0);
+        assert(output.find(
+            "LOADING... (/MY PROGRAM.BAS)\r\n"
+            "LOADED /MY PROGRAM.BAS\r\n"
+            "RUN...\r\n") == 0);
         assert(output.find("314\r\n[RUN]") != std::string::npos);
         workspace_empty();
     }
@@ -503,6 +611,11 @@ int main(int argc, char** argv) {
     source({"PRINT 42"});
     direct("PRINT 1+2", "3\r\n");
     direct("A=123", "");
+    assert(repl.vm_.direct_state_in_psram());
+    assert(repl.vm_.direct_state_bytes() >=
+        sizeof(rmb::VM::DirectScalar) * rmb::kMaxSymbols);
+    assert(rmb::psram::allocation(
+        rmb::psram::Client::DirectState).active);
     direct("PRINT A", "123\r\n");
     runtime_keys.clear(); runtime_key_index=0;
     direct("PRINT INKEY", "0\r\n");
@@ -667,7 +780,27 @@ int main(int argc, char** argv) {
     run("6\r\n[RUN]");
     source({"GOTO 10"}); interrupt_run=true; run("?BREAK"); interrupt_run=false;
     direct("PRINT A", "123\r\n");
-    source({"PRINT 42"}); run("42\r\n[RUN]");
+    source({"PRINT 42"});
+    {
+        const auto misses_before = repl.compiled_cache_.misses();
+        const auto hits_before = repl.compiled_cache_.hits();
+        run("42\r\n[RUN]");
+        assert(repl.compiled_cache_.valid());
+        assert(repl.compiled_cache_.revision() == repl.program_.revision());
+        assert(repl.compiled_cache_.misses() == misses_before + 1);
+        assert(rmb::psram::allocation(
+            rmb::psram::Client::CompiledCache).active);
+        run("42\r\n[RUN]");
+        assert(repl.compiled_cache_.hits() == hits_before + 1);
+
+        // Editing the source changes the revision. The next RUN must reject
+        // the stale IL, recompile, and republish the cache.
+        assert(repl.program_.set_line(10, "PRINT 43"));
+        const auto stale_misses = repl.compiled_cache_.misses();
+        run("43\r\n[RUN]");
+        assert(repl.compiled_cache_.misses() == stale_misses + 1);
+        assert(repl.compiled_cache_.revision() == repl.program_.revision());
+    }
     source({"DIM N(4096)"}); run("?");
     direct("PRINT 3", "3\r\n");
     source({"DIM T$(512)"}); run("?");
@@ -682,13 +815,21 @@ int main(int argc, char** argv) {
     assert(repl.program_.clear());
     for(int i=1;i<=256;++i) assert(repl.program_.set_line(i,"PRINT 1:PRINT 2:PRINT 3:PRINT 4"));
     run("?PROGRAM TOO COMPLEX"); direct("PRINT A", "123\r\n");
-    // Nested entry must not reset or overwrite an active workspace.
-    repl.workspace_busy_=true; repl.compiled_.code_count=7;
+    // Nested entry must not reset, free, or overwrite an active workspace.
+    rmb::CompiledProgram sentinel_workspace;
+    sentinel_workspace.code_count=7;
+    repl.workspace_busy_=true;
+    repl.active_compiled_=&sentinel_workspace;
     output.clear(); repl.run_direct_line("A=0");
-    assert(output=="?BASIC BUSY\r\n" && repl.compiled_.code_count==7);
+    assert(output=="?BASIC BUSY\r\n");
+    assert(repl.active_compiled_==&sentinel_workspace);
+    assert(sentinel_workspace.code_count==7);
     output.clear(); repl.run_program();
-    assert(output=="?BASIC BUSY\r\n" && repl.compiled_.code_count==7);
-    repl.workspace_busy_=false; repl.compiled_.reset();
+    assert(output=="RUN...\r\n?BASIC BUSY\r\n");
+    assert(repl.active_compiled_==&sentinel_workspace);
+    assert(sentinel_workspace.code_count==7);
+    repl.active_compiled_=nullptr;
+    repl.workspace_busy_=false;
     direct("PRINT A", "123\r\n");
     // Direct input retains the RAM-compatible boundary and synthetic line 10.
     static rmb::ProgramStore legacy_direct;
@@ -707,10 +848,15 @@ int main(int argc, char** argv) {
     const std::string too_long_direct(192,'X');
     assert(!legacy_direct.set_line(10,too_long_direct.c_str()));
     assert(!compiler.compile_direct(too_long_direct.c_str(),direct_il).ok);
-    // Stored source capacity remains 256 x 191 characters.
+    // Stored source capacity is 1024 x 2047 on PSRAM-enabled hardware in
+    // both INTERNAL and SD modes. Direct input remains 191 characters.
     assert(repl.program_.clear());
-    for (int i=1;i<=256;++i) assert(repl.program_.set_line(i,"REM capacity"));
-    assert(repl.program_.set_line(257,"REM overflow")==static_cast<bool>(backend)); run("[RUN]");
+    assert(repl.program_.line_capacity()==1024);
+    assert(repl.program_.line_length_capacity()==2047);
+    for (int i=1;i<=1024;++i)
+        assert(repl.program_.set_line(i,"REM capacity"));
+    assert(!repl.program_.set_line(1025,"REM overflow"));
+    run("[RUN]");
     for (int arg=1;arg<argc;++arg) {
         std::ifstream file(argv[arg]); assert(file.good());
         assert(repl.program_.clear()); std::string line;
@@ -725,6 +871,26 @@ int main(int argc, char** argv) {
     }
     std::puts(backend ? "SD RUN/direct workspace regressions passed" : "RAM RUN/direct workspace regressions passed");
     }
+    // LIST is cooperatively interruptible from the same runtime BREAK path
+    // used by RUN. A normal key is preserved/ignored by LIST; BREAK stops it.
+    {
+        assert(repl.program_.clear());
+        assert(repl.program_.set_line(10,"PRINT 1"));
+        assert(repl.program_.set_line(20,"PRINT 2"));
+        runtime_keys={
+            {rmb::platform::RuntimeKeyType::Key,'X'},
+            {rmb::platform::RuntimeKeyType::Break,0}
+        };
+        runtime_key_index=0;
+        output.clear();
+        repl.list_program();
+        assert(output.find("10 PRINT 1\r\n")!=std::string::npos);
+        assert(output.find("[LIST BREAK]\r\n")!=std::string::npos);
+        assert(output.find("20 PRINT 2\r\n")==std::string::npos);
+        runtime_keys.clear();
+        runtime_key_index=0;
+    }
+
     // LIST, RUN and SAVE all consume the full borrowed SD line.
     const std::string long_tail="END_SENTINEL";
     const std::string runtime_long=
@@ -767,7 +933,13 @@ int main(int argc, char** argv) {
     output.clear(); repl.run_program();
     assert(output.find('?')==std::string::npos);
     assert(output.find("END OF 400 LINE TEST\r\n[RUN]")!=std::string::npos);
-    workspace_empty(); assert(repl.compiled_.extra_lines==nullptr);
+    workspace_empty();
+    {
+        const auto large_hits = repl.compiled_cache_.hits();
+        output.clear(); repl.run_program();
+        assert(output.find("END OF 400 LINE TEST")!=std::string::npos);
+        assert(repl.compiled_cache_.hits()==large_hits+1);
+    }
     assert(repl.program_.save("LARGE2")); assert(repl.program_.load("LARGE2"));
     output.clear(); repl.run_program(); assert(output.find("END OF 400 LINE TEST")!=std::string::npos);
     assert(!repl.program_.switch_mode(rmb::ProgramStorageMode::InternalRam));
@@ -786,6 +958,204 @@ int main(int argc, char** argv) {
     interrupt_run=true;run("?BREAK");interrupt_run=false;
     direct("PRINT 3","3\r\n");output.clear();repl.run_program();
     assert(output.find("END OF 400 LINE TEST")!=std::string::npos);workspace_empty();
+
+    auto structured_run=[&](const char* source,const char* expected) {
+        std::fprintf(stderr,"Structured case: %.48s\n",source);
+        std::ofstream(root+"STRUCTURED.BAS")<<source;
+        assert(repl.program_.load("STRUCTURED"));
+        output.clear();repl.run_program();
+        if(output.find(expected)==std::string::npos)std::fprintf(stderr,"Structured source:\n%s\nExpected: %s\nActual: %s\n",source,expected,output.c_str());
+        assert(output.find(expected)!=std::string::npos);workspace_empty();
+    };
+    structured_run("A=75\nIF A>=100 THEN\n PRINT 1\nELSEIF A>=50 THEN\n PRINT 2\nELSE\n PRINT 3\nEND IF\n","2\r\n");
+    structured_run("FOR I=1 TO 3\nIF I=2 THEN\nPRINT I\nEND IF\nNEXT I\n","2\r\n");
+    structured_run("IF 1 THEN\nA=0\nDO WHILE A<2\nA=A+1\nLOOP\nPRINT A\nEND IF\n","2\r\n");
+    structured_run("IF 1 THEN\nIF 0 THEN\nPRINT 1\nELSEIF 1 THEN\nPRINT 4\nELSE\nPRINT 3\nEND IF\nEND IF\n","4\r\n");
+    structured_run("IF 1 THEN PRINT 6 ELSE PRINT 7\n","6\r\n");
+    for(const char* source:{"IF 1 THEN\nPRINT 1\n","ELSE\n","IF 1 THEN\nELSE\nELSE\nEND IF\n","GOTO 1\n","GOSUB 1\n","ON 1 GOTO 1\n"}) {
+        std::ofstream(root+"STRUCTURED.BAS")<<source;assert(repl.program_.load("STRUCTURED"));
+        static rmb::CompiledProgram rejected;
+        assert(!large_compiler.compile(repl.program_,rejected).ok);
+    }
+
+    structured_run("PRINT SQUARE(12)\nFUNCTION SQUARE(X)\n RETURN X*X\nEND FUNCTION\n","144\r\n");
+    structured_run("FUNCTION WRAP$(S$)\nRETURN \"[\"+S$+\"]\"\nEND FUNCTION\nPRINT WRAP$(\"CPB\")\n","[CPB]\r\n");
+    structured_run("A=100\nFUNCTION TEST(X)\nA=10\nB=X+1\nRETURN A+B\nEND FUNCTION\nPRINT TEST(5)\nPRINT A\n","16\r\n100\r\n");
+    structured_run("SCORE=0\nFUNCTION ADD_SCORE(POINT)\nGLOBAL SCORE\nSCORE=SCORE+POINT\nRETURN SCORE\nEND FUNCTION\nPRINT ADD_SCORE(10)\nPRINT ADD_SCORE(20)\nPRINT SCORE\n","10\r\n30\r\n30\r\n");
+    structured_run("FUNCTION FACT(N)\nIF N<=1 THEN\nRETURN 1\nEND IF\nRETURN N*FACT(N-1)\nEND FUNCTION\nPRINT FACT(5)\n","120\r\n");
+    structured_run("FUNCTION DOUBLE(X)\nRETURN X*2\nEND FUNCTION\nFUNCTION QUAD(X)\nRETURN DOUBLE(DOUBLE(X))\nEND FUNCTION\nPRINT QUAD(3)\n","12\r\n");
+    structured_run("FUNCTION SUM(X)\nFOR I=1 TO X\nS=S+I\nNEXT\nRETURN S\nEND FUNCTION\nPRINT SUM(4)\nPRINT SUM(2)\n","10\r\n3\r\n");
+    structured_run("FUNCTION EARLY(X)\nFOR I=1 TO 3\nIF I=2 THEN RETURN X+I\nNEXT I\nRETURN 0\nEND FUNCTION\nFOR I=1 TO 2\nPRINT EARLY(I)\nNEXT I\n","3\r\n4\r\n");
+    structured_run("FUNCTION GLOBALFOR(X)\nGLOBAL I\nFOR I=1 TO X\nS=S+I\nNEXT I\nRETURN S\nEND FUNCTION\nPRINT GLOBALFOR(4)\nPRINT I\n","10\r\n5\r\n");
+    structured_run("FUNCTION ZERO()\nRETURN A+LEN(S$)\nEND FUNCTION\nPRINT ZERO()\n","0\r\n");
+    structured_run("FUNCTION R(N)\nIF N<=1 THEN RETURN \"X\"\nRETURN R(N-1)\nEND FUNCTION\nPRINT R(2)\n","?FUNCTION RETURN TYPE MISMATCH"); // numeric return mismatch compile
+    structured_run("FUNCTION R$(N)\nIF N<=1 THEN RETURN \"X\"\nRETURN \"[\"+R$(N-1)+\"]\"\nEND FUNCTION\nPRINT R$(5)\n","[[[[X]]]]\r\n");
+    structured_run("FUNCTION INF(N)\nRETURN INF(N+1)\nEND FUNCTION\nPRINT INF(1)\n","?FUNCTION CALL DEPTH AT ROW 2");
+    structured_run("FUNCTION MISS(X)\nIF X THEN RETURN 1\nEND FUNCTION\nPRINT MISS(0)\n","?FUNCTION RETURN MISSING AT ROW 3");
+    structured_run("FUNCTION ERR(X)\nRETURN 1/X\nEND FUNCTION\nPRINT ERR(0)\n","?DIVISION BY ZERO AT ROW 2");
+    interrupt_run=true;
+    structured_run("FUNCTION WAIT(X)\nDO\nLOOP\nRETURN X\nEND FUNCTION\nPRINT WAIT(1)\n","?BREAK");
+    interrupt_run=false;
+    structured_run("FUNCTION EIGHT(A,B$,C,D$,E,F$,G,H$)\nRETURN A+C+E+G+LEN(B$)+LEN(D$)+LEN(F$)+LEN(H$)\nEND FUNCTION\nPRINT EIGHT(1,\"a\",2,\"bb\",3,\"ccc\",4,\"dddd\")\n","20\r\n");
+    structured_run("NAME$=\"GLOBAL\"\nFUNCTION LOCAL$(X$)\nS$=X$+\"!\"\nRETURN S$+NAME$\nEND FUNCTION\nPRINT LOCAL$(\"A\")\nPRINT NAME$\n","A!\r\nGLOBAL\r\n");
+    structured_run("NAME$=\"A\"\nFUNCTION CHANGE$(X$)\nGLOBAL NAME$\nNAME$=NAME$+X$\nRETURN NAME$\nEND FUNCTION\nPRINT CHANGE$(\"B\")\nPRINT NAME$\n","AB\r\nAB\r\n");
+    structured_run("FUNCTION DEP(N)\nIF N=1 THEN RETURN 1\nRETURN 1+DEP(N-1)\nEND FUNCTION\nPRINT DEP(16)\n","16\r\n");
+    structured_run("A=0\nWHILE A<3\nIF A<1 THEN\nPRINT \"LOW\"\nELSEIF A<2 THEN\nPRINT \"MID\"\nELSEIF A<3 THEN\nPRINT \"HIGH\"\nEND IF\nA=A+1\nWEND\nDO\nA=A+1\nLOOP UNTIL A=5\nPRINT A\n","LOW\r\nMID\r\nHIGH\r\n5\r\n");
+    // BREAK happens inside an allocated function frame, after SLEEP services input.
+    sleep_calls=0;break_after_sleep_calls=1;
+    structured_run("FUNCTION WAIT(X)\nDO\nSLEEP 1\nLOOP\nRETURN X\nEND FUNCTION\nPRINT WAIT(1)\n","IN FUNCTION WAIT");
+    assert(output.find("DEPTH 1")!=std::string::npos);break_after_sleep_calls=-1;
+    structured_run("FUNCTION OKAY(X)\nRETURN X+1\nEND FUNCTION\nPRINT OKAY(2)\n","3\r\n");
+    {
+        const auto hits=repl.compiled_cache_.hits();
+        output.clear();repl.run_program();assert(output.find("3\r\n")!=std::string::npos);
+        assert(repl.compiled_cache_.hits()==hits+1);workspace_empty();
+        structured_run("FUNCTION ERR(X)\nRETURN 1/X\nEND FUNCTION\nPRINT ERR(0)\n","?DIVISION BY ZERO AT ROW 2");
+        const auto error_hits=repl.compiled_cache_.hits();
+        output.clear();repl.run_program();assert(output.find("?DIVISION BY ZERO AT ROW 2")!=std::string::npos);
+        assert(output.find("CALLED FROM ROW 4 (DEPTH 1)")!=std::string::npos);
+        assert(repl.compiled_cache_.hits()==error_hits+1);workspace_empty();
+    }
+    // Local symbol totals do not consume the 64 global-symbol pool.
+    {
+        std::string text="PRINT LEFTFN()+RIGHTFN()\n";
+        for(const char* name:{"LEFTFN","RIGHTFN"}) {
+            text+=std::string("FUNCTION ")+name+"()\n";
+            for(int i=0;i<40;++i)text+="L"+std::to_string(i)+"="+std::to_string(i)+"\n";
+            text+="RETURN L39\nEND FUNCTION\n";
+        }
+        structured_run(text.c_str(),"78\r\n");
+        assert(large_compiler.compile(repl.program_,large_il).ok);
+        assert(large_il.symbol_count==0&&large_il.function_count==2);
+        assert(large_il.functions[0].local_count==40&&large_il.functions[1].local_count==40);
+    }
+    // Editor-only prompt protection and LIST have no virtual numbers.
+    const auto rev=repl.program_.revision();char numbered_attempt[]="10 PRINT 99";repl.process_numbered_line(numbered_attempt);
+    assert(repl.program_.revision()==rev);
+    output.clear();repl.list_program();assert(output.find("1 FUNCTION")==std::string::npos);
+    for(const char* source:{
+        "FUNCTION F(X)\nRETURN X\nEND FUNCTION\nPRINT F()\n",
+        "FUNCTION F(X)\nRETURN X\nEND FUNCTION\nPRINT F(\"X\")\n",
+        "FUNCTION F()\nRETURN 1\nEND FUNCTION\nFUNCTION F$()\nRETURN \"\"\nEND FUNCTION\n",
+        "FUNCTION ABS(X)\nRETURN X\nEND FUNCTION\n",
+        "FUNCTION STR()\nRETURN 1\nEND FUNCTION\n",
+        "FUNCTION F(A,B,C,D,E,F,G,H,I)\nRETURN A\nEND FUNCTION\n",
+        "FUNCTION TOOOOOOOOOOOOOOOOOLONG()\nRETURN 1\nEND FUNCTION\n",
+        "IF 1 THEN\nFUNCTION F()\nRETURN 1\nEND FUNCTION\nEND IF\n",
+        "IF 1 THEN\nELSE\nELSEIF 1 THEN\nEND IF\n",
+        "IF 1 THEN\nFOR I=1 TO 2\nELSE\nNEXT I\nEND IF\n",
+        "FUNCTION F(A,A)\nRETURN A\nEND FUNCTION\n",
+        "FUNCTION F()\nDIM A(2)\nRETURN 0\nEND FUNCTION\n",
+        "FUNCTION F()\nA=1\nGLOBAL A\nRETURN A\nEND FUNCTION\n",
+        "FUNCTION F()\nRETURN\nEND FUNCTION\n",
+        "FUNCTION F()\nPRINT 1\nEND FUNCTION\n",
+        "RETURN 1\n",
+        "FUNCTION F()\nFUNCTION G()\nRETURN 1\nEND FUNCTION\nEND FUNCTION\n",
+        "F=2\nFUNCTION F()\nRETURN 1\nEND FUNCTION\n"
+    }) {
+        std::ofstream(root+"STRUCTURED.BAS")<<source;assert(repl.program_.load("STRUCTURED"));
+        static rmb::CompiledProgram rejected;
+        assert(!large_compiler.compile(repl.program_,rejected).ok);
+    }
+    assert(repl.program_.new_program(rmb::ProgramSourceMode::ClassicNumbered));
+    // Shipped acceptance programs run through the same LOAD/compiler/VM path.
+    for(const auto& sample:std::vector<std::pair<const char*,const char*>>{
+        {"square","144\r\n"},{"wrap","[CPB]\r\n"},{"local_scope","16\r\n100\r\n"},
+        {"global_scope","10\r\n30\r\n30\r\n"},{"factorial","120\r\n"},{"block_if","GOOD\r\n"}}) {
+        std::ifstream file(std::string("examples/structured/")+sample.first+".bas");assert(file.good());
+        const std::string text((std::istreambuf_iterator<char>(file)),{});
+        structured_run(text.c_str(),sample.second);
+    }
+    // Actual Editor event path: Structured Enter and F5 never request a number.
+    {
+        rmb::ProgramStore p;assert(p.initialize(rmb::ProgramStorageMode::InternalRam));
+        assert(p.new_program(rmb::ProgramSourceMode::Structured));
+        const char* row[]={"PRINT 1"};assert(p.replace_source_rows(0,0,row,1));
+        editor_text_rows.clear();capture_editor_text=true;
+        run_editor_navigation_case(p,{0x0a,0xb1,0xb5,0x0a},0);
+        assert(p.size()==2);
+        run_editor_navigation_case(p,{0x85,0xb1,0xb5,0x0a},0);
+        assert(p.size()==3);
+        capture_editor_text=false;
+        bool mode_shown=false;
+        for(const auto& text:editor_text_rows) {
+            assert(text.find("Line number:")==std::string::npos);
+            assert(text.find("MANUAL NUMBER")==std::string::npos);
+            if(text.find("[STRUCTURED]")!=std::string::npos)mode_shown=true;
+        }
+        assert(mode_shown);
+    }
+    // RUN compile diagnostics focus the normal EDIT/Control Center editor.
+    {
+        std::string bad;
+        for (int i=0;i<45;++i) bad+="REM before error\n";
+        bad+="PRINT (\nPRINT 1\n";
+        std::ofstream(root+"STRUCTURED.BAS")<<bad;
+        assert(repl.program_.load("STRUCTURED"));
+        output.clear();repl.run_program();workspace_empty();
+        assert(output.find("AT ROW 46")!=std::string::npos);
+        assert(output.find("EDIT: OPEN AT COMPILE ERROR")!=std::string::npos);
+        assert(repl.compile_error_location_==46);
+        auto open_editor=[&]() {
+            editor_text_rows.clear();capture_editor_text=true;
+            editor_keys={0xb1,0xb5,0x0a};editor_key_index=0;editor_repeat_count=0;
+            repl.open_full_screen_editor();
+            capture_editor_text=false;
+            workspace_empty();
+        };
+        auto saw=[&](const std::string& prefix) {
+            for(const auto& text:editor_text_rows)
+                if(text.rfind(prefix,0)==0)return true;
+            return false;
+        };
+        open_editor();
+        assert(saw("ROW:46 Col:1")&&saw("COMPILE ERROR AT ROW 46"));
+        assert(!repl.full_screen_editor_active_);
+        // Any source edit invalidates the remembered location, even before RUN.
+        const char* changed[]={"REM changed"};
+        assert(repl.program_.replace_source_rows(0,1,changed,1));
+        open_editor();
+        assert(saw("ROW:1 Col:1")&&!saw("COMPILE ERROR AT "));
+        assert(repl.compile_error_location_==0);
+        output.clear();repl.run_program();assert(repl.compile_error_location_==46);
+        // Mode/load changes cannot carry a Structured ordinal into Classic.
+        assert(repl.program_.new_program(rmb::ProgramSourceMode::ClassicNumbered));
+        assert(repl.program_.set_line(10,"PRINT 1"));
+        assert(repl.program_.set_line(90000,"PRINT ("));
+        open_editor();
+        assert(saw("Ln:10 Col:1")&&!saw("COMPILE ERROR AT "));
+        output.clear();repl.run_program();workspace_empty();
+        assert(repl.compile_error_location_==90000);
+        open_editor();
+        assert(saw("Ln:90000 Col:1")&&saw("COMPILE ERROR AT LINE 90000"));
+        assert(repl.program_.set_line(90000,"END"));
+        output.clear();repl.run_program();workspace_empty();
+        assert(repl.compile_error_location_==0);
+        open_editor();
+        assert(saw("Ln:10 Col:1")&&!saw("COMPILE ERROR AT "));
+    }
+    // Declared function/local limits are separate from global slots.
+    for(bool overflow:{false,true}) {
+        std::string text;
+        for(int f=0;f<(overflow?33:32);++f)
+            text+="FUNCTION F"+std::to_string(f)+"()\nRETURN 0\nEND FUNCTION\n";
+        std::ofstream(root+"STRUCTURED.BAS")<<text;assert(repl.program_.load("STRUCTURED"));
+        static rmb::CompiledProgram limits;
+        const auto result=large_compiler.compile(repl.program_,limits);
+        assert(result.ok!=overflow);
+        if(overflow)assert(std::string(result.message).find("FUNCTION LIMIT")!=std::string::npos);
+        text="FUNCTION MANY()\n";
+        for(int local=0;local<(overflow?129:128);++local)text+="V"+std::to_string(local)+"=1\n";
+        text+="RETURN V0\nEND FUNCTION\n";
+        std::ofstream(root+"STRUCTURED.BAS")<<text;assert(repl.program_.load("STRUCTURED"));
+        const auto local_result=large_compiler.compile(repl.program_,limits);
+        assert(local_result.ok!=overflow);
+        if(overflow)assert(std::string(local_result.message).find("FUNCTION LOCAL LIMIT")!=std::string::npos);
+    }
+    assert(repl.program_.new_program(rmb::ProgramSourceMode::ClassicNumbered));
+    assert(repl.program_.set_line(10,"FUNCTION F()"));
+    static rmb::CompiledProgram classic_rejected;
+    assert(!large_compiler.compile(repl.program_,classic_rejected).ok);
     std::filesystem::remove_all(temporary);
 }
 

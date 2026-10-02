@@ -1,3 +1,4 @@
+#include "path_compaction.hpp"
 #include "full_screen_editor.hpp"
 
 #include <climits>
@@ -17,6 +18,7 @@ namespace {
 constexpr int kEnter = 0x0a;
 constexpr int kCarriageReturn = 0x0d;
 constexpr int kBackspace = 0x08;
+constexpr int kTab = 0x09;
 constexpr int kEscape = 0xb1;
 constexpr int kLeft = 0xb4;
 constexpr int kUp = 0xb5;
@@ -74,7 +76,7 @@ FullScreenEditor::FullScreenEditor(
     entry_dirty_(program_dirty),
     document_(program),
     model_(document_, &history_) {
-    model_.configure_viewport(kVisibleLines, kBodyColumns);
+    model_.configure_viewport(kVisibleLines, body_columns());
 }
 
 void FullScreenEditor::set_message(const char* text) {
@@ -104,16 +106,22 @@ bool FullScreenEditor::sync_committed_dirty() {
 void FullScreenEditor::render_header() {
     char row[80] = {};
     const bool dirty = effective_dirty() || program_.is_dirty();
+    char label[80]={};
+    const bool named=filename_&&*filename_&&!file_paths::same(filename_,"UNTITLED");
+    if(named)file_paths::compact_root_path(filename_,dirty?27:29,
+        file_paths::CompactPathPolicy::ProgramName,label,sizeof(label));
+    else std::snprintf(label,sizeof(label),"UNTITLED");
     std::snprintf(
-        row, sizeof(row), "CPB v0.90  %.36s%s",
-        filename_ && *filename_ ? filename_ : "UNTITLED",
+        row, sizeof(row), "CPB v0.92 [%s] %s%s",
+        model_.structured() ? "STRUCTURED" : "CLASSIC",
+        label,
         dirty ? " *" : "");
     platform::draw_text_row(0, row, 0xffffff, 0x203060);
 
     render_location();
     platform::draw_text_row(
         2,
-        "ARROWS MOVE  HOME/END  SHIFT+UP/DN PAGE  ESC EXIT",
+        "ARROWS  HOME/END  TAB INDENT  SHIFT+UP/DN PAGE  ESC",
         0xa0a0a0,
         0x000000);
 }
@@ -123,8 +131,8 @@ void FullScreenEditor::render_location(bool lower_row) {
 
     if (model_.has_line()) {
         std::snprintf(
-            row, sizeof(row), "Ln:%ld Col:%lu INS %s U:%lu R:%lu",
-            static_cast<long>(model_.line_number()),
+            row, sizeof(row), model_.structured() ? "ROW:%ld Col:%lu INS %s U:%lu R:%lu" : "Ln:%ld Col:%lu INS %s U:%lu R:%lu",
+            static_cast<long>(model_.structured()?model_.current_index()+1:model_.line_number()),
             static_cast<unsigned long>(model_.cursor() + 1),
             program_.backend_type() == ProgramBackend::Sd ? "SD" : "RAM",
             static_cast<unsigned long>(model_.undo_count()),
@@ -178,15 +186,22 @@ void FullScreenEditor::render_visual_row_text(
 ) {
     editor_perf::text_row_render();
     char row[80] = {};
-    const std::size_t offset =
-        position.subrow * static_cast<std::size_t>(kBodyColumns);
+    const std::size_t width = static_cast<std::size_t>(body_columns());
+    const std::size_t offset = position.subrow * width;
     const std::size_t available = offset < length ? length - offset : 0;
-    const std::size_t shown = available < static_cast<std::size_t>(kBodyColumns)
-        ? available : static_cast<std::size_t>(kBodyColumns);
-    const int prefix = position.subrow == 0
-        ? std::snprintf(
-            row, sizeof(row), "%11ld ", static_cast<long>(number))
-        : std::snprintf(row, sizeof(row), "%12s", "");
+    const std::size_t shown = available < width ? available : width;
+    int prefix = 0;
+    if (model_.structured()) {
+        // Display source ordinals only on the first visual row of each line.
+        prefix = position.subrow == 0
+            ? std::snprintf(row, sizeof(row), "%05lu  ",
+                static_cast<unsigned long>(position.line + 1))
+            : std::snprintf(row, sizeof(row), "%7s", "");
+    } else {
+        prefix = position.subrow == 0
+            ? std::snprintf(row, sizeof(row), "%11ld ", static_cast<long>(number))
+            : std::snprintf(row, sizeof(row), "%12s", "");
+    }
     if (prefix > 0 && shown != 0) {
         std::memcpy(row + prefix, body + offset, shown);
         row[prefix + shown] = '\0';
@@ -240,7 +255,7 @@ void FullScreenEditor::position_cursor() {
     }
     const std::size_t column = model_.cursor_visual_column();
     platform::set_cursor_position(
-        kPrefixColumns + static_cast<int>(column),
+        prefix_columns() + static_cast<int>(column),
         kBodyFirstRow + static_cast<int>(model_.cursor_screen_row()));
 }
 
@@ -296,9 +311,15 @@ void FullScreenEditor::render_edge_line_number(bool downward) {
     }
 
     char prefix[kPrefixColumns + 1] = {};
-    std::memset(prefix, ' ', kPrefixColumns);
-    prefix[kPrefixColumns] = '\0';
-    if (position.line < model_.line_count() && position.subrow == 0) {
+    const int columns = prefix_columns();
+    std::memset(prefix, ' ', columns);
+    prefix[columns] = '\0';
+    if (model_.structured() && position.line < model_.line_count()) {
+        if (position.subrow == 0) {
+            std::snprintf(prefix, static_cast<std::size_t>(columns + 1), "%05lu  ",
+                static_cast<unsigned long>(position.line + 1));
+        }
+    } else if (!model_.structured() && position.line < model_.line_count() && position.subrow == 0) {
         std::int32_t number = 0;
         std::size_t length = 0;
         if (document_.line_metadata(position.line, number, length)) {
@@ -308,7 +329,7 @@ void FullScreenEditor::render_edge_line_number(bool downward) {
         }
     }
     platform::draw_text_span(
-        row_number, 0, prefix, kPrefixColumns, 0x00ff80, 0x000000);
+        row_number, 0, prefix, columns, 0x00ff80, 0x000000);
 }
 
 void FullScreenEditor::navigation_burst_step(int key) {
@@ -400,7 +421,11 @@ bool FullScreenEditor::confirm_overwrite(const char* name) {
     while (true) {
         platform::clear_lcd_color(0x000000);
         platform::draw_text_row(0, "PROGRAM FILE EXISTS", 0xffffff, 0x203060);
-        platform::draw_text_row(3, name ? name : "", 0xffff80, 0x000000);
+        char path[file_paths::display_capacity]={},row[54]={};
+        file_paths::format_root_path(name,path,sizeof(path));
+        std::snprintf(row,sizeof(row),"%.53s",path);
+        platform::draw_text_row(3,row,0xffff80,0x000000);
+        platform::draw_text_row(4,std::strlen(path)>53?path+53:"",0xffff80,0x000000);
         platform::draw_text_row(
             6, selected == 0 ? "> Cancel" : "  Cancel",
             0xffffff, selected == 0 ? 0x204080 : 0x000000);
@@ -452,12 +477,15 @@ bool FullScreenEditor::save(bool save_as) {
     entry_dirty_ = false;
     model_.mark_saved();
     char saved[80] = {};
-    std::snprintf(saved, sizeof(saved), "SAVED %.65s", filename_);
+    char label[48]={};file_paths::compact_root_path(filename_,47,
+        file_paths::CompactPathPolicy::FullName,label,sizeof(label));
+    std::snprintf(saved,sizeof(saved),"SAVED %s",label);
     set_message(saved);
     return true;
 }
 
 bool FullScreenEditor::insert_line() {
+    if(model_.structured()) { if(!model_.insert_line(0)){set_model_error();return false;}return true; }
     char text[16] = {};
     if (!prompt("INSERT LINE", "Line number: ", text, sizeof(text))) {
         return false;
@@ -476,6 +504,102 @@ bool FullScreenEditor::insert_line() {
     return true;
 }
 
+
+bool FullScreenEditor::split_line() {
+    if(model_.structured()) { if(!model_.split_line(0)){set_model_error();return false;}return true; }
+    if (!model_.has_line()) return insert_line();
+
+    // Enter at logical column zero inserts a blank numbered line before the
+    // current line. This is the only editor gesture needed to create a new
+    // first line (for example line 5 before an existing line 10). At every
+    // other column Enter retains the normal split-after-current semantics.
+    const bool insert_before = model_.cursor() == 0;
+    std::int32_t boundary = 0;
+    std::size_t ignored = 0;
+    bool has_boundary = false;
+
+    if (insert_before) {
+        has_boundary = model_.current_index() != 0;
+        if (has_boundary && !program_.read_line_metadata(
+                model_.current_index() - 1u, boundary, ignored)) {
+            set_message(program_.error());
+            return false;
+        }
+        if (model_.line_number() == 0 ||
+            (has_boundary && static_cast<std::int64_t>(model_.line_number()) -
+                                 boundary <= 1)) {
+            set_message("NO LINE NUMBER SPACE BEFORE - SOURCE UNCHANGED");
+            return false;
+        }
+    } else {
+        has_boundary = model_.current_index() + 1u < program_.size();
+        if (has_boundary && !program_.read_line_metadata(
+                model_.current_index() + 1u, boundary, ignored)) {
+            set_message(program_.error());
+            return false;
+        }
+        if (model_.line_number() == INT32_MAX ||
+            (has_boundary && static_cast<std::int64_t>(boundary) -
+                                 model_.line_number() <= 1)) {
+            set_message("NO LINE NUMBER SPACE - SOURCE UNCHANGED");
+            return false;
+        }
+    }
+
+    if (program_.size() >= program_.line_capacity()) {
+        set_message("PROGRAM FULL - SOURCE UNCHANGED");
+        return false;
+    }
+
+    char label[80] = {};
+    if (insert_before) {
+        if (has_boundary) {
+            std::snprintf(
+                label, sizeof(label), "New number (> %ld, < %ld): ",
+                static_cast<long>(boundary),
+                static_cast<long>(model_.line_number()));
+        } else {
+            std::snprintf(
+                label, sizeof(label), "New number (< %ld): ",
+                static_cast<long>(model_.line_number()));
+        }
+    } else if (has_boundary) {
+        std::snprintf(
+            label, sizeof(label), "New number (> %ld, < %ld): ",
+            static_cast<long>(model_.line_number()),
+            static_cast<long>(boundary));
+    } else {
+        std::snprintf(
+            label, sizeof(label), "New number (> %ld): ",
+            static_cast<long>(model_.line_number()));
+    }
+
+    char text[16] = {};
+    if (!prompt(
+            insert_before ? "INSERT LINE BEFORE - MANUAL NUMBER"
+                          : "SPLIT LINE - MANUAL NUMBER",
+            label, text, sizeof(text))) {
+        return false;
+    }
+
+    std::uint64_t number = 0;
+    for (const char* p = text; *p; ++p) {
+        if (*p < '0' || *p > '9' ||
+            (number = number * 10u + (*p - '0')) > INT32_MAX) {
+            set_message("BAD LINE NUMBER");
+            return false;
+        }
+    }
+    if (!model_.split_line(static_cast<std::int32_t>(number))) {
+        set_model_error();
+        return false;
+    }
+    set_message(insert_before
+        ? "LINE INSERTED BEFORE CURRENT LINE"
+        : "LINE SPLIT - SOURCE TEXT UNCHANGED");
+    return true;
+}
+
 bool FullScreenEditor::confirm_delete_line() {
     if (!model_.has_line()) return false;
     int selected = 0;
@@ -483,8 +607,8 @@ bool FullScreenEditor::confirm_delete_line() {
         platform::clear_lcd_color(0x000000);
         char title[80] = {};
         std::snprintf(
-            title, sizeof(title), "DELETE LINE %ld?",
-            static_cast<long>(model_.line_number()));
+            title, sizeof(title), model_.structured() ? "DELETE ROW %ld?" : "DELETE LINE %ld?",
+            static_cast<long>(model_.structured()?model_.current_index()+1:model_.line_number()));
         platform::draw_text_row(0, title, 0xffffff, 0x203060);
         platform::draw_text_row(
             5, selected == 0 ? "> Cancel" : "  Cancel",
@@ -527,7 +651,7 @@ bool FullScreenEditor::find(bool next, bool previous) {
 
 bool FullScreenEditor::goto_line() {
     char text[16] = {};
-    if (!prompt("GOTO LINE", "Line: ", text, sizeof(text))) return false;
+    if (!prompt(model_.structured()?"GO TO ROW":"GOTO LINE", model_.structured()?"Row: ":"Line: ", text, sizeof(text))) return false;
     char* end = nullptr;
     const long value = std::strtol(text, &end, 10);
     if (!end || *end != '\0' || value < 0 || value > INT32_MAX) {
@@ -580,14 +704,20 @@ bool FullScreenEditor::exit_requested() {
     return false;
 }
 
-bool FullScreenEditor::run() {
+bool FullScreenEditor::run(std::int32_t initial_line) {
     if (!program_.ready()) return false;
     editor_perf::reset();
     (void)history_.begin();
     model_.set_history(history_.ready() ? &history_ : nullptr);
+    model_.configure_viewport(kVisibleLines, body_columns());
     if (!model_.begin()) {
         history_.end();
         return false;
+    }
+
+    if (initial_line > 0 && model_.goto_line(initial_line)) {
+        std::snprintf(message_, sizeof(message_), "COMPILE ERROR AT %s %ld",
+            model_.structured() ? "ROW" : "LINE", static_cast<long>(initial_line));
     }
 
     const platform::ConsoleMode previous_mode = platform::get_console_mode();
@@ -665,10 +795,15 @@ bool FullScreenEditor::run() {
             redraw_navigation = model_.move_home();
         } else if (key == kEnd) {
             redraw_navigation = model_.move_end();
+        } else if (key == kTab) {
+            redraw_all = model_.insert_tab();
+            if (!redraw_all) set_model_error();
         } else if (key == kBackspace) {
-            redraw_all = model_.backspace();
+            if (!model_.backspace() && !same_text(model_.error(), "OK")) set_model_error();
+            redraw_all = true;
         } else if (key == kDelete) {
-            redraw_all = model_.delete_char();
+            if (!model_.delete_char() && !same_text(model_.error(), "OK")) set_model_error();
+            redraw_all = true;
         } else if (key >= 0x20 && key <= 0x7e) {
             redraw_all = model_.insert_char(static_cast<char>(key));
             if (!redraw_all) set_model_error();
@@ -718,7 +853,8 @@ bool FullScreenEditor::run() {
             finished = exit_requested();
             redraw_all = !finished;
         } else if (enter_key(key)) {
-            set_message("USE F5 INSERT LINE TO ADD A LOGICAL LINE");
+            (void)split_line();
+            redraw_all = true;
         }
 
         if (redraw_all) {

@@ -321,8 +321,13 @@ void enter_sleep_mode(bool refresh_status) {
     // so wake latency is bounded by the short periodic timer interval.
     serial_put_string_raw("[STANDBY] PRESS ANY KEY TO WAKE\r\n");
 
+    // BIOS 1.7 can participate in standby through the keyboard controller,
+    // but CPB must also stop the LCD controller itself. Older keyboard BIOS
+    // revisions may clamp LCD brightness to a non-zero minimum, so the panel
+    // sleep sequence is deliberately independent of that behavior.
     picocalc::keyboard::set_lcd_backlight(0);
     picocalc::keyboard::set_keyboard_backlight(0);
+    picocalc::display::enter_standby();
 
     // Allow the triggering key to be released before wake polling begins.
     sleep_ms(180);
@@ -352,6 +357,7 @@ void enter_sleep_mode(bool refresh_status) {
         }
     }
 
+    picocalc::display::leave_standby();
     picocalc::keyboard::set_lcd_backlight(
         have_lcd ? lcd_level : static_cast<unsigned char>(160)
     );
@@ -422,6 +428,32 @@ void draw_text_span(
 
 bool get_battery_status(int& percent, bool& charging) {
     return picocalc::keyboard::read_battery(percent, charging);
+}
+
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics() {
+    unsigned char bios_version = 0;
+    const bool bios_reply_received =
+        picocalc::keyboard::read_bios_version(bios_version);
+    const auto& state = picocalc::keyboard::diagnostics();
+    return {
+        picocalc::keyboard::health_name(state.health),
+        picocalc::keyboard::error_name(state.last_error),
+        state.total_errors,
+        state.consecutive_errors,
+        state.recovery_attempts,
+        state.recoveries,
+        bios_reply_received,
+        bios_version,
+        picocalc::keyboard::startup_phase_name(state.startup_phase),
+        state.ever_ready,
+        state.sda_high,
+        state.scl_high,
+        state.first_try_recorded,
+        state.first_ack_recorded,
+        state.first_try_ms,
+        state.first_ack_ms,
+        state.startup_attempts
+    };
 }
 
 bool caps_lock_enabled() {
@@ -1111,7 +1143,8 @@ RuntimeKeyResult poll_runtime_source() {
     // while USB/UART remains non-blocking on every call.
     const uint32_t now = to_ms_since_boot(get_absolute_time());
 
-    if (static_cast<int32_t>(now - next_runtime_keyboard_poll_ms) < 0) {
+    if (static_cast<int32_t>(now - next_runtime_keyboard_poll_ms) < 0 &&
+        !picocalc::keyboard::poll_pending()) {
         return no_runtime_key();
     }
 
@@ -1236,6 +1269,15 @@ void collect_navigation_burst(
 int get_char(){
  if(serial_transfer_active())return -1;constexpr uint32_t blink_ms=500;bool cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);uint32_t next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;static bool last_shift_held=false;
  while(true){
+  // Poll USB/UART before I2C work and background callbacks.
+  int c=-1;CommandInputSource source=command_input_source;
+  // A lost built-in controller must not leave a half-entered local line
+  // permanently owning the console. Serial can take over that line.
+  if(source==CommandInputSource::Local &&
+     picocalc::keyboard::diagnostics().health==picocalc::keyboard::Health::Lost)
+      source=CommandInputSource::None;
+  if(source==CommandInputSource::None||source==CommandInputSource::Serial){c=console_uses_serial()?console_serial_read(0,source==CommandInputSource::Serial):-1;if(c>=0)source=CommandInputSource::Serial;}
+  if(c>=0){auto& filter=serial_crlf_filter;if(filter.should_ignore(c))continue;if(command_input_active)command_input_source=source;c=decode_terminal_key(c,source);if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return c;}
   if(background_service_callback)background_service_callback(background_service_context);
   int key=-1;if(pending_command_key>=0){key=pending_command_key;pending_command_key=-1;}else if(command_input_source==CommandInputSource::None||command_input_source==CommandInputSource::Local)key=unified_keyboard::read_key();
   const bool shift=unified_keyboard::shift_held();if(shift!=last_shift_held){last_shift_held=shift;if(status_refresh_callback)status_refresh_callback(status_refresh_context);}
@@ -1243,9 +1285,6 @@ int get_char(){
   if(key==picocalc::keyboard::key_hotkey_sleep){if(console_uses_lcd())picocalc::display::set_cursor_visible(false);enter_sleep_mode();cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;continue;}
   if(key==0xc1){if(status_refresh_callback)status_refresh_callback(status_refresh_context);continue;}
   if(key>=0){audio_key_click();if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=CommandInputSource::Local;if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return key;}
-  int c=-1;CommandInputSource source=command_input_source;
-  if(source==CommandInputSource::None||source==CommandInputSource::Serial){c=console_uses_serial()?console_serial_read(0,source==CommandInputSource::Serial):-1;if(c>=0)source=CommandInputSource::Serial;}
-  if(c>=0){auto& filter=serial_crlf_filter;if(filter.should_ignore(c))continue;if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=source;c=decode_terminal_key(c,source);if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return c;}
   const uint32_t now=to_ms_since_boot(get_absolute_time());if(static_cast<int32_t>(now-next_blink)>=0){cursor_visible=!cursor_visible;if(console_uses_lcd())picocalc::display::set_cursor_visible(cursor_visible);next_blink=now+blink_ms;}sleep_ms(4);
  }
 }

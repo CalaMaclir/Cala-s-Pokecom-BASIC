@@ -55,7 +55,7 @@ int main() {
     repl.program_dirty_ = true;
     repl.last_run_ms_ = 4709;
     repl.render_status();
-    assert(rows[0].find("PICOCALC_MAND.BAS*") != std::string::npos);
+    assert(rows[0].find("/PICOCALC_MAND.BAS*") != std::string::npos);
     assert(rows[0].find("BAT: 87%+") != std::string::npos);
     assert(rows[1] == "2026-09-21 15:44:32 WiFi:- CAPS:a");
     assert(rows[2] == "CPU:ECO 75MHz CON:BOTH RUN:4.709s");
@@ -85,10 +85,25 @@ int main() {
                    "CPU:FULL 150MHz") == 0);
         }
     }
+    std::strcpy(
+        repl.current_filename_, "testtesttest/program.bas");
+    repl.program_dirty_ = false;
+    repl.render_status();
+    assert(rows[0].find("../program") != std::string::npos);
+    assert(rows[0].find("testtesttest/program.bas") == std::string::npos);
+
+    std::strcpy(
+        repl.settings_.quick[0].filename,
+        "testtesttest/program.bas");
+    repl.render_function_keys();
+    assert(rows[39].find("program") == 0);
+    assert(rows[39].find("testtest") == std::string::npos);
+
+    repl.program_dirty_ = true;
     std::memset(repl.current_filename_, 'X', 79);
     repl.current_filename_[79] = 0;
     repl.render_status();
-    assert(rows[0].find("XXXXXXXXXXXXXXXXXX*") != std::string::npos);
+    assert(rows[0].find("/XXXXXXXX..XXXXXXX*") != std::string::npos);
     repl.settings_.wifi_enabled = true;
     caps = true;
     repl.render_status();
@@ -119,5 +134,35 @@ int main() {
             assert(cursor == top);
         }
     }
+    // Actual production file-row drawing: all 53 cells and all themes.
+    rmb::storage::DirectoryEntry dir{},file{};
+    std::strcpy(dir.name,"games");dir.directory=true;
+    std::strcpy(file.name,"demo.bas");file.size=4294967295u;
+    for(int theme=0;theme<3;++theme) {
+        repl.settings_.theme=theme;
+        std::strcpy(file.name,"demo.bas");
+        repl.draw_file_option(8,&dir,false,true);
+        assert(rows[8].size()==53&&rows[8].rfind("[DIR] games",0)==0);
+        const auto bg=backgrounds[8],fg=foregrounds[8];assert(bg!=0);
+        assert(rows[8].back()==' ');
+        repl.draw_file_option(8,&dir,true,true);
+        assert(backgrounds[8]!=bg&&foregrounds[8]==0xffffff);
+        repl.draw_file_option(8,&dir,false,true);
+        assert(backgrounds[8]==bg&&foregrounds[8]==fg);
+        repl.draw_file_option(8,&file,false,true);
+        assert(backgrounds[8]==0&&rows[8].rfind("      demo.bas",0)==0);
+        assert(rows[8].substr(43)=="4294967295");
+        std::memset(file.name,'X',79);file.name[79]=0;
+        repl.draw_file_option(8,&file,false,true);assert(rows[8].size()==53);
+        assert(rows[8].find("..")!=std::string::npos&&rows[8].substr(43)=="4294967295");
+        std::strcpy(file.name,"d.bas");
+        repl.draw_file_option(8,&file,false,true);
+        assert(rows[8].substr(6,5)=="d.bas"&&rows[8].substr(11,31)==std::string(31,' '));
+        repl.draw_file_option(8,nullptr,false,true);
+        assert(rows[8]==std::string(53,' ')&&backgrounds[8]==0);
+        repl.draw_file_option(8,&dir,false,false);assert(rows[8].rfind("[DIR] games",0)==0);
+    }
+    std::strcpy(repl.current_filename_,"UNTITLED");repl.program_dirty_=false;repl.render_status();
+    assert(rows[0].find("UNTITLED")!=std::string::npos&&rows[0].find("/UNTITLED")==std::string::npos);
     std::puts("status layout tests passed");
 }

@@ -15,6 +15,18 @@ struct EditorHistorySnapshot {
     std::uint16_t cursor = 0;
     bool existed = false;
     char body[kMaxSdProgramLineLength] = {};
+    // A split/join restores both identities in one backing-store transaction.
+    bool row_edit = false;
+    std::uint8_t replace_rows = 0;
+    std::uint8_t restore_rows = 0;
+    std::uint32_t focus_index = 0;
+    bool pair = false;
+    std::int32_t other_number = 0;
+    std::uint16_t other_length = 0;
+    bool other_existed = false;
+    char other_body[kMaxSdProgramLineLength] = {};
+    std::int32_t focus_number = 0;
+    std::uint16_t focus_cursor = 0;
 };
 
 class EditorHistory {

@@ -22,7 +22,7 @@ project(retrominibasic_picocalc C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(RMB_VERSION "0.91" CACHE STRING "Cala's Pokecom BASIC version")
+set(RMB_VERSION "0.92" CACHE STRING "Cala's Pokecom BASIC version")
 set(RMB_BUILD_NUMBER "local" CACHE STRING "Cala's Pokecom BASIC build number")
 option(RMB_ENABLE_LTO "Enable link-time optimization for release benchmarking" OFF)
 option(RMB_EDITOR_PERF "Enable editor latency counters and serial summary" OFF)

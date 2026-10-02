@@ -51,8 +51,8 @@ int main() {
     rmb::psram::init();
     rmb::PsramEditorHistory history;
     assert(history.begin() && history.ready());
-    assert(history.allocated_bytes() <= 128u * 1024u);
-    assert(history.allocated_bytes() >= 100u * 1024u);
+    assert(history.allocated_bytes() <= 256u * 1024u);
+    assert(history.allocated_bytes() >= 200u * 1024u);
     assert(rmb::psram::owner() == rmb::psram::Client::EditorHistory);
 
     rmb::EditorHistorySnapshot input{};
@@ -73,7 +73,7 @@ int main() {
     assert(history.push_redo(output) && history.redo_count() == 1);
     history.clear_redo(); assert(history.redo_count() == 0);
 
-    // Fixed 2 KiB snapshots leave roughly 31 records per stack in 128 KiB.
+    // Two-line 4 KiB snapshots keep roughly 31 records per stack in 256 KiB.
     history.clear();
     for (std::uint64_t i = 0; i < 100; ++i) {
         input.state_id = i;

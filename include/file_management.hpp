@@ -18,6 +18,8 @@ enum class Result {
     AlreadyExists,
     NotFound,
     NotRegularFile,
+    NotDirectory,
+    DirectoryNotEmpty,
     UsbHost,
     Busy,
     Unavailable,
@@ -44,6 +46,12 @@ Result delete_file(
     const char* current_file,
     Access access = Access::Allowed
 );
+Result create_directory(const char* root, const char* name, Access access = Access::Allowed);
+Result delete_directory(const char* root, const char* name, const char* current_file,
+                        Access access = Access::Allowed);
+Result rename_directory(const char* root, const char* old_name, const char* new_name,
+                        const char* current_file, Access access = Access::Allowed);
+
 const char* message(Result result);
 
 } // namespace rmb::file_management

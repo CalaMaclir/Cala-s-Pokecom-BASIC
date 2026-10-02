@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Generate Version 0.91 Japanese CPB manuals from Markdown without network access."""
+"""Generate Version 0.92 Japanese CPB manuals from Markdown without network access."""
 
 from __future__ import annotations
 
 import argparse
 import html
 import os
+import json
+import hashlib
+import reportlab
+import importlib.util
 import re
 from pathlib import Path
 
@@ -15,8 +19,9 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.cidfonts import UnicodeCIDFont
 from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.platypus.tableofcontents import TableOfContents
+from reportlab.pdfgen.canvas import Canvas
 from reportlab.platypus import (
     HRFlowable, Image, KeepTogether, PageBreak, Paragraph, Preformatted,
     SimpleDocTemplate, Spacer, Table, TableStyle,
@@ -28,28 +33,30 @@ MARGIN_X = 19 * mm
 BODY_W = PAGE_W - 2 * MARGIN_X
 MANUALS = (
     (ROOT / "docs/install-manual-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.91-Install-Manual-ja.pdf",
+     ROOT / "docs/Cala-Pokecom-BASIC-v0.92-Install-Manual-ja.pdf",
      "Install Manual / 導入マニュアル"),
     (ROOT / "docs/system-manual-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.91-System-Manual-ja.pdf",
+     ROOT / "docs/Cala-Pokecom-BASIC-v0.92-System-Manual-ja.pdf",
      "System Manual / システムマニュアル"),
     (ROOT / "docs/programming-reference-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.91-Programming-Reference-ja.pdf",
+     ROOT / "docs/Cala-Pokecom-BASIC-v0.92-Programming-Reference-ja.pdf",
      "Programming Reference Manual / プログラミング・リファレンスマニュアル"),
 )
-FONT_NAME = "CpbNotoJP"
+FONT_NAME = "CpbIPAexGothic"
+FONT_SHA256 = ""
 
 
 def register_fonts(font_path):
-    global FONT_NAME
-    if font_path.is_file():
-        pdfmetrics.registerFont(TTFont(FONT_NAME, str(font_path)))
-        return
-
-    # Reproducible no-network fallback. ReportLab's Japanese CID font keeps
-    # PDF generation independent from a host-specific TTF installation.
-    FONT_NAME = "HeiseiKakuGo-W5"
-    pdfmetrics.registerFont(UnicodeCIDFont(FONT_NAME))
+    global FONT_SHA256
+    if not font_path.is_file():
+        spec = importlib.util.find_spec("japanize_matplotlib")
+        if spec is None:
+            raise SystemExit("Install tools/requirements-manuals.txt: embedded Japanese font is required")
+        font_path = Path(spec.origin).parent / "fonts/ipaexg.ttf"
+    if not font_path.is_file():
+        raise SystemExit("Japanese TrueType font missing")
+    FONT_SHA256 = hashlib.sha256(font_path.read_bytes()).hexdigest()
+    pdfmetrics.registerFont(TTFont(FONT_NAME, str(font_path)))
 
 
 def make_styles():
@@ -57,23 +64,23 @@ def make_styles():
     gothic, serif = FONT_NAME, FONT_NAME
     return {
         "body": ParagraphStyle("body", parent=base["BodyText"], fontName=serif,
-            fontSize=9.2, leading=15, spaceAfter=4.5, textColor=colors.HexColor("#20242A")),
+            wordWrap="CJK", splitLongWords=True, fontSize=9.2, leading=15, spaceAfter=4.5, textColor=colors.HexColor("#20242A")),
         "title": ParagraphStyle("title", parent=base["Title"], fontName=gothic,
             fontSize=26, leading=35, alignment=TA_CENTER, textColor=colors.HexColor("#153F61")),
         "subtitle": ParagraphStyle("subtitle", parent=base["Heading2"], fontName=gothic,
             fontSize=15, leading=22, alignment=TA_CENTER, textColor=colors.HexColor("#1C6A8D")),
         "h1": ParagraphStyle("h1", parent=base["Heading1"], fontName=gothic,
-            fontSize=17, leading=23, spaceBefore=14, spaceAfter=8, textColor=colors.HexColor("#153F61")),
+            wordWrap="CJK", fontSize=17, leading=23, spaceBefore=14, spaceAfter=8, textColor=colors.HexColor("#153F61")),
         "h2": ParagraphStyle("h2", parent=base["Heading2"], fontName=gothic,
-            fontSize=12.5, leading=18, spaceBefore=12, spaceAfter=5, textColor=colors.HexColor("#1C6A8D")),
+            wordWrap="CJK", keepWithNext=True, fontSize=12.5, leading=18, spaceBefore=12, spaceAfter=5, textColor=colors.HexColor("#1C6A8D")),
         "h3": ParagraphStyle("h3", parent=base["Heading3"], fontName=gothic,
-            fontSize=10.5, leading=15, spaceBefore=9, spaceAfter=4, textColor=colors.HexColor("#273C52")),
+            wordWrap="CJK", keepWithNext=True, fontSize=10.5, leading=15, spaceBefore=9, spaceAfter=4, textColor=colors.HexColor("#273C52")),
         "bullet": ParagraphStyle("bullet", parent=base["BodyText"], fontName=serif,
-            fontSize=9.2, leading=14, leftIndent=13, firstLineIndent=-9, spaceAfter=2),
+            wordWrap="CJK", splitLongWords=True, fontSize=9.2, leading=14, leftIndent=13, firstLineIndent=-9, spaceAfter=2),
         "number": ParagraphStyle("number", parent=base["BodyText"], fontName=serif,
-            fontSize=9.2, leading=14, leftIndent=16, firstLineIndent=-13, spaceAfter=2),
+            wordWrap="CJK", splitLongWords=True, fontSize=9.2, leading=14, leftIndent=16, firstLineIndent=-13, spaceAfter=2),
         "code": ParagraphStyle("code", parent=base["Code"], fontName="Courier",
-            fontSize=7.3, leading=10, leftIndent=7, rightIndent=7, textColor=colors.HexColor("#1D2A36")),
+            fontSize=8.5, leading=12, leftIndent=7, rightIndent=7, textColor=colors.HexColor("#1D2A36")),
         "table": ParagraphStyle("table", parent=base["BodyText"], fontName=serif,
             fontSize=7.5, leading=10.2, wordWrap="CJK"),
         "table_head": ParagraphStyle("table_head", parent=base["BodyText"], fontName=gothic,
@@ -87,6 +94,12 @@ def make_styles():
 
 def inline(text):
     value = html.escape(text, quote=False)
+    def link(match):
+        label,target=match.groups()
+        if not target.startswith(("http://","https://")):
+            target="https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/blob/main/"+target
+        return '<link href="'+html.escape(target,quote=True)+'" color="#1C6A8D">'+label+'</link>'
+    value=re.sub(r"\[([^]]+)\]\(([^)]+)\)",link,value)
     value = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", value)
     delimiter = chr(96)
     value = re.sub(
@@ -134,6 +147,8 @@ def flush(buffer, story, style):
 def markdown_story(source, st, source_path):
     story, buffer = [], []
     lines, index = source.splitlines(), 0
+    # First three headings are rendered on the cover, not again in the body.
+    lines=[line for i,line in enumerate(lines) if not (i<3 and line.startswith("#"))]
     code_fence = chr(96) * 3
     while index < len(lines):
         line = lines[index]
@@ -143,7 +158,7 @@ def markdown_story(source, st, source_path):
             while index < len(lines) and not lines[index].startswith(code_fence):
                 block.append(lines[index])
                 index += 1
-            story += [Spacer(1, 2), Preformatted("\n".join(block), st["code"], maxLineLength=103), Spacer(1, 4)]
+            story += [KeepTogether([Spacer(1, 2), Preformatted("\n".join(block), st["code"], maxLineLength=90), Spacer(1, 4)])]
         elif line.startswith("|"):
             flush(buffer, story, st["body"])
             table_lines = [line]
@@ -166,13 +181,14 @@ def markdown_story(source, st, source_path):
             story += [Spacer(1, 4), figure, Paragraph(inline(caption), st["caption"]), Spacer(1, 7)]
         elif line.startswith("### "):
             flush(buffer, story, st["body"])
-            story.append(KeepTogether([
-                paragraph(line[4:], st["h3"]),
-                HRFlowable(width="100%", thickness=0.35, color=colors.HexColor("#B6C8D5"), spaceAfter=3),
-            ]))
+            heading=paragraph(line[4:],st["h3"])
+            heading._toc_level=1
+            story.append(heading)
         elif line.startswith("## "):
             flush(buffer, story, st["body"])
-            story.append(paragraph(line[3:], st["h2"]))
+            heading=paragraph(line[3:],st["h2"])
+            heading._toc_level=0
+            story.append(heading)
         elif line.startswith("# "):
             flush(buffer, story, st["body"])
         elif line.strip() == "---":
@@ -199,7 +215,7 @@ def cover(title, st):
         Spacer(1, 48 * mm),
         Paragraph("Cala's Pokecom BASIC System", st["title"]),
         Spacer(1, 9 * mm),
-        Paragraph("Version 0.91", st["subtitle"]),
+        Paragraph("Version 0.92", st["subtitle"]),
         Spacer(1, 18 * mm),
         HRFlowable(width="66%", thickness=1.5, color=colors.HexColor("#1C6A8D"), hAlign="CENTER"),
         Spacer(1, 12 * mm),
@@ -217,22 +233,40 @@ def page_decor(canvas, doc):
     canvas.line(MARGIN_X, PAGE_H - 12 * mm, PAGE_W - MARGIN_X, PAGE_H - 12 * mm)
     canvas.setFont(FONT_NAME, 7)
     canvas.setFillColor(colors.HexColor("#496779"))
-    canvas.drawString(MARGIN_X, PAGE_H - 9 * mm, "Cala's Pokecom BASIC System  Version 0.91")
+    canvas.drawString(MARGIN_X, PAGE_H - 9 * mm, "Cala's Pokecom BASIC System  Version 0.92")
     canvas.setFont(FONT_NAME, 7)
-    canvas.drawRightString(PAGE_W - MARGIN_X, 10 * mm, f"{doc.title}  |  {canvas.getPageNumber()}")
+    canvas.drawRightString(PAGE_W - MARGIN_X, 10 * mm, f"CPB v0.92  |  {canvas.getPageNumber()}")
     canvas.restoreState()
 
 
+class ManualDoc(SimpleDocTemplate):
+    def afterFlowable(self,flowable):
+        if hasattr(flowable,"_toc_level"):
+            title=flowable.getPlainText()
+            key="h-"+hashlib.sha256(title.encode()).hexdigest()[:20]
+            self.canv.bookmarkPage(key)
+            self.canv.addOutlineEntry(title,key,level=flowable._toc_level,closed=False)
+            self.notify("TOCEntry",(flowable._toc_level,title,self.page,key))
+
+def fixed_canvas(*args,**kwargs):
+    kwargs["invariant"]=1
+    return Canvas(*args,**kwargs)
+
 def build(source, output, title):
     st = make_styles()
-    doc = SimpleDocTemplate(
+    doc = ManualDoc(
         str(output), pagesize=A4, leftMargin=MARGIN_X, rightMargin=MARGIN_X,
         topMargin=20 * mm, bottomMargin=18 * mm,
-        title=f"Cala's Pokecom BASIC System Version 0.91 - {title}",
-        author="Cala Maclir", subject="Cala's Pokecom BASIC System Version 0.91",
+        title=f"Cala's Pokecom BASIC System Version 0.92 - {title}",
+        author="Cala Maclir", subject="Cala's Pokecom BASIC System Version 0.92",
     )
-    doc.build(cover(title, st) + markdown_story(source.read_text(encoding="utf-8"), st, source),
-              onFirstPage=lambda canvas, document: None, onLaterPages=page_decor)
+    toc=TableOfContents()
+    toc.levelStyles=[
+        ParagraphStyle("toc0",parent=st["body"],fontSize=9.2,leading=15,spaceBefore=4),
+        ParagraphStyle("toc1",parent=st["body"],fontSize=8,leading=12,leftIndent=12)]
+    story=cover(title,st)+[paragraph("目次",st["h1"]),Spacer(1,8),toc,PageBreak()]
+    story+=markdown_story(source.read_text(encoding="utf-8"),st,source)
+    doc.multiBuild(story,onFirstPage=lambda canvas,document:None,onLaterPages=page_decor,canvasmaker=fixed_canvas)
 
 
 def main():
@@ -241,10 +275,11 @@ def main():
     parser.add_argument(
         "--font",
         default=os.environ.get("CPB_JAPANESE_FONT", ""),
-        help="Optional Japanese TrueType font. Without one, use ReportLab HeiseiKakuGo-W5 CID fallback.",
+        help="Optional Japanese TrueType font. Default: IPAex Gothic from pinned japanize-matplotlib package.",
     )
     args = parser.parse_args()
     register_fonts(Path(args.font).expanduser())
+    manifest=[]
     for source, output, title in MANUALS:
         if not source.exists():
             raise SystemExit(f"Missing manual source: {source}")
@@ -254,7 +289,17 @@ def main():
             output.parent.mkdir(parents=True, exist_ok=True)
             build(source, output, title)
             print(f"Wrote {output.relative_to(ROOT)}")
+            manifest.append({"source":str(source.relative_to(ROOT)),"output":str(output.relative_to(ROOT)),
+                "source_sha256":hashlib.sha256(source.read_bytes()).hexdigest(),
+                "output_sha256":hashlib.sha256(output.read_bytes()).hexdigest()})
+    if not args.check:
+        (ROOT/"docs/manuals-manifest.json").write_text(json.dumps({
+            "version":"0.92","generator":"tools/generate_manual_pdfs.py",
+            "generator_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+            "reportlab":reportlab.Version,"font":FONT_NAME,"font_sha256":FONT_SHA256,"font_package":"japanize-matplotlib==1.1.3","canvas_invariant":True,"manuals":manifest},
+            ensure_ascii=False,indent=2)+"\n")
 
 
 if __name__ == "__main__":
     main()
+

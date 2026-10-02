@@ -92,6 +92,49 @@ public:
     std::vector<rmb::EditorHistorySnapshot> redo;
 };
 
+void tab_indentation() {
+    for (std::size_t column = 0; column < 8; ++column) {
+        FakeDocument document;
+        const std::string original = "ABCDEFGH";
+        document.lines = {{10, original}};
+        MemoryHistory history;
+        rmb::EditorModel model(document, &history);
+        model.configure_viewport(3, 5);
+        assert(model.begin());
+        for (std::size_t i = 0; i < column; ++i) assert(model.move_right());
+        const std::size_t spaces = 4 - column % 4;
+        assert(model.insert_tab());
+        assert(std::string(model.body()) == original.substr(0, column) +
+            std::string(spaces, ' ') + original.substr(column));
+        assert(model.cursor() == column + spaces && model.undo_count() == 1);
+        assert(model.undo() && std::string(model.body()) == original);
+        assert(model.cursor() == column);
+        assert(model.redo());
+        assert(model.insert_char('X'));
+        assert(model.undo()); // Adjacent typing does not join the Tab group.
+        assert(model.cursor() == column + spaces);
+        assert(model.undo() && std::string(model.body()) == original);
+    }
+    for (std::size_t limit : {191u, 2047u}) {
+        for (bool fits : {false, true}) {
+            FakeDocument document(limit);
+            const std::string original(limit - (fits ? 4 : 2), 'A');
+            document.lines = {{10, original}};
+            MemoryHistory history;
+            rmb::EditorModel model(document, &history);
+            assert(model.begin());
+            assert(model.insert_tab() == fits);
+            if (fits) {
+                assert(model.length() == limit && model.cursor() == 4);
+                assert(model.undo() && std::string(model.body()) == original);
+            } else {
+                assert(std::string(model.body()) == original && model.cursor() == 0);
+                assert(!model.changed() && !model.line_dirty() && model.undo_count() == 0);
+            }
+        }
+    }
+}
+
 void cursor_and_editing() {
     FakeDocument document; document.lines = {{100, "ABCDE"}};
     rmb::EditorModel model(document); model.configure_viewport(4, 3);
@@ -397,6 +440,7 @@ void cached_cursor_row_and_navigation_reads() {
 } // namespace
 
 int main() {
+    tab_indentation();
     cursor_and_editing(); navigation_and_viewport();
     visual_wrap_boundaries_and_navigation(); wrapped_viewport_mapping();
     preferred_column_and_page_clamp(); edit_reflows_wrap_rows();
