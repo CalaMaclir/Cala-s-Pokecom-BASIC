@@ -88,9 +88,11 @@ def make_styles():
         "compat_value": ParagraphStyle("compat_value", parent=base["BodyText"], fontName=gothic,
             fontSize=8.2, leading=11, textColor=colors.HexColor("#153F61")),
         "command_name": ParagraphStyle("command_name", parent=base["Heading3"], fontName=gothic,
-            fontSize=10.5, leading=15, textColor=colors.HexColor("#273C52")),
+            fontSize=10.5, leading=15, spaceBefore=0, spaceAfter=0,
+            textColor=colors.HexColor("#273C52")),
         "badge": ParagraphStyle("badge", parent=base["BodyText"], fontName=gothic,
-            fontSize=8.0, leading=10, alignment=TA_CENTER, textColor=colors.HexColor("#9A4B00")),
+            fontSize=8.0, leading=10, spaceBefore=0, spaceAfter=0,
+            alignment=TA_CENTER, textColor=colors.HexColor("#9A4B00")),
     }
 
 
