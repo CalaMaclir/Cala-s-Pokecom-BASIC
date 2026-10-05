@@ -8,9 +8,9 @@
     {
       "path": ".github/workflows/publish-release.yml",
       "development_blob": null,
-      "public_blob": "283163f0c711fca36d5ef30c56cf91b68c68f0dd",
+      "public_blob": "335277453321eab189a2fcea0e521d5bdd0b87b1",
       "intentional_adaptation": true,
-      "reason": "Public-only release automation; original private workflow and history are not imported."
+      "reason": "Public-only release automation; superseded PR preparation is canceled, main publication is preserved; private workflow and history are not imported."
     },
     {
       "path": ".gitignore",
