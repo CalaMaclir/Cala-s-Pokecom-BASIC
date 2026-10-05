@@ -1,0 +1,42 @@
+name: v0.94 reference manual preview
+on:
+  push:
+    branches: ['manual/v0.94-reference-layout']
+    paths:
+      - 'docs/programming-reference-ja.md'
+      - 'tools/generate_manual_pdfs.py'
+      - '.github/workflows/manual-v094-reference-preview.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build-reference:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install manual dependencies
+        run: python3 -m pip install --disable-pip-version-check -r tools/requirements-manuals.txt
+      - name: Validate reference inventory
+        run: python3 tools/validate_manual_reference.py
+      - name: Generate reference PDF
+        run: |
+          mkdir -p build/reference
+          python3 - <<'PY'
+          from pathlib import Path
+          import tools.generate_manual_pdfs as g
+          g.register_fonts(Path(""))
+          g.build(
+              Path("docs/programming-reference-ja.md"),
+              Path("build/reference/Cala-Pokecom-BASIC-v0.94-Programming-Reference-ja.pdf"),
+              "Programming Reference Manual / プログラミング・リファレンスマニュアル",
+              "0.94",
+          )
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Cala-Pokecom-BASIC-v0.94-reference-preview
+          path: build/reference/Cala-Pokecom-BASIC-v0.94-Programming-Reference-ja.pdf
+          retention-days: 30
