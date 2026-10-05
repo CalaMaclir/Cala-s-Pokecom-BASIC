@@ -9,13 +9,13 @@ Copyright (C) 2026 Cala Maclir
 
 ---
 
-本書はv0.94リリース候補の言語仕様です。Classic／Structuredの対応バッジ、例、期待結果を各項目に示します。LOAD／SAVEはProgram用REPL command、LOADIMAGE／SAVEIMAGEは画像用BASIC statement、SAVE IMAGEは互換構文です。最終実機試験の状況はRelease checklistを参照してください。
+本書はv0.94の言語仕様です。各コマンド／関数名の右側に、Classic／Structuredの対応状況をバッジ形式で1行表示します。LOAD／SAVEはProgram用REPL command、LOADIMAGE／SAVEIMAGEは画像用BASIC statement、SAVE IMAGEは互換構文です。
 
 ## 1. BASIC Language Overview
 
 CPB BASICは行番号付きClassic program、行番号なしStructured program、即時実行するDirect modeを持ちます。Structured programはEditorで作成・編集します。
 
-Classic BASICはv0.93でも継続して利用できます。Structured BASICはClassicを置き換えるものではなく、用途に応じて選べる追加モードです。Structuredの編集ではTabでindent、Alt+U（Bluetooth keyboardはShift+Tabも可）でOutdent、Alt+Mで対応blockへ移動、Alt+RでEditorから直接RUNできます。詳細はSystem Manualを参照してください。
+Classic BASICはv0.94でも継続して利用できます。Structured BASICはClassicを置き換えるものではなく、用途に応じて選べる追加モードです。Structuredの編集ではTabでindent、Alt+U（Bluetooth keyboardはShift+Tabも可）でOutdent、Alt+Mで対応blockへ移動、Alt+RでEditorから直接RUNできます。詳細はSystem Manualを参照してください。
 
 ```basic
 10 PRINT "HELLO"
