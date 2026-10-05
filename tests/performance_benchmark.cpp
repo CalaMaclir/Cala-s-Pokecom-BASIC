@@ -98,7 +98,7 @@ int main(int argc,char** argv) {
     for(const auto& file:files) {
         std::ifstream source(file);assert(source.good());
         rmb::ProgramStore program;assert(program.initialize(rmb::ProgramStorageMode::InternalRam));
-        const bool classic=file.find("classic")!=std::string::npos||file.find("stage3/")==std::string::npos;
+        const bool classic=file.find("classic")!=std::string::npos||(file.find("stage3/")==std::string::npos&&file.find("v093/performance/")==std::string::npos);
 #ifndef CPB_STAGE1
         assert(program.new_program(classic?rmb::ProgramSourceMode::ClassicNumbered:rmb::ProgramSourceMode::Structured));
 #endif

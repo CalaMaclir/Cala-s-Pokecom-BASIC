@@ -140,6 +140,9 @@ public:
     ProgramBackend backend_type() const { return backend_; }
     ProgramStorageMode mode() const { return mode_; }
     const char* filename() const { return filename_; }
+    // Editor error jumps only: check an already mounted saved source without
+    // remounting storage or changing the working program. Unsaved source is OK.
+    bool saved_source_present() const;
     const char* error() const { return error_; }
     static const char* mode_name(ProgramStorageMode mode);
     // Root injection for host filesystem tests; firmware uses the SD root.

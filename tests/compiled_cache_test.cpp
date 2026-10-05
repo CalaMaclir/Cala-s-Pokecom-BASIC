@@ -99,7 +99,7 @@ int main() {
     assert(!cache.restore(10,restored,rmb::ProgramSourceMode::ClassicNumbered));
     assert(cache.store(11,source));
     const auto alloc=rmb::psram::allocation(rmb::psram::Client::CompiledCache);
-    const std::uint16_t old_version=2;
+    const std::uint16_t old_version=4;
     assert(rmb::psram::write(alloc.base_address+4,&old_version,sizeof(old_version)));
     assert(!cache.restore(11,restored,rmb::ProgramSourceMode::Structured));
     assert(cache.store(12,source));
@@ -116,3 +116,4 @@ int main() {
     source.code[1].a=0;assert(cache.store(15,source));cache.invalidate();
     std::puts("CompiledProgram PSRAM cache: PASS");
 }
+

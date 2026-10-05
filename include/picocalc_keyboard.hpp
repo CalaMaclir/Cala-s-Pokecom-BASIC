@@ -1,11 +1,12 @@
 #pragma once
+#include "input_hotkeys.hpp"
 
 #include "keyboard_i2c_recovery.hpp"
 
 namespace rmb::picocalc::keyboard {
 
-constexpr int key_hotkey_screenshot = 0xe2;
-constexpr int key_hotkey_sleep = 0xe3;
+constexpr int key_hotkey_screenshot = input_hotkeys::Screenshot;
+constexpr int key_hotkey_sleep = input_hotkeys::Sleep;
 constexpr int key_power = 0x91;
 
 struct RtcDateTime {
@@ -31,6 +32,7 @@ enum class RtcError {
 void init();
 void reconfigure_bus_clock();
 int read_key();
+bool last_key_repeat();
 bool poll_pending();
 bool navigation_key_held(int key);
 bool set_lcd_backlight(unsigned char value);
@@ -42,6 +44,7 @@ bool read_battery(int& percent, bool& charging);
 // Caches the reply until init/recovery; a pending key read schedules a later
 // bounded diagnostic phase instead of overwriting its response.
 bool read_bios_version(unsigned char& value);
+bool cached_bios_version_value(unsigned char& value);
 bool caps_lock_enabled();
 void set_caps_lock(bool enabled);
 bool shift_held();

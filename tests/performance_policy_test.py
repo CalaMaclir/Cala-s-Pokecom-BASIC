@@ -18,6 +18,7 @@ import ci_validation_mode
 import stage2_evidence
 import stage3_evidence
 import paired_benchmark
+import stage5_evidence
 
 
 def case(name):
@@ -95,11 +96,9 @@ class PolicyTests(unittest.TestCase):
                 p.write_text(json.dumps({'pull_request':{'labels':labels}}))
                 self.assertEqual(ci_validation_mode.performance_mode({'GITHUB_EVENT_NAME':'pull_request','GITHUB_EVENT_PATH':str(p)}),mode)
 
-    @unittest.skipUnless((Path(__file__).resolve().parents[1]/'.github/workflows/build.yml').is_file(),
-                         'Private build workflow topology is not part of the public source distribution')
     def test_workflow_dependencies(self):
         root=Path(__file__).resolve().parents[1]
-        text=(root/'.github/workflows/build.yml').read_text()
+        text=(root/'tests/fixtures/development-build-topology.yml').read_text()
         steps=[]
         for block in text.split('      - name: ')[1:]:
             lines=block.splitlines()
@@ -109,6 +108,10 @@ class PolicyTests(unittest.TestCase):
                 if 'continue-on-error:' in line:step['continue-on-error']=line
             steps.append(step)
         for step in steps:
+            if step['name'] == 'Checkout frozen Stage 4 baseline':
+                self.assertEqual(step['if'], "env.STAGE5_BRANCH == 'true'")
+                self.assertNotIn('continue-on-error',step)
+                continue
             if step['name'].startswith(('Checkout Stage','Checkout frozen Stage','Checkout accepted Stage','Measure Stage')):
                 self.assertIn("env.PERFORMANCE_MODE == 'report'",step['if'])
                 self.assertNotIn('continue-on-error',step)
@@ -117,6 +120,71 @@ class PolicyTests(unittest.TestCase):
             self.assertNotIn('PERFORMANCE_MODE',step.get('if',''))
         self.assertIn('performance_mode:\n        description:',text)
         self.assertIn('default: off',text)
+
+    def test_stage5_report_and_correctness_are_separate(self):
+        text=(Path(__file__).resolve().parents[1]/'tests/fixtures/development-build-topology.yml').read_text()
+        for name in ('Build Stage 4 and integer FOR experiment; verify shared-source oracle',
+                     'Stage and audit experimental integer FOR package',
+                     'Upload EXPERIMENTAL integer FOR firmware'):
+            block=text.split('      - name: '+name+'\n',1)[1].split('      - name: ',1)[0]
+            self.assertIn("if: env.STAGE5_BRANCH == 'true'",block)
+            self.assertNotIn('PERFORMANCE_MODE',block)
+            self.assertNotIn('continue-on-error',block)
+        block=text.split('      - name: Stage 5 paired A-B and B-C performance report\n',1)[1].split('      - name: ',1)[0]
+        self.assertIn("env.PERFORMANCE_MODE == 'report'",block)
+        self.assertNotIn('continue-on-error',block)
+        cases=stage5_evidence.CASES;revisions=stage5_evidence.REVISIONS
+        runs={n:[{'cases':[case(c) for c in cases]}] for n in revisions}
+        rows=[]
+        for c in cases:
+            for before,after in zip(revisions,revisions[1:]):
+                for metric in paired_benchmark.METRICS:
+                    rows.append(dict(before=before,after=after,case=c,metric=metric,
+                                     before_us=100.,current_us=100.,delta_percent=0.))
+        evidence=dict(comparison_kind='v093-stage5ab',baseline_sha=stage5_evidence.BASELINE,
+            runs=runs,comparisons=rows,source_sha256={c:'a'*64 for c in cases})
+        evidence.update(policy.outcome(rows))
+        self.assertEqual(stage5_evidence.validate(evidence),'PASS')
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d)/'stage5-evidence.json').write_text(json.dumps(evidence))
+            self.assertEqual(policy.load_summary(Path(d),'report')['reports'],{'v093_stage5ab_compile_vm_cache':'PASS'})
+        for mutation in ('sha','output','logical','samples','median','sources'):
+            bad=copy.deepcopy(evidence)
+            if mutation=='sha':bad['baseline_sha']=policy.STAGE1_SHA
+            if mutation=='output':bad['runs']['IntFOR experimental'][0]['cases'][0]['output_hash']+=1
+            if mutation=='logical':bad['runs']['Normal'][0]['cases'][0]['logical_ops']+=1
+            if mutation=='samples':bad['runs']['IntFOR experimental'][0]['cases'][0]['vm_raw_us'].pop()
+            if mutation=='median':bad['comparisons'][0]['current_us']+=1
+            if mutation=='sources':bad['source_sha256'].pop(cases[0])
+            with self.subTest(mutation=mutation),self.assertRaises((AssertionError,ValueError)):
+                stage5_evidence.validate(bad)
+
+    def test_v093_evidence_is_separate_and_checked(self):
+        names=['examples/mandel_text.bas','examples/picocalc_mand.bas','examples/stage3/tiny-function.bas']
+        names += [f'examples/stage3/{g}-{m}.bas' for g in ('arithmetic','numeric','fractal') for m in ('classic','colon','rows','function')]
+        runs={n:[{'cases':[case(c) for c in names]}] for n in ('v0.93 baseline','Current')}
+        comparisons=[]
+        for c in runs['Current'][0]['cases']:
+            for metric in ('compile','vm','cache_miss','cache_hit'):
+                c[metric+'_raw_us']=[115.]*9
+                bm,cm,delta=policy.compare_samples([100.]*9,c[metric+'_raw_us'])
+                comparisons.append(dict(baseline='v0.93 baseline',case=c['name'],metric=metric,before_us=bm,current_us=cm,delta_percent=delta))
+        evidence=dict(comparison_kind='v093-stage1',baseline_sha=policy.V093_STAGE1_SHA,runs=runs,comparisons=comparisons)
+        evidence.update(policy.outcome(comparisons))
+        self.assertEqual(policy.validate_evidence(evidence),'WARN')
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d)/'v093-evidence.json').write_text(json.dumps(evidence))
+            self.assertEqual(policy.load_summary(Path(d),'report')['reports'],{'v093_stage1_compile_vm_cache':'WARN'})
+        for mutation in ('sha','slot-work','missing-case','samples','median'):
+            bad=copy.deepcopy(evidence)
+            if mutation=='sha':bad['baseline_sha']=policy.STAGE1_SHA
+            if mutation=='slot-work':bad['runs']['Current'][0]['cases'][0]['logical_ops']+=1
+            if mutation=='missing-case':
+                for run in bad['runs'].values():run[0]['cases'].pop()
+            if mutation=='samples':bad['runs']['Current'][0]['cases'][0]['vm_raw_us'].pop()
+            if mutation=='median':bad['comparisons'][0]['current_us']+=1
+            with self.subTest(mutation=mutation),self.assertRaises((AssertionError,ValueError)):
+                policy.validate_evidence(bad)
 
     def test_stage2_warning_and_corruption(self):
         names=['examples/stage3/arithmetic-classic.bas','examples/stage3/numeric-classic.bas','examples/mandel_text.bas']
@@ -178,3 +246,4 @@ class PolicyTests(unittest.TestCase):
                         self.assertTrue(result['identical_accepted_current_sections'])
 
 if __name__=='__main__':unittest.main()
+

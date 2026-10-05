@@ -1,0 +1,15 @@
+{
+  "version": "0.94",
+  "tag": "v0.94.0",
+  "development_source": "14c23f0dede4df381726379fd4474f7750e54ddf",
+  "source_manifest": "docs/release/v0.94-public-source-manifest.json",
+  "hardware_acceptance": "docs/release/v0.94-hardware-acceptance.json",
+  "run_id": 37309558086,
+  "build_number": 878,
+  "artifact_id": 11345486716,
+  "artifact_name": "CPokecombasic-v0.94-build878-pico2w",
+  "zip_bytes": 2147967,
+  "zip_sha256": "cbdbefcb64dcb880f309a7ad338094fda865db52a5978e61a929a1b9b9b023cc",
+  "input_zip": ".github/release-inputs/CPokecombasic-v0.94-build878-pico2w.zip",
+  "accepted_source": "e49d1d69755ca5814c1a894cdbcadde5066ea8ce"
+}

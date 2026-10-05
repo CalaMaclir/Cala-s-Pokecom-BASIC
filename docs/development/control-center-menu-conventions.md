@@ -1,5 +1,7 @@
 # Control Center menu conventions
 
+現行メニューの説明は[System Manual](../system-manual-ja.md)と照合します。
+
 ## Labels and navigation
 
 Menu labels do not use an ellipsis (`...`). Category labels are non-selectable
@@ -11,6 +13,7 @@ sequence is therefore `Files` -> `Editor` -> `Save Program`, not `Program`.
 
 - `Files`
 - `Editor`
+  - `New Program`
 - `Program`
   - `Save Program`
   - `Save Program As`
@@ -35,8 +38,9 @@ sequence is therefore `Files` -> `Editor` -> `Save Program`, not `Program`.
   - `Power / CPU`
   - `Board LED`
   - `Firmware`
-- `Diagnostics`
   - `System Information`
+- `Diagnostics`
+  - `Last Error / System`
   - `PSRAM Diagnostics`
 - `Exit`
 

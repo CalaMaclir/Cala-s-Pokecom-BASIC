@@ -1,0 +1,93 @@
+name: publish-release
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/release/current-publication.json'
+      - 'docs/release/*-public-source-manifest.json'
+      - 'tools/publish_release.py'
+      - '.github/workflows/publish-release.yml'
+      - '.github/release-inputs/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: publish-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Audit original Actions package and public source
+        run: python3 tools/publish_release.py prepare
+      - name: Validate current documents and immutable public v0.92 manuals
+        run: |
+          python3 -m pip install --disable-pip-version-check -r tools/requirements-manuals.txt
+          python3 tools/validate_release_docs.py
+          python3 tests/manual_reference_layout_test.py
+          python3 tests/release_acceptance_test.py
+          python3 tools/generate_manual_pdfs.py --version 0.94 --output-dir build/current-manuals-repro
+          python3 tools/generate_manual_pdfs.py --version 0.92 --output-dir build/historical-manuals-repro
+          for name in Install-Manual System-Manual Programming-Reference; do
+            cmp "docs/Cala-Pokecom-BASIC-v0.94-$name-ja.pdf" "build/current-manuals-repro/Cala-Pokecom-BASIC-v0.94-$name-ja.pdf"
+            cmp "docs/Cala-Pokecom-BASIC-v0.92-$name-ja.pdf" "build/historical-manuals-repro/Cala-Pokecom-BASIC-v0.92-$name-ja.pdf"
+          done
+      - name: Checkout SDK for public host regressions
+        uses: actions/checkout@v4
+        with:
+          repository: raspberrypi/pico-sdk
+          ref: 2.3.1
+          path: pico-sdk
+          submodules: recursive
+      - name: Run all public host regressions
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ccache
+          python3 tools/ci_host_tests.py --self-test
+          python3 -u tools/ci_host_tests.py
+      - name: Preserve audited release assets and host results
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpb-release-preparation
+          path: |
+            release-assets/
+            build-host/test-results.xml
+          retention-days: 90
+          if-no-files-found: error
+  publish:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: cpb-release-preparation
+          path: prepared
+      - name: Locate prepared assets
+        run: |
+          test -d prepared/release-assets
+          mv prepared/release-assets release-assets
+      - name: Publish Draft assets then verify public downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/publish_release.py publish
+      - name: Preserve publication receipt
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpb-publication-receipt
+          path: release-assets/publication-audit.json
+          retention-days: 90
+          if-no-files-found: error

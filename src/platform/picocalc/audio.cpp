@@ -44,6 +44,7 @@ audio::Engine synth;
 audio::KeyClick key_click;
 volatile Source source = Source::None;
 bool wav_paused = false;
+char current_audio_file[80] = {};
 int master_volume = 70;
 int wav_volume = 50;
 int play_volume = 100;
@@ -51,6 +52,20 @@ bool synth_is_mml = false;
 bool initialized = false;
 bool output_enabled = false;
 bool pwm_running = false;
+constexpr std::uint32_t kIdlePowerOffDelayMs = 10000u;
+bool idle_power_off_pending = false;
+std::uint32_t idle_power_off_since_ms = 0;
+// Ramp the carrier's DC bias, not PCM volume (silent PCM is still 50% duty).
+// A wrap-driven 100 ms smoothstep avoids foreground scheduling stair-steps.
+constexpr std::uint32_t kPwmBiasRampWraps = audio::pwm_carrier_rate / 10u;
+enum class PwmBiasState : std::uint8_t {
+    Steady, Rising, Falling, SettlingUp, SettlingDown, OffReady
+};
+volatile PwmBiasState pwm_bias_state = PwmBiasState::Steady;
+volatile std::uint16_t pwm_bias_level = 0;
+std::uint16_t pwm_bias_from = 0;
+std::uint16_t pwm_bias_to = 0;
+std::uint32_t pwm_bias_step = 0;
 volatile bool pwm_irq_active = false;
 uint pwm_slice = 0;
 std::uint16_t pwm_wrap_value = 0;
@@ -177,12 +192,26 @@ void prepare_pwm_for_start() {
     gpio_set_drive_strength(kRightPin, GPIO_DRIVE_STRENGTH_4MA);
     gpio_set_slew_rate(kLeftPin, GPIO_SLEW_RATE_SLOW);
     gpio_set_slew_rate(kRightPin, GPIO_SLEW_RATE_SLOW);
+    pwm_set_counter(pwm_slice, 0);
+    // Compare writes latch immediately while the slice is stopped. Set zero
+    // before changing the pin mux so startup also begins electrically LOW.
+    pwm_set_both_levels(pwm_slice, 0, 0);
+    pwm_bias_level = 0;
     gpio_set_function(kLeftPin, GPIO_FUNC_PWM);
     gpio_set_function(kRightPin, GPIO_FUNC_PWM);
-    pwm_set_counter(pwm_slice, 0);
-    pwm_set_both_levels(
-        pwm_slice, pwm_centre_value, pwm_centre_value);
     output_enabled = true;
+}
+
+// Caller holds interrupts disabled. On reversal, continue from the last
+// submitted compare value; it will latch before the next ramp ISR runs.
+void begin_pwm_bias_ramp(bool rising) {
+    pwm_bias_from = pwm_bias_level;
+    pwm_bias_to = rising ? pwm_centre_value : 0;
+    pwm_bias_step = 0;
+    pwm_bias_state = rising ? PwmBiasState::Rising : PwmBiasState::Falling;
+    pwm_clear_irq(pwm_slice);
+    pwm_set_irq0_enabled(pwm_slice, true);
+    pwm_irq_active = true;
 }
 
 void halt_pwm_output() {
@@ -216,6 +245,47 @@ void __not_in_flash_func(write_pwm_word)(std::uint32_t packed) {
 void __not_in_flash_func(pwm_wrap_handler)() {
     pwm_clear_irq(pwm_slice);
 
+    if (pwm_bias_state == PwmBiasState::Rising ||
+        pwm_bias_state == PwmBiasState::Falling) {
+        const bool rising = pwm_bias_state == PwmBiasState::Rising;
+        // Q15 cubic smoothstep: zero slope at both ends, no floating point
+        // or per-wrap 64-bit division in the 44.1 kHz interrupt.
+        const std::uint32_t phase = (++pwm_bias_step * 32768u) / kPwmBiasRampWraps;
+        const std::uint32_t square = (phase * phase) >> 15u;
+        const std::uint32_t eased = (square * (98304u - 2u * phase)) >> 15u;
+        const std::int32_t distance =
+            static_cast<std::int32_t>(pwm_bias_to) - pwm_bias_from;
+        const std::uint16_t next_level = static_cast<std::uint16_t>(
+            pwm_bias_from + (distance * static_cast<std::int32_t>(eased)) / 32768);
+        // Fixed-point rounding must not reverse the envelope near an endpoint.
+        const std::uint16_t previous_level = pwm_bias_level;
+        pwm_bias_level = rising ? std::max(next_level, previous_level)
+                                : std::min(next_level, previous_level);
+        pwm_set_both_levels(pwm_slice, pwm_bias_level, pwm_bias_level);
+        if (pwm_bias_step == kPwmBiasRampWraps) {
+            pwm_bias_step = 0;
+            pwm_bias_state = rising ? PwmBiasState::SettlingUp
+                                    : PwmBiasState::SettlingDown;
+        }
+        return; // Preserve every queued audio word during bias transitions.
+    }
+    if (pwm_bias_state == PwmBiasState::SettlingUp) {
+        // The endpoint just latched at this wrap. Hold a full centre cycle
+        // before submitting the first audio word on the following interrupt.
+        pwm_bias_state = PwmBiasState::Steady;
+        return;
+    }
+    if (pwm_bias_state == PwmBiasState::SettlingDown) {
+        // PWM compare registers are double-buffered. Allow two wraps after
+        // submitting zero before foreground can disable PWM and change mux.
+        if (++pwm_bias_step == 2u) {
+            pwm_bias_state = PwmBiasState::OffReady;
+            pwm_set_irq0_enabled(pwm_slice, false);
+            pwm_irq_active = false;
+        }
+        return;
+    }
+
     if (!activate_next_buffer()) {
         const bool source_active = source != Source::None;
         if (source_active && !underrun_active) {
@@ -225,9 +295,11 @@ void __not_in_flash_func(pwm_wrap_handler)() {
         }
         pwm_set_both_levels(
             pwm_slice, pwm_centre_value, pwm_centre_value);
+        pwm_bias_level = pwm_centre_value;
 
-        // Once the final queued buffer has drained, retain centre duty without
-        // spending CPU time on an otherwise idle 44.1 kHz interrupt.
+        // Once the final queued buffer has drained, disable the idle 44.1 kHz
+        // interrupt. Keep centre duty during the short idle grace period;
+        // audio_service() ramps the bias to zero before shutting PWM down.
         if (!source_active) {
             pwm_set_irq0_enabled(pwm_slice, false);
             pwm_irq_active = false;
@@ -249,7 +321,15 @@ void __not_in_flash_func(pwm_wrap_handler)() {
 void start_ready_pwm() {
     const std::uint32_t irq_state = save_and_disable_interrupts();
     if (activate_next_buffer()) {
-        if (!output_enabled) prepare_pwm_for_start();
+        idle_power_off_pending = false;
+        if (!output_enabled) {
+            prepare_pwm_for_start();
+            begin_pwm_bias_ramp(true);
+        } else if (pwm_bias_state == PwmBiasState::Falling ||
+                   pwm_bias_state == PwmBiasState::SettlingDown ||
+                   pwm_bias_state == PwmBiasState::OffReady) {
+            begin_pwm_bias_ramp(true);
+        }
         if (!pwm_irq_active) {
             pwm_clear_irq(pwm_slice);
             pwm_set_irq0_enabled(pwm_slice, true);
@@ -276,13 +356,16 @@ void reset_output() {
 
     // STANDBY and explicit stop must be electrically quiet.
     pwm_set_both_levels(pwm_slice, 0, 0);
-    gpio_set_function(kLeftPin, GPIO_FUNC_SIO);
-    gpio_set_function(kRightPin, GPIO_FUNC_SIO);
     gpio_set_dir(kLeftPin, GPIO_OUT);
     gpio_set_dir(kRightPin, GPIO_OUT);
     gpio_put(kLeftPin, 0);
     gpio_put(kRightPin, 0);
+    gpio_set_function(kLeftPin, GPIO_FUNC_SIO);
+    gpio_set_function(kRightPin, GPIO_FUNC_SIO);
     output_enabled = false;
+    idle_power_off_pending = false;
+    pwm_bias_state = PwmBiasState::Steady;
+    pwm_bias_level = 0;
 
     restore_interrupts(irq_state);
 }
@@ -630,9 +713,33 @@ void audio_service() {
         bool queued = playing_buffer >= 0;
         for (const auto state : buffer_state)
             queued = queued || state == BufferState::Ready;
-        if (!queued) release_cpu_boost();
+        if (!queued && !pwm_irq_active) {
+            // Switching centre-duty PWM straight to LOW produces an audible
+            // transient. Reuse the carrier for nearby clicks instead of
+            // stopping and starting it on every keystroke. Begin the grace
+            // period only after the last queued tail has actually drained.
+            if (output_enabled) {
+                const std::uint32_t now = monotonic_millis();
+                if (pwm_bias_state == PwmBiasState::OffReady) {
+                    reset_output();
+                    release_cpu_boost();
+                } else if (!idle_power_off_pending) {
+                    idle_power_off_pending = true;
+                    idle_power_off_since_ms = now;
+                } else if (static_cast<std::uint32_t>(
+                               now - idle_power_off_since_ms) >=
+                           kIdlePowerOffDelayMs) {
+                    const std::uint32_t irq_state = save_and_disable_interrupts();
+                    begin_pwm_bias_ramp(false);
+                    restore_interrupts(irq_state);
+                }
+            } else {
+                release_cpu_boost();
+            }
+        }
         return;
     }
+    idle_power_off_pending = false;
     for (std::size_t filled = 0; filled < kBufferCount; ++filled) {
         if (source == Source::None && !key_click.active()) break;
         const std::size_t index = buffer_order.producer_index();
@@ -651,6 +758,7 @@ void audio_stop() {
     synth_is_mml = false;
     close_wav();
     source = Source::None;
+    current_audio_file[0] = 0;
     wav_paused = false;
     reset_output();
     release_cpu_boost();
@@ -675,6 +783,23 @@ void audio_resume() {
     if (source == Source::Synth) synth.resume();
     if (source == Source::Wav || source == Source::Mp3)
         wav_paused = false;
+}
+
+AudioDiagnostics audio_diagnostics() {
+    AudioDiagnostics info;
+    const auto bias = pwm_bias_state;
+    info.power_state = !output_enabled ? "Off" :
+        bias == PwmBiasState::Rising || bias == PwmBiasState::SettlingUp ? "Ramping up" :
+        bias == PwmBiasState::Falling || bias == PwmBiasState::SettlingDown || bias == PwmBiasState::OffReady ? "Ramping down" :
+        idle_power_off_pending ? "Idle grace (10 sec)" : "On";
+    const bool active = audio_playing();
+    info.source = source == Source::Synth ? "PLAY/BEEP" :
+        source == Source::Wav ? "WAV" : source == Source::Mp3 ? "MP3" :
+        source == Source::Diagnostic ? "Diagnostic" : active ? "PCM tail / click" : "None";
+    info.state = !active ? "Stopped" : (wav_paused || (source == Source::Synth && synth.paused())) ? "Paused" : "Playing";
+    info.file_active = *current_audio_file && (source == Source::Wav || source == Source::Mp3);
+    if (info.file_active) std::snprintf(info.file, sizeof(info.file), "%s", current_audio_file);
+    return info;
 }
 
 bool audio_playing() {
@@ -816,6 +941,7 @@ bool audio_wavplay(const char* filename) {
         wav_have_frame = false;
         wav_read_failed = false;
         wav_paused = false;
+        std::snprintf(current_audio_file, sizeof(current_audio_file), "%s", relative);
         source = Source::Wav;
         set_error("OK");
         audio_service();
@@ -864,6 +990,7 @@ bool audio_wavplay(const char* filename) {
     mp3_resampler.reset();
     mp3_read_failed = false;
     wav_paused = false;
+    std::snprintf(current_audio_file, sizeof(current_audio_file), "%s", relative);
     source = Source::Mp3;
     set_error("OK");
     audio_service();

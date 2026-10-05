@@ -22,7 +22,10 @@ project(retrominibasic_picocalc C CXX ASM)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 17)
 
-set(RMB_VERSION "0.92" CACHE STRING "Cala's Pokecom BASIC version")
+# Keep VM float operations separately rounded, including always-inlined locals.
+add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>")
+
+set(RMB_VERSION "0.94" CACHE STRING "Cala's Pokecom BASIC version")
 set(RMB_BUILD_NUMBER "local" CACHE STRING "Cala's Pokecom BASIC build number")
 option(RMB_ENABLE_LTO "Enable link-time optimization for release benchmarking" OFF)
 option(RMB_EDITOR_PERF "Enable editor latency counters and serial summary" OFF)
@@ -61,6 +64,7 @@ add_executable(retrominibasic_picocalc
     src/core/compiled_cache.cpp
     src/core/vm.cpp
     src/core/graphics_text.cpp
+    src/core/image_io.cpp
     src/core/repl.cpp
     src/core/xmodem.cpp
     src/core/ymodem.cpp
@@ -175,3 +179,10 @@ add_custom_command(TARGET retrominibasic_picocalc POST_BUILD
         "$<TARGET_FILE:retrominibasic_picocalc>"
         "${CMAKE_CURRENT_BINARY_DIR}/CPokecombasic.elf"
 )
+
+
+# Stage 5 research only: default OFF; no BASIC syntax or UI setting.
+option(RMB_STAGE5_INTEGER_FOR_EXPERIMENT "EXPERIMENTAL integer FOR; NOT FOR RELEASE" OFF)
+if(RMB_STAGE5_INTEGER_FOR_EXPERIMENT)
+    target_compile_definitions(retrominibasic_picocalc PRIVATE RMB_STAGE5_INTEGER_FOR_EXPERIMENT=1)
+endif()

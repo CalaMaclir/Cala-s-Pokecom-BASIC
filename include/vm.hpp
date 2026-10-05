@@ -13,7 +13,7 @@ enum class VmProfileMode : std::uint8_t {
     Timed
 };
 
-constexpr std::size_t kVmProfileOpcodeSlots = 128;
+constexpr std::size_t kVmProfileOpcodeSlots = 130; // format 6 adds two IDs above the original capacity
 static_assert(
     static_cast<std::size_t>(OpCode::HALT) < kVmProfileOpcodeSlots,
     "Increase kVmProfileOpcodeSlots for new VM opcodes"
@@ -33,12 +33,22 @@ struct VmProfileReport {
 };
 
 struct VmResult {
+    static constexpr std::size_t kTraceCapacity = 4;
+    struct CallSite {
+        char name[kSymbolNameLength] = {};
+        std::int32_t caller_row = 0;
+    };
     bool ok = false;
     bool interrupted = false;
     std::int32_t pc = 0;
     std::int32_t source_row = 0, call_source_row = 0;
     std::uint16_t call_depth = 0;
     char function_name[kSymbolNameLength] = {};
+    std::int32_t source_line = 0;
+    char detail[96] = {}; // Unadorned cause; message retains its legacy format.
+    CallSite trace[kTraceCapacity] = {}; // Innermost first; captured only on error.
+    std::uint8_t trace_count = 0;
+    bool trace_truncated = false;
     char message[96] = {};
 };
 

@@ -5,6 +5,8 @@
 #include "picocalc_keyboard.hpp"
 
 namespace rmb::unified_keyboard {
+namespace { bool returned_repeat = false; }
+bool last_key_repeat() { return returned_repeat; }
 
 void init() {
     picocalc::keyboard::init();
@@ -13,13 +15,14 @@ void init() {
 }
 
 int read_key() {
+    returned_repeat = false;
     const int internal = picocalc::keyboard::read_key();
     if (internal == 0xc1) {
         const bool enabled = picocalc::keyboard::caps_lock_enabled();
         bluetooth_hid::set_caps_lock(enabled);
         bluetooth_hid_ble::set_caps_lock(enabled);
     }
-    if (internal >= 0) return internal;
+    if (internal >= 0) { returned_repeat = picocalc::keyboard::last_key_repeat(); return internal; }
 
     const int classic = bluetooth_hid::read_key();
     if (classic == 0xc1) {
@@ -27,7 +30,7 @@ int read_key() {
         picocalc::keyboard::set_caps_lock(enabled);
         bluetooth_hid_ble::set_caps_lock(enabled);
     }
-    if (classic >= 0) return classic;
+    if (classic >= 0) { returned_repeat = bluetooth_hid::last_key_repeat(); return classic; }
 
     const int ble = bluetooth_hid_ble::read_key();
     if (ble == 0xc1) {
@@ -35,6 +38,7 @@ int read_key() {
         picocalc::keyboard::set_caps_lock(enabled);
         bluetooth_hid::set_caps_lock(enabled);
     }
+    if (ble >= 0) returned_repeat = bluetooth_hid_ble::last_key_repeat();
     return ble;
 }
 

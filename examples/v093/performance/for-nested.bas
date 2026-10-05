@@ -1,0 +1,8 @@
+S=0
+FOR Y=1 TO 1000
+  FOR X=1 TO 1000
+    S=S+1
+  NEXT X
+NEXT Y
+PRINT S
+END

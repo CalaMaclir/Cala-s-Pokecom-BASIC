@@ -134,7 +134,7 @@ bool function_key_bar_enabled() { return true; }
 bool shift_held() { return false; }
 bool caps_lock_enabled() { return false; }
 bool get_battery_status(int&, bool&) { return false; }
-InternalKeyboardDiagnostics get_internal_keyboard_diagnostics() {
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics(bool) {
     return {"OK", "NONE", 0, 0, 0, 0};
 }
 bool get_datetime(DateTime&) { return false; }
@@ -297,6 +297,7 @@ bool load_program(const char* name, ProgramStore& program) {
     return program.load(name);
 }
 bool save_screenshot(const char*,int,int,int,int) { return true; }
+bool load_image(const char*,int,int) { return true; }
 bool read_root_text(const char* name,char* output,std::size_t capacity) {
     const std::string& value=std::strcmp(name,"RMBASIC.CFG")==0 ? host_config : host_config_backup;
     if(value.empty() || value.size()+1>capacity) return false;
@@ -317,6 +318,7 @@ bool file_server_start() { return true; }
 bool file_server_running() { return false; }
 }
 namespace rmb { std::size_t LineEditor::read(char* b, std::size_t, CommandHistory*, const char*) { b[0]=0; return 0; } }
+namespace rmb { std::size_t LineEditor::read(char* b, std::size_t n, CommandHistory* h, const char* s, bool) {return read(b,n,h,s);} }
 
 static rmb::Repl repl;
 void workspace_empty() {
@@ -350,6 +352,9 @@ void run_editor_navigation_case(
 ) {
     char filename[80] = "UNTITLED";
     bool dirty = false;
+    // These navigation fixtures represent a loaded, clean program. Keep the
+    // store and the editor mirror consistent before testing draw counts.
+    assert(program.set_dirty(false));
     editor_keys.assign(keys);
     editor_key_index = 0;
     editor_repeat_count = repeats;
@@ -762,7 +767,7 @@ int main(int argc, char** argv) {
     assert(repl.program_.size() == 1);
     rmb::ProgramLine stored; assert(repl.program_.read_line(0,stored));
     assert(!std::strcmp(stored.text,"PRINT 42"));
-    direct("PRINT (", "?EXPECTED EXPRESSION\r\n");
+    direct("PRINT (", "?EXPECTED EXPRESSION\r\nCompile Error\r\nPRINT (\r\nDIAGNOSTICS: LAST ERROR / S SEND TO USB SERIAL\r\n");
     run("42\r\n[RUN]");
     direct("PRINT A", "123\r\n");
     direct("DIM N(2):N(1)=7:PRINT N(1)", "7\r\n");
@@ -1158,4 +1163,3 @@ int main(int argc, char** argv) {
     assert(!large_compiler.compile(repl.program_,classic_rejected).ok);
     std::filesystem::remove_all(temporary);
 }
-

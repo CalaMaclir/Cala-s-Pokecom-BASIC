@@ -1,6 +1,11 @@
 #include "file_list_layout.hpp"
+#include "files_playback_input.hpp"
+#include "system_information.hpp"
+#include <memory>
 #include "path_compaction.hpp"
 #include "repl.hpp"
+#include "input_hotkeys.hpp"
+#include "firmware_version.hpp"
 #include "psram.hpp"
 #include "session_notice.hpp"
 
@@ -40,10 +45,6 @@
 #include "system_controls.hpp"
 #include "xmodem.hpp"
 #include "ymodem.hpp"
-
-#ifndef RMB_VERSION
-#define RMB_VERSION "0.81"
-#endif
 
 #ifndef RMB_BUILD_NUMBER
 #define RMB_BUILD_NUMBER "local"
@@ -607,6 +608,43 @@ bool Repl::save_current_program() {
     return save_program_as(filename);
 }
 
+bool Repl::confirm_unsaved_changes() {
+    if (!program_modified()) return true;
+    draw_menu_header("UNSAVED CHANGES", "S SAVE  D DISCARD  ESC CANCEL");
+    const int top = settings_.status_enabled ? console_layout::status_rows : 0;
+    char name[54] = {};
+    file_paths::compact_root_path(current_filename_, 50,
+        file_paths::CompactPathPolicy::ProgramName, name, sizeof(name));
+    draw_menu_message(top + 4, name);
+    draw_menu_message(top + 6, "[S] Save");
+    draw_menu_message(top + 7, "[D] Discard changes and continue");
+    draw_menu_message(top + 8, "[ESC] Cancel");
+    // Also make this usable from the USB/UART REPL in SERIAL-only mode.
+    platform::put_string("Unsaved changes: [S] Save / [D] Discard / [ESC] Cancel\r\n");
+    while (true) {
+        const int key = platform::get_char();
+        if (key == kKeyEscape || key == 0x1b) return false;
+        // Discard authorizes only the upcoming transaction. Do not mark clean
+        // or clear the source before LOAD / NEW has actually succeeded.
+        if (key == 'd' || key == 'D') return true;
+        if (key != 's' && key != 'S') continue;
+        bool saved = false;
+        if (has_current_filename()) saved = save_current_program();
+        else {
+            char filename[80] = {};
+            if (!prompt_text("SAVE AS (SD-relative path): ", filename, sizeof(filename))) return false;
+            if (storage::program_exists(filename) && !confirm_program_overwrite(filename)) return false;
+            saved = save_program_as(filename);
+        }
+        if (!saved) {
+            platform::put_string("?SAVE FAILED - PROGRAM KEPT\r\n");
+            print_storage_error();
+            wait_message("SAVE FAILED - PROGRAM KEPT", storage::last_error());
+        }
+        return saved;
+    }
+}
+
 void Repl::load_settings() {
     settings_ = Settings{};
 
@@ -633,6 +671,8 @@ void Repl::load_settings() {
         return;
     }
 
+    char legacy_ssid[33] = {}, legacy_password[64] = {};
+    bool has_profile_keys = false;
     char* cursor = text;
     while (*cursor) {
         char* line = cursor;
@@ -649,6 +689,10 @@ void Repl::load_settings() {
         }
 
         line = skip_spaces(line);
+        if (wifi_profiles::parse_line(settings_.wifi_profiles, line)) {
+            has_profile_keys = true;
+            continue;
+        }
         trim_right(line);
 
         if (*line == '\0' ||
@@ -809,8 +853,8 @@ void Repl::load_settings() {
 
         if (ci_equal(line, "wifi_ssid")) {
             std::snprintf(
-                settings_.wifi_ssid,
-                sizeof(settings_.wifi_ssid),
+                legacy_ssid,
+                sizeof(legacy_ssid),
                 "%s",
                 eq
             );
@@ -819,8 +863,8 @@ void Repl::load_settings() {
 
         if (ci_equal(line, "wifi_password")) {
             std::snprintf(
-                settings_.wifi_password,
-                sizeof(settings_.wifi_password),
+                legacy_password,
+                sizeof(legacy_password),
                 "%s",
                 eq
             );
@@ -850,6 +894,7 @@ void Repl::load_settings() {
                 !comma || ci_equal(comma, "run");
         }
     }
+    wifi_profiles::migrate(settings_.wifi_profiles, has_profile_keys, legacy_ssid, legacy_password);
 }
 
 void Repl::save_settings() {
@@ -883,8 +928,6 @@ void Repl::save_settings() {
         "keyboard_layout=%s\n"
         "\n[wifi]\n"
         "wifi_enabled=%s\n"
-        "wifi_ssid=%s\n"
-        "wifi_password=%s\n"
         "wifi_auto_rtc=%s\n"
         "wifi_timezone_minutes=%d\n"
         "wifi_ntp_server=%s\n"
@@ -908,8 +951,6 @@ void Repl::save_settings() {
         bluetooth_hid::keyboard_layout_name(
             settings_.bluetooth_keyboard_layout),
         "off",
-        settings_.wifi_ssid,
-        settings_.wifi_password,
         settings_.wifi_auto_rtc ? "on" : "off",
         settings_.wifi_timezone_minutes,
         settings_.wifi_ntp_server
@@ -918,6 +959,10 @@ void Repl::save_settings() {
     if (n < 0) return;
     used = static_cast<std::size_t>(n);
     if (used >= sizeof(text)) return;
+
+    n = wifi_profiles::serialize(settings_.wifi_profiles, text + used, sizeof(text) - used);
+    if (n < 0) return; // No writes at all on buffer overflow.
+    used += static_cast<std::size_t>(n);
 
     for (int i = 0; i < kQuickKeyCount; ++i) {
         const QuickKey& key = settings_.quick[i];
@@ -1005,7 +1050,7 @@ void Repl::render_status() {
 
     char filename[24] = {};
     format_status_filename(
-        current_filename_, program_dirty_, filename, sizeof(filename));
+        current_filename_, program_modified(), filename, sizeof(filename));
 
     char line1[80] = {};
     if (battery_ok) {
@@ -1328,6 +1373,11 @@ bool Repl::load_named_program(
     bool run_after_load
 ) {
     if (!filename || !*filename) return false;
+    if (program_modified()) {
+        const bool proceed = confirm_unsaved_changes();
+        leave_menu_screen();
+        if (!proceed) return false;
+    }
 
     platform::put_string("LOADING... (");
     put_root_path(filename);
@@ -1428,7 +1478,7 @@ void Repl::process_numbered_line(char* input) {
 
         if (*body == '\0') {
             if (!program_.erase_line(line_number)) print_program_error();
-            else program_dirty_ = true;
+            else program_dirty_ = program_.is_dirty();
             return;
         }
 
@@ -1440,7 +1490,7 @@ void Repl::process_numbered_line(char* input) {
         if (!program_.set_line(line_number, body)) {
             print_program_error();
         } else {
-            program_dirty_ = true;
+            program_dirty_ = program_.is_dirty();
         }
         return;
 }
@@ -1482,6 +1532,11 @@ void Repl::process_line(char* line) {
     }
 
     if (command_equals(input, "NEW")) {
+        if (program_modified()) {
+            const bool proceed = confirm_unsaved_changes();
+            leave_menu_screen();
+            if (!proceed) return;
+        }
         if (!program_.new_program(ProgramSourceMode::ClassicNumbered)) { print_program_error(); return; }
         vm_.clear_direct_state();
         set_current_filename("UNTITLED", false);
@@ -1550,6 +1605,10 @@ void Repl::process_line(char* line) {
     }
 
     if (char* arg = command_argument(input, "SAVE")) {
+        if (command_argument(arg, "IMAGE")) {
+            run_direct_line(input);
+            return;
+        }
         char filename[80] = {};
         const bool has_argument = *skip_spaces(arg) != '\0';
         if (has_argument &&
@@ -1677,10 +1736,16 @@ void Repl::process_line(char* line) {
         return;
     }
 
+    if (command_equals(input, "INFO")) { command_info(); return; }
+    if (command_equals(input, "LASTERROR")) { command_last_error(); return; }
+    if (command_equals(input, "DIAGNOSTICS")) { menu_system_info(true); return; }
     if (command_equals(input, "HELP")) {
         platform::put_string("HOME (SHIFT+TAB) - system menu\r\n");
         platform::put_string("F1-F10 - configured quick LOAD/RUN\r\n");
         platform::put_string("ALT+S - automatic BMP screenshot\r\n");
+        platform::put_string("ALT+E - Editor (empty prompt)\r\n");
+        platform::put_string("ALT+R - Run current program (empty prompt)\r\n");
+        platform::put_string("ALT+C - Control Center (empty prompt)\r\n");
         platform::put_string("ALT+, / ALT+. - LCD brightness down/up\r\n");
         platform::put_string("ALT+SPACE - keyboard backlight cycle\r\n");
         platform::put_string("POWER or ALT+P - standby / any key wake\r\n");
@@ -1688,8 +1753,17 @@ void Repl::process_line(char* line) {
         platform::put_string("PAUSE - wait for a key / INKEY - poll key code\r\n");
         platform::put_string("FILES - list BASIC programs\r\n");
         platform::put_string("DIR   - list SD card files\r\n");
-        platform::put_string("LOAD HELLO / SAVE - save current program\r\n");
+        platform::put_string("LOAD HELLO - load BASIC program (REPL)\r\n");
+        platform::put_string("SAVE - save current BASIC program (REPL)\r\n");
         platform::put_string("SAVE TEST - save as TEST.BAS\r\n");
+        platform::put_string("NEW / LOAD / quick keys / Files: S Save, D Discard, ESC Cancel\r\n");
+        platform::put_string("INFO - current system snapshot (REPL)\r\n");
+        platform::put_string("LASTERROR - recorded Compile / Runtime / Direct error (REPL)\r\n");
+        platform::put_string("DATE$() / TIME$() - read configured RTC / software clock\r\n");
+        platform::put_string("TRIM$ / LTRIM$ / RTRIM$ / REPLACE$ / SPACE$ - string functions\r\n");
+        platform::put_string("LOADIMAGE file$[,x,y] - load 24-bit BMP (BASIC)\r\n");
+        platform::put_string("SAVEIMAGE file$[,x1,y1,x2,y2] - save BMP (BASIC)\r\n");
+        platform::put_string("SAVE IMAGE - compatibility; use SAVEIMAGE in new programs\r\n");
         platform::put_string("XRECV \"FILE\" / XSEND \"FILE\" - XMODEM CRC\r\n");
         platform::put_string("YRECV / YSEND \"FILE\" - YMODEM exact size\r\n");
         platform::put_string("SD [STATUS|REMOUNT]\r\n");
@@ -1701,6 +1775,23 @@ void Repl::process_line(char* line) {
         platform::put_string("CONSOLE LCD|BOTH|SERIAL\r\n");
         platform::put_string("Bluetooth Keyboard: Control Center -> Bluetooth\r\n");
         platform::put_string("CLEAR - clear direct-mode variables\r\n");
+        platform::put_string("PROFILE [ON|OFF|TIME|SHOW|RESET] - VM profiling (REPL)\r\n");
+        platform::put_string("BASIC common: LET, PRINT, INPUT, DIM, IF, FOR/NEXT, WHILE/WEND, DO/LOOP\r\n");
+        platform::put_string("Classic only: GOTO, GOSUB, RETURN, ON ... GOTO/GOSUB\r\n");
+        platform::put_string("Structured only: block IF/ELSEIF/ELSE/END IF, FUNCTION, GLOBAL\r\n");
+        platform::put_string("Structured only: SELECT CASE/CASE/CASE ELSE/END SELECT, EXIT FOR/DO\r\n");
+        platform::put_string("Stored BASIC common: DATA/READ/RESTORE; Direct mode unsupported\r\n");
+        platform::put_string("Graphics: SCREEN, CLS, COLOR/HSV, PSET, LINE, BOX, CIRCLE, PAINT, FLUSH\r\n");
+        platform::put_string("PCG: GDEF, GPALETTE, GLOCATE, GPRINT; I2C: SCAN, I2CREAD, I2CWRITE\r\n");
+        platform::put_string("Audio: BEEP, PLAY, WAVPLAY, WAVPAUSE, WAVRESUME, WAVSTOP, PLAYING\r\n");
+        platform::put_string("Other: END, STOP, SLEEP, REM, RANDOMIZE; keys: INKEY, TIMER\r\n");
+        platform::put_string("Math: ABS, INT, VAL, RND, RNDI, SIN/COS/TAN, SQR, ATN, EXP\r\n");
+        platform::put_string("Math: LOG/LN, ASIN/ACOS/ATAN2, PI, RAD/DEG, SGN, MIN/MAX/CLAMP\r\n");
+        platform::put_string("String: STR$, LEN, CHR$, ASC, LEFT$/RIGHT$/MID$, INSTR, STRING$, SPC, TAB\r\n");
+        platform::put_string("Operators: integer division, shifts, XOR; POINT reads pixel color\r\n");
+        platform::put_string("Errors: type, row/line, source; EDIT opens unchanged error row\r\n");
+        platform::put_string("Structured Editor: Enter indents 4 spaces; typed closers align on Enter\r\n");
+        platform::put_string("DIAGNOSTICS - Last Error / system snapshot; R refresh, S USB Serial\r\n");
         return;
     }
 
@@ -1724,13 +1815,18 @@ void Repl::run_direct_line(const char* line) {
         compiler_.compile_direct(line, compiled);
 
     if (!cr.ok) {
+        last_error_.capture(ErrorPhase::Compile, cr.message, program_, current_filename_, 0,
+                            platform::monotonic_millis(), line);
+        compile_error_location_ = 0;
         platform::put_char('?');
         platform::put_string(cr.message);
         platform::put_string("\r\n");
+        print_error_context();
         return;
     }
 
     const VmResult vr = vm_.run_direct(compiled);
+    capture_runtime_error(vr, line);
     handle_runtime_result(vr);
     if (!vr.ok) {
         ensure_body_cursor();
@@ -1743,7 +1839,41 @@ void Repl::run_direct_line(const char* line) {
                 static_cast<long>(vr.call_source_row),vr.call_depth);
             platform::put_string(location);
         }
+        if (!vr.interrupted) print_error_context();
     }
+}
+
+void Repl::capture_runtime_error(const VmResult& result, const char* direct_text) {
+    if (result.ok || result.interrupted) return;
+    const auto location = program_.source_mode() == ProgramSourceMode::Structured
+        ? result.source_row : result.source_line;
+    last_error_.capture(ErrorPhase::Runtime, *result.detail ? result.detail : result.message,
+                        program_, current_filename_, location, platform::monotonic_millis(), direct_text);
+    last_error_.pc = result.pc;
+    std::snprintf(last_error_.function, sizeof(last_error_.function), "%s", result.function_name);
+    last_error_.call_depth = result.call_depth;
+    last_error_.trace_count = result.trace_count;
+    last_error_.trace_truncated = result.trace_truncated;
+    std::copy(std::begin(result.trace), std::end(result.trace), std::begin(last_error_.trace));
+}
+
+void Repl::print_error_context() const {
+    if (!last_error_.valid) return;
+    platform::put_string(last_error_.type_name());
+    char text[64] = {};
+    if (!last_error_.direct && last_error_.location > 0) {
+        std::snprintf(text, sizeof(text), " - %s %ld", last_error_.mode == ProgramSourceMode::Structured
+                      ? "Row" : "Line", static_cast<long>(last_error_.location));
+        platform::put_string(text);
+    }
+    platform::put_string("\r\n");
+    if (last_error_.source_available) {
+        platform::put_string(last_error_.source);
+        platform::put_string(last_error_.source_truncated ? "... [source truncated]\r\n" : "\r\n");
+    }
+    if (last_error_.can_edit(program_, current_filename_))
+        platform::put_string("EDIT: OPEN AT ERROR (unchanged source)\r\n");
+    platform::put_string("DIAGNOSTICS: LAST ERROR / S SEND TO USB SERIAL\r\n");
 }
 
 void Repl::run_autorun() {
@@ -1820,13 +1950,16 @@ void Repl::run_program() {
         render_function_keys();
         ensure_body_cursor();
         platform::put_string(message);
-        if (compile_error_location_ > 0)
-            platform::put_string("EDIT: OPEN AT COMPILE ERROR\r\n");
+        last_error_.capture(ErrorPhase::Compile, cr.message, program_, current_filename_,
+                            compile_error_location_, platform::monotonic_millis());
+        if (compile_error_location_ > 0) platform::put_string("EDIT: OPEN AT COMPILE ERROR\r\n");
+        print_error_context();
         return;
     }
 
     const std::uint32_t run_start_ms = platform::monotonic_millis();
     const VmResult vr = vm_.run(compiled);
+    capture_runtime_error(vr);
     handle_runtime_result(vr);
     const std::uint32_t run_end_ms = platform::monotonic_millis();
     const std::uint32_t elapsed_ms = run_end_ms - run_start_ms;
@@ -1848,6 +1981,7 @@ void Repl::run_program() {
                 static_cast<long>(vr.call_source_row),vr.call_depth);
             platform::put_string(location);
         }
+        if (!vr.interrupted) print_error_context();
     }
 
     const std::uint32_t minutes = elapsed_ms / 60000u;
@@ -2147,13 +2281,18 @@ bool Repl::menu_files() {
     static char directory[80] = {};
     char restore_selection[80] = {};
     char playing_name[80] = {};
+    files_input::PlaybackInput playback_input;
+    bool preview_paused = false;
     char info_path[80] = {};
     storage::DirectoryEntry inline_info;
     bool info_visible = false, scan_ok = true, refresh = true, more = false;
     std::size_t count = 0, batch = 0;
+    bool redraw = true, playback_redraw = true;
     auto stop_preview = [&]() {
         if (*playing_name) platform::audio_stop();
         playing_name[0] = '\0';
+        preview_paused = false;
+        playback_redraw = true;
     };
     auto show_error = [&](const char* title, const char* message) {
         draw_menu_header(title, "PRESS ANY KEY");
@@ -2162,7 +2301,7 @@ bool Repl::menu_files() {
         (void)platform::get_char();
         draw_menu_header(nullptr, nullptr);
     };
-    auto confirm_delete = [&](const char* name, bool is_directory) {
+    auto confirm_delete = [&](const char* name, bool is_directory, std::uint32_t size) {
         int selected = 0;
         while (true) {
             draw_menu_header(is_directory ? "DELETE EMPTY DIRECTORY?" : "DELETE FILE?",
@@ -2174,6 +2313,9 @@ bool Repl::menu_files() {
             std::snprintf(row,sizeof(row),"%.53s",path);
             draw_menu_message(top+4,row);
             draw_menu_message(top+5,std::strlen(path)>53?path+53:"");
+            if (is_directory) std::snprintf(row,sizeof(row),"Only empty directories can be deleted");
+            else std::snprintf(row,sizeof(row),"%lu bytes",static_cast<unsigned long>(size));
+            draw_menu_message(top+6,row);
             draw_menu_option(top + 7, "Cancel", selected == 0);
             draw_menu_option(top + 8, "Delete", selected == 1);
             const int key = platform::get_char();
@@ -2182,31 +2324,12 @@ bool Repl::menu_files() {
             else if (key == kKeyEscape || key == 0x1b) return false;
         }
     };
-    auto may_replace_program = [&]() {
-        if (!program_dirty_ && !program_.is_dirty()) return true;
-        draw_menu_header("CURRENT PROGRAM MODIFIED", "S SAVE  D REPLACE  ESC CANCEL");
-        while (true) {
-            const int key = platform::get_char();
-            if (key == kKeyEscape || key == 0x1b) return false;
-            if (key == 'd' || key == 'D') return true;
-            if (key != 's' && key != 'S') continue;
-            bool ok = false;
-            if (has_current_filename()) ok = save_current_program();
-            else {
-                char name[80] = {};
-                if (!prompt_text("SAVE AS (SD-relative path): ", name, sizeof(name))) return false;
-                ok = save_program_as(name);
-            }
-            if (!ok) show_error("SAVE FAILED", storage::last_error());
-            return ok;
-        }
-    };
     auto reset_view = [&]() {
         batch = 0; scroll = {}; info_visible = false; refresh = true;
     };
     while (true) {
-        if (*playing_name && !platform::audio_playing()) {
-            playing_name[0] = '\0'; refresh = true;
+        if (*playing_name && !platform::audio_diagnostics().file_active) {
+            playing_name[0] = '\0'; preview_paused = false; playback_redraw = true;
         }
         auto& entries = menu_file_scratch.entries;
         if (refresh) {
@@ -2223,6 +2346,7 @@ bool Repl::menu_files() {
             refresh = false;
         }
         menu_scroll::normalize(scroll, static_cast<int>(count), visible);
+        if (redraw) {
         draw_menu_header(mode == Mode::Programs ? "FILES [PROGRAMS]" : "FILES [DIRECTORY]",
                          "UP/DN SELECT  SHIFT+UP/DN PAGE  LEFT/RIGHT MODE");
         const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
@@ -2241,8 +2365,8 @@ bool Repl::menu_files() {
                       static_cast<unsigned>(count), more ? " +" : "");
         draw_menu_message(first + visible, row);
         draw_menu_message(first + visible + 1, "ENTER OPEN/LOAD  R RUN  E EDIT  N RENAME");
-        draw_menu_message(first + visible + 2, "DEL DELETE  I INFO  F REFRESH  P PLAY/STOP");
-        draw_menu_message(first + visible + 3, "ESC/BACKSPACE PARENT; ESC AT ROOT EXITS");
+        draw_menu_message(first + visible + 2, "DEL DELETE  I INFO  S SYSTEM  F REFRESH  P PLAY/STOP");
+        draw_menu_message(first + visible + 3, "ESC STOP/PARENT/BACK  SPACE PAUSE/RESUME");
         if (info_visible) {
             char path[file_paths::display_capacity]={};
             file_paths::format_root_path(info_path,path,sizeof(path));
@@ -2254,43 +2378,76 @@ bool Repl::menu_files() {
                           static_cast<unsigned long>(inline_info.size));
             draw_menu_message(first + visible + 6, row);
         } else {
-            char preview_label[80];file_paths::compact_root_path(playing_name,44,
-                file_paths::CompactPathPolicy::FullName,preview_label,sizeof(preview_label));
-            std::snprintf(row, sizeof(row), "%s%s", *playing_name ? "Playing: " : "", preview_label);
-            draw_menu_message(first + visible + 4, row);
-            draw_menu_message(first + visible + 5, "");
-            draw_menu_message(first + visible + 6, "");
+            draw_menu_message(first + visible + 4, "");
+            if (count) {
+                const auto& selected = entries[scroll.selected];
+                std::snprintf(row, sizeof(row), "Selected: %.43s", selected.name);
+                draw_menu_message(first + visible + 5, row);
+                std::snprintf(row, sizeof(row), "%s  %lu bytes", selected.directory ? "Directory" : "File", static_cast<unsigned long>(selected.size));
+                draw_menu_message(first + visible + 6, row);
+            } else {
+                draw_menu_message(first + visible + 5, "");
+                draw_menu_message(first + visible + 6, "");
+            }
         }
-        const int key = platform::get_char();
+        redraw = false;
+        playback_redraw = true;
+        }
+        if (playback_redraw) {
+        char row[112] = {};
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        char preview_label[80] = {};
+        file_paths::compact_root_path(playing_name, 44, file_paths::CompactPathPolicy::FullName,
+            preview_label, sizeof(preview_label));
+        std::snprintf(row, sizeof(row), "%s%s", *playing_name ? (preview_paused ? "Paused: " : "Playing: ") : "", preview_label);
+        draw_menu_message(first + visible + 7, row);
+        playback_redraw = false;
+        }
+        const int key = platform::get_char_timeout(100);
+        if (key < 0) continue;
+        const bool batch_change =
+            (key == kKeyDown && more && count && scroll.selected == static_cast<int>(count - 1u)) ||
+            (key == kKeyUp && batch && scroll.selected == 0);
+        const auto result = playback_input.handle(key, platform::last_key_repeat(), *playing_name != 0, batch_change);
+        if (result == files_input::Result::Consumed) continue;
+        if (result == files_input::Result::Stop) { stop_preview(); continue; }
+        if (result == files_input::Result::TogglePause) {
+            preview_paused = !preview_paused;
+            playback_redraw = true;
+            if (preview_paused) platform::audio_pause(); else platform::audio_resume();
+            continue;
+        }
+        redraw = true;
         if (key == kKeyLeft || key == kKeyRight) {
-            stop_preview(); mode = mode == Mode::Programs ? Mode::Directory : Mode::Programs;
+            mode = mode == Mode::Programs ? Mode::Directory : Mode::Programs;
             reset_view(); continue;
         }
         if (key == kKeyHome) {
-            stop_preview(); directory[0] = '\0'; reset_view(); continue;
+            directory[0] = '\0'; reset_view(); continue;
         }
         if (key == kKeyEscape || key == 0x1b || key == 8 || key == 127) {
-            stop_preview();
             if (!*directory) return false;
             std::snprintf(restore_selection, sizeof(restore_selection), "%s", file_paths::basename(directory));
             (void)file_paths::parent(directory, directory, sizeof(directory));
             reset_view(); continue;
         }
         if (key == kKeyDown && more && count && scroll.selected == static_cast<int>(count - 1u)) {
-            stop_preview(); batch += count; scroll = {}; refresh = true; info_visible = false; continue;
+            batch += count; scroll = {}; refresh = true; info_visible = false; continue;
         }
         if (key == kKeyUp && batch && scroll.selected == 0) {
-            stop_preview(); batch = batch >= kMenuFileCount ? batch - kMenuFileCount : 0;
+            batch = batch >= kMenuFileCount ? batch - kMenuFileCount : 0;
             scroll.selected = static_cast<int>(kMenuFileCount - 1u);
             refresh = true; info_visible = false; continue;
         }
         if (handle_menu_scroll_key(key, scroll, static_cast<int>(count), visible)) {
             info_visible = false; continue;
         }
-        if (key == 'f' || key == 'F') { stop_preview(); reset_view(); continue; }
-        if (key == 3 && *playing_name) { stop_preview(); refresh = true; continue; }
+        if (key == 's' || key == 'S') {
+            menu_system_info(); draw_menu_header(nullptr, nullptr);
+            continue;
+        }
+        if (key == 'f' || key == 'F') { reset_view(); continue; }
         if (key == 'm' || key == 'M') {
-            stop_preview();
             char name[80] = {}, path[80] = {};
             if (prompt_text("NEW DIRECTORY (name or /path): ", name, sizeof(name))) {
                 if (!file_paths::join(directory, name, path, sizeof(path))) show_error("MKDIR", "BAD OR TOO LONG PATH");
@@ -2305,7 +2462,6 @@ bool Repl::menu_files() {
             show_error("FILES", "PATH TOO LONG"); continue;
         }
         if (key_is_enter(key) && entry.directory) {
-            stop_preview();
             std::memcpy(directory, selected_path, std::strlen(selected_path) + 1u);
             reset_view(); continue;
         }
@@ -2313,9 +2469,7 @@ bool Repl::menu_files() {
             if (!audio::playable_audio_filename(entry.name)) {
                 show_error("AUDIO", "SELECT A WAV OR MP3 FILE"); continue;
             }
-            if (file_paths::same(playing_name, selected_path)) { stop_preview(); refresh = true; }
-            else {
-                stop_preview();
+            {
                 if (platform::audio_wavplay(selected_path))
                     std::memcpy(playing_name, selected_path, std::strlen(selected_path) + 1u);
                 else show_error("AUDIO", platform::audio_last_error());
@@ -2326,8 +2480,7 @@ bool Repl::menu_files() {
         const bool run = key == 'r' || key == 'R';
         const bool edit = key == 'e' || key == 'E';
         if (basic && (key_is_enter(key) || run || edit)) {
-            stop_preview();
-            if (!may_replace_program()) continue;
+            if (!confirm_unsaved_changes()) continue;
             draw_menu_header("LOADING", "READING PROGRAM");
             draw_menu_message((settings_.status_enabled ? console_layout::status_rows : 0) + 4, selected_path);
             if (!storage::load_program(selected_path, program_)) {
@@ -2348,7 +2501,6 @@ bool Repl::menu_files() {
             info_visible = true; continue;
         }
         if (key == 'n' || key == 'N') {
-            stop_preview();
             char new_name[80] = {}, target[80] = {}, normalized[80] = {};
             if (!prompt_text("RENAME / MOVE (name or /path): ", new_name, sizeof(new_name), entry.name)) continue;
             if (!file_paths::join(directory, new_name, target, sizeof(target))) {
@@ -2378,8 +2530,7 @@ bool Repl::menu_files() {
             reset_view(); continue;
         }
         if (key == kKeyDelete) {
-            stop_preview();
-            if (!confirm_delete(selected_path, entry.directory)) continue;
+            if (!confirm_delete(selected_path, entry.directory, entry.size)) continue;
             const bool deleted = entry.directory
                 ? storage::delete_directory(selected_path, current_filename_)
                 : storage::delete_root_file(selected_path, current_filename_);
@@ -2388,7 +2539,6 @@ bool Repl::menu_files() {
         }
         const int quick = basic ? function_key_index(key) : -1;
         if (quick >= 0) {
-            stop_preview();
             bool quick_run = true;
             if (choose_quick_mode(quick_run)) assign_quick_key(quick, selected_path, quick_run);
         }
@@ -2771,6 +2921,7 @@ void Repl::menu_power() {
         // to reboot or manually disable the board LED and radios.
         const bool wifi_initialized = network::initialized();
         const bool wifi_connected = network::connected();
+        const int wifi_slot = wifi_profiles::find(settings_.wifi_profiles, network::current_ssid());
         const bool bluetooth_enabled = bluetooth_manager::enabled();
         const bool file_server_running = network::file_server_running();
         const auto led_mode = wireless::board_led_mode();
@@ -2784,17 +2935,16 @@ void Repl::menu_power() {
         bool wifi_restored = true;
         if (wifi_initialized) {
             wifi_restored = network::init();
-            if (wifi_restored && wifi_connected) {
-                wifi_restored = network::connect(
-                    settings_.wifi_ssid, settings_.wifi_password);
-                settings_.wifi_enabled = wifi_restored;
-            }
+            settings_.wifi_enabled = wifi_restored;
         }
         if (bluetooth_enabled) {
             (void)bluetooth_manager::enable();
         }
         if (led_mode != system_controls::BoardLedMode::Off) {
             (void)wireless::set_board_led_mode(led_mode);
+        }
+        if (wifi_initialized && wifi_restored && wifi_connected) {
+            wifi_restored = connect_wifi_profile(wifi_slot, nullptr, true);
         }
         if (file_server_running && wifi_restored &&
             network::connected()) {
@@ -2980,7 +3130,14 @@ bool Repl::pick_wifi_network(
     );
 
     network::AccessPoint access_points[24];
-    const int count = network::scan(access_points, 24);
+    if (!wait_wifi_radio_ready()) return false;
+    if (!network::scan_start()) { wait_message("WIRELESS LAN", network::last_error()); return false; }
+    if (!wait_network_operation("Scanning for access points")) {
+        if (network::operation_state() != network::OperationState::Cancelled)
+            wait_message("WIRELESS LAN", network::last_error());
+        return false;
+    }
+    const int count = network::scan_result(access_points, 24);
     if (count <= 0) {
         draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
         draw_menu_message(
@@ -3012,7 +3169,8 @@ bool Repl::pick_wifi_network(
                 std::snprintf(
                     row,
                     sizeof(row),
-                    "%c %-32.32s %4d dBm",
+                    "%c%c %-32.32s %4d dBm",
+                    wifi_profiles::find(settings_.wifi_profiles, access_points[i].ssid) >= 0 ? 'K' : ' ',
                     access_points[i].secure ? '*' : ' ',
                     access_points[i].ssid,
                     access_points[i].rssi
@@ -3028,14 +3186,14 @@ bool Repl::pick_wifi_network(
         char position[64] = {};
         std::snprintf(
             position, sizeof(position),
-            "* = secured   %d-%d / %d",
+            "K=known  *=secured   %d-%d / %d",
             scroll.offset + 1,
             menu_scroll::last_exclusive(scroll, count, visible),
             count
         );
         draw_menu_message(first_row + visible + 1, position);
 
-        const int key = platform::get_char();
+        const int key = poll_menu_key(100);
         if (handle_menu_scroll_key(key, scroll, count, visible)) {
             continue;
         }
@@ -3057,14 +3215,27 @@ bool Repl::pick_wifi_network(
 
 bool Repl::sync_rtc_from_network(bool show_result) {
     network::NetworkDateTime ntp;
-    if (!network::ntp_time(
-            ntp,
-            settings_.wifi_timezone_minutes,
-            settings_.wifi_ntp_server)) {
+    char context[80];
+    std::snprintf(context, sizeof(context), "Server: %s", settings_.wifi_ntp_server);
+    std::snprintf(ntp_sync_server_, sizeof(ntp_sync_server_), "%s", settings_.wifi_ntp_server);
+    const bool started = network::ntp_start(settings_.wifi_timezone_minutes, settings_.wifi_ntp_server);
+    if (!started || !wait_network_operation(context) || !network::ntp_result(ntp)) {
+        std::snprintf(ntp_sync_status_, sizeof(ntp_sync_status_), "%s: %.65s",
+            network::operation_state() == network::OperationState::Cancelled ? "Cancelled" : "Failed", network::last_error());
         if (show_result) {
             platform::put_string("NTP: ");
             platform::put_string(network::last_error());
             platform::put_string("\r\n");
+        } else if (!started || network::operation_state() != network::OperationState::Cancelled) {
+            // Automatic time sync is advisory: report its failure without
+            // changing a successful Wi-Fi connection or trying another AP.
+            draw_menu_header("NTP SYNC FAILED", "PRESS ANY KEY");
+            const int row = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            draw_menu_message(row, network::last_error());
+            draw_menu_message(row + 2, context);
+            draw_menu_message(row + 4, network::connected() ?
+                "WI-FI STILL CONNECTED" : "WI-FI NOT CONNECTED");
+            platform::get_char();
         }
         return false;
     }
@@ -3077,7 +3248,9 @@ bool Repl::sync_rtc_from_network(bool show_result) {
     value.minute = ntp.minute;
     value.second = ntp.second;
 
-    platform::set_datetime(value);
+    const bool rtc_set = platform::set_datetime(value);
+    std::snprintf(ntp_sync_status_, sizeof(ntp_sync_status_), "%s",
+        rtc_set ? "Synced (RTC updated)" : "NTP received; RTC update failed");
 
     if (show_result) {
         char line[128] = {};
@@ -3098,312 +3271,357 @@ bool Repl::sync_rtc_from_network(bool show_result) {
     return true;
 }
 
-void Repl::apply_network_settings() {
-    if (!settings_.wifi_enabled || settings_.wifi_ssid[0] == '\0') {
-        if (network::initialized()) {
-            network::disconnect();
+bool Repl::wait_network_operation(const char* context) {
+    auto drawn = network::OperationState::Idle;
+    std::uint32_t scan_started = 0;
+    std::uint32_t next_scan_redraw = 0;
+    while (network::operation_active()) {
+        const auto input = platform::poll_runtime_key();
+        if (input.type == platform::RuntimeKeyType::Break ||
+            (input.type == platform::RuntimeKeyType::Key &&
+             (input.code == kKeyEscape || input.code == 0x1b))) {
+            network::operation_cancel();
+            return false;
         }
-        return;
+        const auto state = network::operation_state();
+        const std::uint32_t now = platform::monotonic_millis();
+        const bool scan_redraw = state == network::OperationState::Scanning &&
+            (state != drawn || static_cast<std::int32_t>(now - next_scan_redraw) >= 0);
+        if (state != drawn || scan_redraw) {
+            if (state == network::OperationState::Scanning && state != drawn) {
+                scan_started = now;
+            }
+            drawn = state;
+            const char* phase = state == network::OperationState::Scanning ? "SCANNING..." :
+                state == network::OperationState::DrainingScan ? "FINISHING WIFI SCAN..." :
+                state == network::OperationState::Disassociating ? "WAITING FOR WIFI RADIO..." :
+                state == network::OperationState::Associating ? "CONNECTING..." :
+                state == network::OperationState::WaitingForIp ? "WAITING FOR IP..." : "SYNCING TIME...";
+            draw_menu_header("WIRELESS LAN", "ESC / BREAK CANCEL");
+            const int row = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            if (state == network::OperationState::Scanning) {
+                const std::uint32_t elapsed = std::min(
+                    now - scan_started,
+                    network::kScanObservationMs
+                );
+                char progress[64];
+                std::snprintf(
+                    progress,
+                    sizeof(progress),
+                    "SCANNING... %lu.%lu / 5.0 sec",
+                    static_cast<unsigned long>(elapsed / 1000),
+                    static_cast<unsigned long>((elapsed % 1000) / 100)
+                );
+                draw_menu_message(row, progress);
+                char found[64];
+                std::snprintf(found, sizeof(found), "Networks: %d", network::scan_observed_count());
+                draw_menu_message(row + 1, found);
+                draw_menu_message(row + 2, context ? context : "");
+                next_scan_redraw = now + 250;
+            } else {
+                draw_menu_message(row, phase);
+                draw_menu_message(row + 1, "");
+                draw_menu_message(row + 2, context ? context : "");
+            }
+        }
+        network::operation_poll();
+        service_background();
+        platform::sleep_millis(10);
     }
+    return network::operation_state() == network::OperationState::Succeeded;
+}
 
-    platform::put_string("WiFi: connecting to ");
-    platform::put_string(settings_.wifi_ssid);
-    platform::put_string("...\r\n");
+void Repl::wait_message(const char* title, const char* message) {
+    draw_menu_header(title, "PRESS ANY KEY");
+    draw_menu_message(
+        (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
+        message ? message : ""
+    );
+    platform::get_char();
+}
 
-    if (!network::connect(
-            settings_.wifi_ssid,
-            settings_.wifi_password)) {
-        platform::put_string("WiFi: ");
-        platform::put_string(network::last_error());
-        platform::put_string("\r\n");
-        return;
+bool Repl::wait_wifi_radio_ready() {
+    network::operation_poll();
+    if (network::operation_state() == network::OperationState::Disassociating) {
+        const bool ok = wait_network_operation("PREPARING WIFI RADIO");
+        if (!ok && (network::operation_active() ||
+                    network::operation_state() == network::OperationState::Cancelled)) return false;
     }
+    if (network::radio_ready()) return true;
+    wait_message("WIRELESS LAN", "WIFI RADIO NOT READY");
+    return false;
+}
 
-    char ip[32] = {};
-    platform::put_string("WiFi: connected");
-    if (network::get_ip(ip, sizeof(ip))) {
-        platform::put_string("  ");
-        platform::put_string(ip);
+bool Repl::connect_wifi_profile(int slot, const char* context, bool restore_active) {
+    if (!settings_.wifi_enabled || !network::initialized()) return false;
+    if (slot < 0 || slot >= wifi_profiles::kCount) return false;
+    const auto& p = settings_.wifi_profiles[slot];
+    if (!p.used || (!p.enabled && !restore_active)) return false;
+    char message[80];
+    std::snprintf(message, sizeof(message), "CONNECTING: %s", p.ssid);
+    return wait_wifi_radio_ready() && network::connect_start(p.ssid, p.password) &&
+        wait_network_operation(context ? context : message);
+}
+
+bool Repl::auto_connect_wifi() {
+    if (!settings_.wifi_enabled || !network::initialized()) {
+        wait_message("WIRELESS LAN", "WIFI DISABLED"); return false;
     }
-    platform::put_string("\r\n");
+    if (wifi_profiles::count(settings_.wifi_profiles, true) == 0) {
+        wait_message("WIRELESS LAN", "NO ENABLED WIFI PROFILES"); return false;
+    }
+    if (!wait_wifi_radio_ready()) return false;
+    if (!network::scan_start()) {
+        wait_message("WIRELESS LAN", network::last_error()); return false;
+    }
+    if (!wait_network_operation("SEARCHING KNOWN NETWORKS")) {
+        if (network::operation_state() != network::OperationState::Cancelled)
+            wait_message("WIRELESS LAN", network::last_error());
+        return false;
+    }
+    network::AccessPoint aps[24];
+    const int found = network::scan_result(aps, 24);
+    auto plan = wifi_profiles::make_plan(settings_.wifi_profiles, aps, found);
+    if (plan.count == 0) {
+        wait_message("WIRELESS LAN", "NO KNOWN NETWORK FOUND"); return false;
+    }
+    wifi_profiles::Candidate candidate{};
+    while (wifi_profiles::next_candidate(plan, candidate)) {
+        char context[80];
+        std::snprintf(context, sizeof(context), "TRYING %d/%d: %s", plan.next, plan.count,
+            settings_.wifi_profiles[candidate.slot].ssid);
+        if (connect_wifi_profile(candidate.slot, context)) {
+            if (settings_.wifi_auto_rtc) (void)sync_rtc_from_network(false);
+            return true; // NTP cancel/failure preserves a successful Wi-Fi link.
+        }
+        if (network::operation_state() == network::OperationState::Cancelled) return false;
+        // A cancelled physical scan or another owner is never a candidate failure.
+        if (network::operation_active()) return false;
+        // A start/radio ownership failure is not a failed AP candidate.
+        if (!network::radio_ready() ||
+            network::operation_state() != network::OperationState::Failed) {
+            wait_message("WIRELESS LAN", network::last_error());
+            return false;
+        }
+    }
+    wait_message("NO KNOWN NETWORK CONNECTED", network::last_error());
+    return false;
+}
 
-    if (settings_.wifi_auto_rtc) {
-        sync_rtc_from_network(true);
+bool Repl::prompt_wifi_password(char (&output)[64]) {
+    char pending[64] = {};
+    draw_menu_header(nullptr, nullptr);
+    platform::clear_lcd_color(0x000000);
+    render_status();
+    platform::set_cursor_position(
+        0,
+        (settings_.status_enabled ? console_layout::status_rows : 0) + 2
+    );
+    platform::set_text_color(0xffffff, 0x000000);
+    platform::put_string("WIFI PASSWORD\r\nPassword: ");
+    (void)LineEditor::read(pending, sizeof(pending));
+    const int special = LineEditor::last_special_key();
+    platform::set_text_color(
+        settings_.console_foreground,
+        settings_.console_background
+    );
+    if (special == kKeyEscape || special == 0x1b || special == 0x03) return false;
+    std::memcpy(output, pending, sizeof(pending));
+    return true;
+}
+
+void Repl::add_wifi_network() {
+    if (!settings_.wifi_enabled) { wait_message("WIRELESS LAN", "WIFI DISABLED"); return; }
+    char ssid[33]; bool secure = true;
+    if (!pick_wifi_network(ssid, sizeof(ssid), secure)) return;
+    if (wifi_profiles::available_slot(settings_.wifi_profiles, ssid) < 0) {
+        wait_message("WIRELESS LAN", "WIFI PROFILE LIST FULL"); return;
+    }
+    char password[64] = {};
+    auto clear_password = [&]() { std::memset(password, 0, sizeof(password)); };
+    bool need_password = secure;
+    char context[80];
+    std::snprintf(context, sizeof(context), "CONNECTING: %s", ssid);
+    for (;;) {
+        if (!wait_wifi_radio_ready() || (need_password && !prompt_wifi_password(password))) {
+            clear_password(); return;
+        }
+        const bool started = network::connect_start(ssid, password);
+        const bool ok = started && wait_network_operation(context);
+        if (ok) break;
+        if (!started && network::operation_active()) {
+            (void)wait_network_operation(context);
+            if (network::operation_active()) { clear_password(); return; }
+        }
+        if (network::operation_state() == network::OperationState::Cancelled ||
+            (started && network::operation_active())) { clear_password(); return; }
+        char error[96];
+        std::snprintf(error, sizeof(error), "%s", network::last_error());
+        const bool retry_password = secure && started &&
+            (std::strcmp(error, "WIFI PASSWORD INCORRECT") == 0 ||
+             std::strcmp(error, "WIFI CONNECT FAILED") == 0 ||
+             std::strcmp(error, "WIFI CONNECT TIMEOUT") == 0);
+        // DHCP/start/radio failures retry the same credentials; association
+        // failures offer password re-entry without rescanning the SSID.
+        if (retry_password) clear_password();
+        menu_scroll::State retry;
+        for (;;) {
+            draw_menu_header(error, "UP/DN  ENTER  ESC CANCEL");
+            const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+            draw_menu_message(first, ssid);
+            draw_menu_option(first + 2, retry_password ? "Retry Password" : "Retry", retry.selected == 0);
+            draw_menu_option(first + 3, "Cancel", retry.selected == 1);
+            service_background();
+            const int key = poll_menu_key(100);
+            if (handle_menu_scroll_key(key, retry, 2, 2)) continue;
+            if (key == kKeyEscape || key == 0x1b) { clear_password(); return; }
+            if (key_is_enter(key)) {
+                if (retry.selected == 1) { clear_password(); return; }
+                break;
+            }
+        }
+        need_password = retry_password;
+    }
+    // Both secured and open APs must complete DHCP/IP before a profile is
+    // committed. Keep the successful link, including an explicit Add/update
+    // of a Disabled profile; its future auto-connect eligibility is unchanged.
+    (void)wifi_profiles::upsert(settings_.wifi_profiles, ssid, password);
+    clear_password();
+    save_settings();
+    wait_message("WIRELESS LAN", "CONNECTED - PROFILE SAVED");
+}
+
+void Repl::menu_wifi_profile(int slot) {
+    auto& p = settings_.wifi_profiles[slot];
+    if (!p.used) { wait_message("KNOWN NETWORKS", "EMPTY - USE SCAN & ADD NETWORK"); return; }
+    menu_scroll::State scroll;
+    while (p.used) {
+        draw_menu_header("WIFI PROFILE", "UP/DN  SHIFT+UP/DN PAGE  ENTER  ESC BACK");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        draw_menu_message(first, p.ssid);
+        const char* options[] = {p.enabled ? "Connect Now" : "Connect Now (Disabled)",
+            p.enabled ? "Disable Profile" : "Enable Profile", "Delete", "Back"};
+        for (int i = 0; i < wifi_profiles::kProfileActionCount; ++i)
+            draw_menu_option(first + 2 + i, options[i], scroll.selected == i);
+        const int key = poll_menu_key(100);
+        if (handle_menu_scroll_key(key, scroll, wifi_profiles::kProfileActionCount,
+                                  wifi_profiles::kProfileActionCount)) continue;
+        if (key == kKeyEscape || key == 0x1b) return;
+        if (!key_is_enter(key)) continue;
+        const auto action = static_cast<wifi_profiles::ProfileAction>(scroll.selected);
+        if (action == wifi_profiles::ProfileAction::Back) return;
+        if (action == wifi_profiles::ProfileAction::ConnectNow) {
+            if (!p.enabled) { wait_message("WIRELESS LAN", "PROFILE DISABLED"); continue; }
+            if (!settings_.wifi_enabled) { wait_message("WIRELESS LAN", "WIFI DISABLED"); continue; }
+            const bool ok = connect_wifi_profile(slot);
+            if (ok && settings_.wifi_auto_rtc) (void)sync_rtc_from_network(false);
+            if (!ok && network::operation_state() != network::OperationState::Cancelled)
+                wait_message("WIRELESS LAN", network::last_error());
+        } else if (action == wifi_profiles::ProfileAction::ToggleEnabled) {
+            if (p.enabled && std::strcmp(network::current_ssid(), p.ssid) == 0) network::disconnect();
+            p.enabled = !p.enabled;
+            save_settings();
+        } else if (action == wifi_profiles::ProfileAction::Delete) {
+            // Cancel is the first selected choice; ENTER cannot delete accidentally.
+            menu_scroll::State confirm;
+            bool remove = false;
+            while (true) {
+                draw_menu_header("DELETE WIFI PROFILE?", "UP/DN  ENTER  ESC CANCEL");
+                draw_menu_message(first, p.ssid);
+                draw_menu_option(first + 2, "Cancel", confirm.selected == 0);
+                draw_menu_option(first + 3, "Delete", confirm.selected == 1);
+                const int answer = poll_menu_key(100);
+                if (handle_menu_scroll_key(answer, confirm, 2, 2)) continue;
+                if (answer == kKeyEscape || answer == 0x1b) break;
+                if (key_is_enter(answer)) { remove = confirm.selected == 1; break; }
+            }
+            if (remove) {
+                if (std::strcmp(network::current_ssid(), p.ssid) == 0) network::disconnect();
+                wifi_profiles::erase(settings_.wifi_profiles, slot); save_settings(); return;
+            }
+        }
     }
 }
 
-void Repl::menu_wifi() {
-    int selected = 0;
-
+void Repl::menu_known_networks() {
+    menu_scroll::State scroll;
     while (true) {
-        draw_menu_header(
-            "WIRELESS LAN",
-            "UP/DOWN SELECT  ENTER ACTION  ESC BACK"
-        );
+        draw_menu_header("KNOWN NETWORKS", "UP/DN  SHIFT+UP/DN PAGE  ENTER  ESC BACK");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 4;
+        for (int i = 0; i < wifi_profiles::kCount; ++i) {
+            const auto& p = settings_.wifi_profiles[i];
+            char row[64];
+            std::snprintf(row, sizeof(row), "%d [%s] %s%s", i + 1,
+                p.used ? p.enabled ? "ON " : "OFF" : "---", p.used ? p.ssid : "Empty",
+                p.used && std::strcmp(network::current_ssid(), p.ssid) == 0 ? " *" : "");
+            draw_menu_option(first + i, row, scroll.selected == i);
+        }
+        const int key = poll_menu_key(100);
+        if (handle_menu_scroll_key(key, scroll, wifi_profiles::kCount, wifi_profiles::kCount)) continue;
+        if (key == kKeyEscape || key == 0x1b) return;
+        if (key_is_enter(key)) menu_wifi_profile(scroll.selected);
+    }
+}
 
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        const int first_row = top + 3;
+void Repl::apply_network_settings() {
+    // Master state is session-only; boot must never scan or initialize STA.
+    if (!settings_.wifi_enabled) { if (network::initialized()) network::shutdown(); return; }
+    if (network::init()) (void)auto_connect_wifi();
+}
 
-        char row[96] = {};
-        std::snprintf(
-            row,
-            sizeof(row),
-            "Enabled    : %s",
-            settings_.wifi_enabled ? "YES" : "NO"
-        );
-        draw_menu_message(first_row, row);
-
-        std::snprintf(
-            row,
-            sizeof(row),
-            "SSID       : %s",
-            settings_.wifi_ssid[0] ? settings_.wifi_ssid : "(not set)"
-        );
-        draw_menu_message(first_row + 1, row);
-
-        std::snprintf(
-            row,
-            sizeof(row),
-            "Link       : %s",
-            network::connected() ? "CONNECTED" : "DISCONNECTED"
-        );
-        draw_menu_message(first_row + 2, row);
-
-        char ip[32] = {};
-        std::snprintf(
-            row,
-            sizeof(row),
-            "IP         : %s",
-            network::get_ip(ip, sizeof(ip)) ? ip : "-"
-        );
-        draw_menu_message(first_row + 3, row);
-
-        std::snprintf(
-            row,
-            sizeof(row),
-            "Auto Time  : %s   TZ: UTC%+d:%02d",
-            settings_.wifi_auto_rtc ? "ON" : "OFF",
-            settings_.wifi_timezone_minutes / 60,
-            std::abs(settings_.wifi_timezone_minutes % 60)
-        );
-        draw_menu_message(first_row + 4, row);
-
-        std::snprintf(
-            row,
-            sizeof(row),
-            "NTP Server : %.60s",
-            settings_.wifi_ntp_server
-        );
-        draw_menu_message(first_row + 5, row);
-
-        draw_menu_option(
-            first_row + 8,
-            settings_.wifi_enabled ? "Disable Wi-Fi" : "Enable Wi-Fi",
-            selected == 0
-        );
-        draw_menu_option(
-            first_row + 9,
-            "Scan & select SSID",
-            selected == 1
-        );
-        draw_menu_option(
-            first_row + 10,
-            "Connect now",
-            selected == 2
-        );
-        draw_menu_option(
-            first_row + 11,
+void Repl::menu_wifi() {
+    menu_scroll::State scroll;
+    while (true) {
+        service_background();
+        draw_menu_header("WIRELESS LAN", "UP/DN  SHIFT+UP/DN PAGE  ENTER  ESC BACK");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        char row[96], ip[32] = {};
+        std::snprintf(row, sizeof(row), "Wi-Fi: %s  %s", settings_.wifi_enabled ? "ON" : "OFF",
+            network::connected() ? "CONNECTED" : "DISCONNECTED");
+        draw_menu_message(first, row);
+        std::snprintf(row, sizeof(row), "SSID: %s", network::connected() ? network::current_ssid() : "-");
+        draw_menu_message(first + 1, row);
+        std::snprintf(row, sizeof(row), "IP: %s", network::get_ip(ip, sizeof(ip)) ? ip : "-");
+        draw_menu_message(first + 2, row);
+        std::snprintf(row, sizeof(row), "Profiles: %d/5  Enabled: %d",
+            wifi_profiles::count(settings_.wifi_profiles), wifi_profiles::count(settings_.wifi_profiles, true));
+        draw_menu_message(first + 3, row);
+        std::snprintf(row, sizeof(row), "NTP: %.48s", settings_.wifi_ntp_server);
+        draw_menu_message(first + 4, row);
+        const char* options[] = {settings_.wifi_enabled ? "Disable Wi-Fi" : "Enable Wi-Fi",
+            "Known Networks", "Scan & Add Network", "Auto Connect Now",
             settings_.wifi_auto_rtc ? "Auto Time: ON" : "Auto Time: OFF",
-            selected == 3
-        );
-        draw_menu_option(
-            first_row + 12,
-            "Set NTP server",
-            selected == 4
-        );
-        draw_menu_option(
-            first_row + 13,
-            "Sync time from NTP now",
-            selected == 5
-        );
-
-        const int key = platform::get_char();
-        if (key == kKeyUp && selected > 0) {
-            --selected;
-            continue;
-        }
-        if (key == kKeyDown && selected < 5) {
-            ++selected;
-            continue;
-        }
-        if (key == kKeyEscape || key == 0x1b) {
-            save_settings();
-            return;
-        }
+            "Set NTP Server", "Sync Time Now", "Back"};
+        const int visible = std::max(1, std::min(8, platform::text_rows() - (first + 7) - 2));
+        menu_scroll::normalize(scroll, 8, visible);
+        for (int i = 0; i < visible; ++i)
+            draw_menu_option(first + 7 + i, options[scroll.offset + i], scroll.selected == scroll.offset + i);
+        const int key = poll_menu_key(100);
+        if (handle_menu_scroll_key(key, scroll, 8, visible)) continue;
+        if (key == kKeyEscape || key == 0x1b) return;
         if (!key_is_enter(key)) continue;
-
-        if (selected == 0) {
-            settings_.wifi_enabled = !settings_.wifi_enabled;
-            save_settings();
-
-            if (!settings_.wifi_enabled) {
-                network::disconnect();
-            } else if (settings_.wifi_ssid[0] != '\0') {
-                draw_menu_header("WIRELESS LAN", "CONNECTING...");
-                draw_menu_message(
-                    (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                    settings_.wifi_ssid
-                );
-
-                const bool ok = network::connect(
-                    settings_.wifi_ssid,
-                    settings_.wifi_password
-                );
-                if (ok && settings_.wifi_auto_rtc) {
-                    sync_rtc_from_network(false);
-                }
-
-                draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
-                draw_menu_message(
-                    (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                    ok ? "CONNECTED" : network::last_error()
-                );
-                platform::get_char();
+        switch (scroll.selected) {
+        case 0:
+            if (settings_.wifi_enabled) { network::shutdown(); settings_.wifi_enabled = false; }
+            else if (network::init()) { settings_.wifi_enabled = true; (void)auto_connect_wifi(); }
+            else wait_message("WIRELESS LAN", network::last_error());
+            break;
+        case 1: menu_known_networks(); break;
+        case 2: add_wifi_network(); break;
+        case 3: (void)auto_connect_wifi(); break;
+        case 4: settings_.wifi_auto_rtc = !settings_.wifi_auto_rtc; save_settings(); break;
+        case 5: {
+            char server[64];
+            if (prompt_text("NTP SERVER\r\nServer: ", server, sizeof(server))) {
+                std::snprintf(settings_.wifi_ntp_server, sizeof(settings_.wifi_ntp_server), "%s", server);
+                save_settings();
             }
-        } else if (selected == 1) {
-            char chosen[33] = {};
-            bool secure = true;
-            if (!pick_wifi_network(chosen, sizeof(chosen), secure)) {
-                continue;
-            }
-
-            char password[64] = {};
-            if (secure) {
-                if (!prompt_text(
-                        "WIFI PASSWORD: ",
-                        password,
-                        sizeof(password))) {
-                    continue;
-                }
-            }
-
-            std::snprintf(
-                settings_.wifi_ssid,
-                sizeof(settings_.wifi_ssid),
-                "%s",
-                chosen
-            );
-            std::snprintf(
-                settings_.wifi_password,
-                sizeof(settings_.wifi_password),
-                "%s",
-                password
-            );
-            settings_.wifi_enabled = true;
-            save_settings();
-
-            draw_menu_header("WIRELESS LAN", "CONNECTING...");
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                settings_.wifi_ssid
-            );
-
-            const bool ok = network::connect(
-                settings_.wifi_ssid,
-                settings_.wifi_password
-            );
-
-            if (ok && settings_.wifi_auto_rtc) {
-                sync_rtc_from_network(false);
-            }
-
-            draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                ok ? "CONNECTED" : network::last_error()
-            );
-            if (ok) {
-                char addr[32] = {};
-                if (network::get_ip(addr, sizeof(addr))) {
-                    draw_menu_message(
-                        (settings_.status_enabled ? console_layout::status_rows : 0) + 7,
-                        addr
-                    );
-                }
-            }
-            platform::get_char();
-        } else if (selected == 2) {
-            if (settings_.wifi_ssid[0] == '\0') {
-                draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
-                draw_menu_message(
-                    (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                    "SSID NOT SET - SCAN FIRST"
-                );
-                platform::get_char();
-                continue;
-            }
-
-            draw_menu_header("WIRELESS LAN", "CONNECTING...");
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                settings_.wifi_ssid
-            );
-            const bool ok = network::connect(
-                settings_.wifi_ssid,
-                settings_.wifi_password
-            );
-            if (ok && settings_.wifi_auto_rtc) {
-                sync_rtc_from_network(false);
-            }
-            draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                ok ? "CONNECTED" : network::last_error()
-            );
-            platform::get_char();
-        } else if (selected == 3) {
-            settings_.wifi_auto_rtc = !settings_.wifi_auto_rtc;
-            save_settings();
-
-            if (settings_.wifi_auto_rtc && network::connected()) {
-                draw_menu_header("WIRELESS LAN", "NTP SYNC...");
-                const bool ok = sync_rtc_from_network(false);
-                draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
-                draw_menu_message(
-                    (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                    ok ? "NTP TIME APPLIED" : network::last_error()
-                );
-                platform::get_char();
-            }
-        } else if (selected == 4) {
-            char server[64] = {};
-            if (!prompt_text(
-                    "NTP SERVER (HOST OR IP): ",
-                    server,
-                    sizeof(server))) {
-                continue;
-            }
-
-            std::snprintf(
-                settings_.wifi_ntp_server,
-                sizeof(settings_.wifi_ntp_server),
-                "%s",
-                server
-            );
-            save_settings();
-        } else {
-            draw_menu_header("WIRELESS LAN", "NTP SYNC...");
-            const bool ok = sync_rtc_from_network(false);
-            draw_menu_header("WIRELESS LAN", "PRESS ANY KEY");
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 5,
-                ok ? "NTP TIME APPLIED" : network::last_error()
-            );
-            draw_menu_message(
-                (settings_.status_enabled ? console_layout::status_rows : 0) + 7,
-                settings_.wifi_ntp_server
-            );
-            platform::get_char();
+            break;
+        }
+        case 6:
+            (void)sync_rtc_from_network(false);
+            break;
+        case 7: return;
         }
     }
 }
@@ -3690,9 +3908,9 @@ bool Repl::recover_after_sd_remount() {
                 if (selected == 0) {
                     if (!program_.switch_mode(settings_.storage_mode, false))
                         return false;
-                } else if (!program_.recover_session(
-                               settings_.storage_mode, true)) {
-                    return false;
+                } else {
+                    if (!confirm_unsaved_changes()) return true;
+                    if (!program_.recover_session(settings_.storage_mode, true)) return false;
                 }
                 break;
             }
@@ -3845,319 +4063,183 @@ void Repl::menu_board_led() {
     }
 }
 
-void Repl::menu_system_info() {
+void Repl::command_info() {
+    std::unique_ptr<SystemInformation> info(new (std::nothrow) SystemInformation);
+    if (!info) { platform::put_string("?OUT OF MEMORY\r\n"); return; }
+    collect_system_information(*info);
+    platform::put_string("CPB "); platform::put_string(info->value("Version"));
+    platform::put_string("\r\n");
+    for (const char* label : {"Mode", "Program", "Free RAM / Heap", "Program Storage",
+            "SD Card", "Connection", "Playback state", "Audio power"}) {
+        if (const char* value = info->value(label)) {
+            platform::put_string(label); platform::put_string(" : ");
+            platform::put_string(value); platform::put_string("\r\n");
+        }
+    }
+}
+
+void Repl::command_last_error() {
+    if (!last_error_.valid) { platform::put_string("No error recorded.\r\n"); return; }
+    std::unique_ptr<SystemInformation> info(new (std::nothrow) SystemInformation);
+    if (!info) { platform::put_string("?OUT OF MEMORY\r\n"); return; }
+    last_error_.append_report(*info);
+    for (std::size_t i = 0; i < info->count; ++i) {
+        if (info->rows[i].heading) continue;
+        platform::put_string(info->rows[i].text); platform::put_string("\r\n");
+    }
+}
+
+void Repl::collect_system_information(SystemInformation& info) const {
+    info.clear();
+    info.section("Firmware");
+    info.add("Version", "v%s", RMB_VERSION);
+    info.add("Mode", "%s", program_.source_mode() == ProgramSourceMode::Structured ? "Structured" : "Classic");
+    info.add("Build", "%s", RMB_BUILD_NUMBER);
+    info.add("Compiled", "%s %s", __DATE__, __TIME__);
+    info.add("Uptime", "%lu sec", static_cast<unsigned long>(platform::monotonic_millis()/1000u));
+    info.section("Hardware");
+    info.add("MCU", "RP2350");
+#ifdef PICO_BOARD
+    info.add("Board", "PicoCalc / %s", PICO_BOARD);
+#else
+    info.add("Board", "PicoCalc / Pico 2 W");
+#endif
+    info.add("CPU Clock", "%lu MHz", static_cast<unsigned long>(platform::system_clock_hz()/1000000u));
+    info.section("Memory");
+    info.add("Free RAM / Heap", "N/A (no reliable allocator metric)");
+    const auto& ps = psram::info();
+    if (ps.available) info.add("PSRAM", "%lu KiB / PIO1 SM%d / %lu MHz",
+        static_cast<unsigned long>(ps.size_bytes/1024u), ps.pio_state_machine,
+        static_cast<unsigned long>(ps.bus_clock_hz/1000000u));
+    else info.add("PSRAM", "Unavailable: %s", ps.error);
+    info.add("PSRAM used", "%lu KiB / %lu clients", static_cast<unsigned long>(psram::used_bytes()/1024u),
+        static_cast<unsigned long>(psram::active_client_count()));
+    for (const auto client : {psram::Client::EditorHistory, psram::Client::ProgramStore,
+            psram::Client::SdCache, psram::Client::DirectState, psram::Client::CompiledCache}) {
+        const auto allocation = psram::allocation(client);
+        info.add(psram::client_name(client), "%lu KiB", static_cast<unsigned long>(allocation.allocated_bytes/1024u));
+    }
+    info.add("Program lines", "%lu / %lu", static_cast<unsigned long>(program_.size()),
+        static_cast<unsigned long>(program_.line_capacity()));
+    info.add("Line capacity", "%lu chars", static_cast<unsigned long>(program_.line_length_capacity()));
+    info.add("SD cache", "%lu KiB H:%lu M:%lu", static_cast<unsigned long>(program_.sd_cache_bytes()/1024u),
+        static_cast<unsigned long>(program_.sd_cache_hits()), static_cast<unsigned long>(program_.sd_cache_misses()));
+    info.add("Compile cache", "%s %lu KiB H:%lu M:%lu",
+        compiled_cache_.valid() && compiled_cache_.revision() == program_.revision() ? "Valid" : "Empty",
+        static_cast<unsigned long>(compiled_cache_.allocated_bytes()/1024u),
+        static_cast<unsigned long>(compiled_cache_.hits()), static_cast<unsigned long>(compiled_cache_.misses()));
+    info.add("Direct state", "%s %lu KiB", vm_.direct_state_bytes() == 0 ? "Empty" :
+        vm_.direct_state_in_psram() ? "PSRAM" : "SRAM", static_cast<unsigned long>(vm_.direct_state_bytes()/1024u));
+    info.section("Storage");
+    info.add("Internal", "RAM program store (no internal filesystem)");
+    // available/owner/busy are cached; card_present() reconfigures GPIO, so do not call it.
+    info.add("SD Card", "%s", storage::available() ? "Ready" : "Not mounted / unavailable to firmware");
+    info.add("SD owner", "%s", storage::owner_name());
+    info.add("SD access", "%s", storage::busy() ? "Busy" : "Idle");
+    info.add("Program Storage", "%s / %s", program_.backend_type() == ProgramBackend::Sd ? "SD" : "Internal RAM",
+        program_.suspended() ? "Suspended" : "Ready");
+    info.add("Program", "%s%s", *current_filename_ ? current_filename_ : "(unsaved)", program_modified() ? " *" : "");
+    info.add("USB device", "%s", usb_device::usb_connected() ? "Mounted" : "Not mounted");
+    info.add("USB MSC", "%s / %s", usb_msc::active() ? "Active" : "Inactive",
+        usb_msc::host_ejected() ? "Ejected" : usb_msc::media_present() ? "Present" : "Withdrawn");
+    info.section("Network");
+    info.add("Wi-Fi setting", "%s", settings_.wifi_enabled ? "Enabled" : "Disabled");
+    const bool connected = network::connected();
+    info.add("Connection", "%s", connected ? "Connected" : "Disconnected");
+    char ip[32] = {};
+    const bool ip_available = connected && network::get_ip(ip, sizeof(ip));
+    info.add("SSID", "%s", connected && ip_available ? network::current_ssid() : "-");
+    info.add("IP Address", "%s", ip_available ? ip : "-");
+    info.add("NTP Server", "%s", settings_.wifi_ntp_server);
+    info.add("NTP last result", "%s", ntp_sync_status_);
+    info.add("NTP last server", "%s", *ntp_sync_server_ ? ntp_sync_server_ : "-");
+    info.section("Serial");
+    info.add("USB CDC", "%s", platform::usb_cdc_ready() ? "Ready (host open)" : "Not open / disconnected");
+    info.add("Serial transfer", "%s", platform::serial_transfer_active() ? "Busy" : "Idle");
+    info.add("Console", "%s", console_name(settings_.console_mode));
+    const auto serial = platform::serial_transfer_performance();
+    info.add("USB setting", "CDC virtual serial / bulk %s", serial.usb_cdc_bulk ? "On" : "Off");
+    info.add("UART transfer", "%lu bps / %s", static_cast<unsigned long>(serial.uart_baud),
+        platform::uart_rx_mode_name(serial.uart_rx_mode));
+    info.section("Audio");
+    const auto audio = platform::audio_diagnostics();
+    info.add("Playback state", "%s", audio.state);
+    info.add("Audio power", "%s", audio.power_state);
+    info.add("Source", "%s", audio.source);
+    info.add("Current file", "%s", audio.file_active ? audio.file : "-");
+    info.add("Volumes", "Master:%d PLAY:%d WAV/MP3:%d", platform::audio_volume(),
+        platform::audio_play_volume(), platform::audio_wav_volume());
+    info.add("Underruns", "%lu", static_cast<unsigned long>(platform::audio_underruns()));
+    info.add("Last audio error", "%s", platform::audio_last_error());
+    info.section("Keyboard");
+    const auto keyboard = platform::get_internal_keyboard_diagnostics(false);
+    info.add("Internal", "%s", keyboard.status);
+    if (!keyboard.bios_reply_received) info.add("BIOS", "Unavailable (cached)");
+    else if (!keyboard.bios_version) info.add("BIOS", "Unreported");
+    else info.add("BIOS", "0x%02X", static_cast<unsigned>(keyboard.bios_version));
+    info.add("I2C", "%s", keyboard.last_error);
+    info.add("Error / recovery", "E:%lu C:%lu R:%lu/%lu", static_cast<unsigned long>(keyboard.total_errors),
+        static_cast<unsigned long>(keyboard.consecutive_errors), static_cast<unsigned long>(keyboard.recoveries),
+        static_cast<unsigned long>(keyboard.recovery_attempts));
+    info.add("Boot phase", "%s A:%lu", keyboard.startup_phase, static_cast<unsigned long>(keyboard.startup_attempts));
+    info.add("Cached bus lines", "SDA:%d SCL:%d ever ready:%s", keyboard.sda_high ? 1 : 0,
+        keyboard.scl_high ? 1 : 0, keyboard.ever_ready ? "Yes" : "No");
+    info.add("First key try", "%s %lu ms", keyboard.first_try_recorded ? "At" : "Not recorded",
+        static_cast<unsigned long>(keyboard.first_try_ms));
+    info.add("First key ACK", "%s %lu ms", keyboard.first_ack_recorded ? "At" : "Not recorded",
+        static_cast<unsigned long>(keyboard.first_ack_ms));
+    info.add("Last RUN", "%lu ms", static_cast<unsigned long>(last_run_ms_));
+    last_error_.append_report(info);
+}
+
+void Repl::menu_system_info(bool diagnostics) {
+    // Avoid putting a multi-KiB snapshot on the RP2350 foreground stack.
+    std::unique_ptr<SystemInformation> info(new (std::nothrow) SystemInformation);
+    if (!info) {
+        draw_menu_header("SYSTEM INFORMATION", "ESC BACK");
+        draw_menu_message(5, "NOT ENOUGH MEMORY FOR DIAGNOSTICS");
+        (void)platform::get_char(); return;
+    }
+    collect_system_information(*info);
+    constexpr std::size_t page_rows = 27;
+    std::size_t page = 0;
+    if (diagnostics) {
+        for (std::size_t i=0, lines=0; i<info->count; ++i) {
+            if (!std::strcmp(info->rows[i].text, "Runtime / Last Error")) { page=lines/page_rows; break; }
+            lines += std::max<std::size_t>(1, (std::strlen(info->rows[i].text)+52)/53);
+        }
+    }
+    const char* notice = "Snapshot captured; R refresh";
     while (true) {
-        draw_menu_header(
-            "SYSTEM INFORMATION",
-            "ENTER/ESC BACK"
-        );
-
-        const int top = settings_.status_enabled ? console_layout::status_rows : 0;
-        int row = top + 3;
-
-        char text[96] = {};
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Cala's Pokecom BASIC  v%s",
-            RMB_VERSION
-        );
-        draw_menu_message(row++, text);
-
-        const auto& psram_info = psram::info();
-        if (psram_info.available) {
-            std::snprintf(
-                text,
-                sizeof(text),
-                "PicoCalc PSRAM  %lu KiB / PIO1 SM%d / %lu MHz",
-                static_cast<unsigned long>(psram_info.size_bytes / 1024u),
-                psram_info.pio_state_machine,
-                static_cast<unsigned long>(
-                    psram_info.bus_clock_hz / 1000000u)
-            );
-        } else {
-            std::snprintf(
-                text,
-                sizeof(text),
-                "PicoCalc PSRAM  NOT AVAILABLE (%s)",
-                psram_info.error
-            );
+        const std::size_t pages = (info->screen_line_count() + page_rows - 1)/page_rows;
+        if (page >= pages) page = pages-1;
+        char title[64];
+        std::snprintf(title, sizeof(title), "%s %u/%u", diagnostics ? "DIAGNOSTICS" : "SYSTEM INFORMATION", static_cast<unsigned>(page+1), static_cast<unsigned>(pages));
+        draw_menu_header(title, "LEFT/RIGHT PAGE  R REFRESH  S SEND  ESC BACK");
+        const int first = (settings_.status_enabled ? console_layout::status_rows : 0) + 3;
+        for (std::size_t i=0; i<page_rows; ++i) {
+            const auto at = page*page_rows+i;
+            char text[54] = {};
+            info->screen_line(at, text, sizeof(text));
+            draw_menu_message(first+static_cast<int>(i), text);
         }
-        draw_menu_message(row++, text);
-        const std::size_t psram_clients = psram::active_client_count();
-        std::snprintf(
-            text,
-            sizeof(text),
-            "PSRAM runtime   %lu KiB / %lu client%s",
-            static_cast<unsigned long>(psram::used_bytes() / 1024u),
-            static_cast<unsigned long>(psram_clients),
-            psram_clients == 1 ? "" : "s"
-        );
-        draw_menu_message(row++, text);
-
-        const auto history =
-            psram::allocation(psram::Client::EditorHistory);
-        const auto program =
-            psram::allocation(psram::Client::ProgramStore);
-        const auto cache =
-            psram::allocation(psram::Client::SdCache);
-        const auto direct =
-            psram::allocation(psram::Client::DirectState);
-        const auto compiled =
-            psram::allocation(psram::Client::CompiledCache);
-        std::snprintf(
-            text,
-            sizeof(text),
-            "PSRAM clients   EH:%lu  PRG:%lu  SD:%lu KiB",
-            static_cast<unsigned long>(history.allocated_bytes / 1024u),
-            static_cast<unsigned long>(program.allocated_bytes / 1024u),
-            static_cast<unsigned long>(cache.allocated_bytes / 1024u)
-        );
-        draw_menu_message(row++, text);
-        std::snprintf(
-            text,
-            sizeof(text),
-            "PSRAM extra     DIR:%lu  CMP:%lu KiB",
-            static_cast<unsigned long>(direct.allocated_bytes / 1024u),
-            static_cast<unsigned long>(compiled.allocated_bytes / 1024u)
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "SD cache        %lu KiB  H:%lu M:%lu",
-            static_cast<unsigned long>(program_.sd_cache_bytes() / 1024u),
-            static_cast<unsigned long>(program_.sd_cache_hits()),
-            static_cast<unsigned long>(program_.sd_cache_misses())
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Compile cache   %s %lu KiB H:%lu M:%lu",
-            compiled_cache_.valid() &&
-                    compiled_cache_.revision() == program_.revision()
-                ? "VALID" : "EMPTY",
-            static_cast<unsigned long>(
-                compiled_cache_.allocated_bytes() / 1024u),
-            static_cast<unsigned long>(compiled_cache_.hits()),
-            static_cast<unsigned long>(compiled_cache_.misses())
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Direct state    %s %lu KiB",
-            vm_.direct_state_bytes() == 0
-                ? "EMPTY"
-                : (vm_.direct_state_in_psram() ? "PSRAM" : "SRAM"),
-            static_cast<unsigned long>(vm_.direct_state_bytes() / 1024u)
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Build           %s",
-            RMB_BUILD_NUMBER
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "CPU clock       %lu MHz",
-            static_cast<unsigned long>(
-                platform::system_clock_hz() / 1000000u
-            )
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Uptime          %lu sec",
-            static_cast<unsigned long>(
-                platform::monotonic_millis() / 1000u
-            )
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Program         %s%s",
-            current_filename_,
-            program_dirty_ ? " *" : ""
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Program lines   %lu / %lu",
-            static_cast<unsigned long>(program_.size()),
-            static_cast<unsigned long>(program_.line_capacity())
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Line capacity   %lu chars",
-            static_cast<unsigned long>(
-                program_.line_length_capacity())
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Console         %s",
-            console_name(settings_.console_mode)
-        );
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "SD              %s / %s",
-            storage::card_present() ? "PRESENT" : "ABSENT",
-            storage::available() ? "MOUNTED" : "NOT MOUNTED"
-        );
-        draw_menu_message(row++, text);
-
-        int battery = -1;
-        bool charging = false;
-        if (platform::get_battery_status(battery, charging)) {
-            std::snprintf(
-                text,
-                sizeof(text),
-                "Battery         %d%% %s",
-                battery,
-                charging ? "CHARGING" : ""
-            );
-        } else {
-            std::snprintf(text, sizeof(text), "Battery         N/A");
-        }
-        draw_menu_message(row++, text);
-
-        const auto keyboard =
-            platform::get_internal_keyboard_diagnostics();
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Keyboard        %s",
-            keyboard.status
-        );
-        draw_menu_message(row++, text);
-        if (!keyboard.bios_reply_received) {
-            std::snprintf(text, sizeof(text), "Keyboard BIOS   UNAVAILABLE");
-        } else if (keyboard.bios_version == 0) {
-            std::snprintf(text, sizeof(text), "Keyboard BIOS   UNREPORTED");
-        } else {
-            std::snprintf(
-                text, sizeof(text), "Keyboard BIOS   0x%02X",
-                static_cast<unsigned>(keyboard.bios_version)
-            );
-        }
-        draw_menu_message(row++, text);
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Keyboard I2C    %s",
-            keyboard.last_error
-        );
-        draw_menu_message(row++, text);
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Keyboard stats  E:%lu C:%lu R:%lu/%lu",
-            static_cast<unsigned long>(keyboard.total_errors),
-            static_cast<unsigned long>(keyboard.consecutive_errors),
-            static_cast<unsigned long>(keyboard.recoveries),
-            static_cast<unsigned long>(keyboard.recovery_attempts)
-        );
-        draw_menu_message(row++, text);
-        std::snprintf(
-            text,
-            sizeof(text),
-            "KBD boot        %s A:%lu",
-            keyboard.startup_phase,
-            static_cast<unsigned long>(keyboard.startup_attempts)
-        );
-        draw_menu_message(row++, text);
-        std::snprintf(
-            text,
-            sizeof(text),
-            "KBD lines       SDA:%d SCL:%d READY:%s",
-            keyboard.sda_high ? 1 : 0,
-            keyboard.scl_high ? 1 : 0,
-            keyboard.ever_ready ? "YES" : "NO"
-        );
-        draw_menu_message(row++, text);
-        if (keyboard.first_try_recorded && keyboard.first_ack_recorded) {
-            std::snprintf(
-                text, sizeof(text), "KBD timing      TRY:%lu ACK:%lu ms",
-                static_cast<unsigned long>(keyboard.first_try_ms),
-                static_cast<unsigned long>(keyboard.first_ack_ms)
-            );
-        } else if (keyboard.first_try_recorded) {
-            std::snprintf(
-                text, sizeof(text), "KBD timing      TRY:%lu ACK:NEVER",
-                static_cast<unsigned long>(keyboard.first_try_ms)
-            );
-        } else {
-            std::snprintf(text, sizeof(text), "KBD timing      TRY:- ACK:-");
-        }
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Wi-Fi           %s%s%s",
-            settings_.wifi_enabled ? "ON" : "OFF",
-            network::connected() ? " / CONNECTED / " : "",
-            network::connected() ? network::current_ssid() : ""
-        );
-        draw_menu_message(row++, text);
-
-        platform::DateTime dt;
-        if (platform::get_datetime(dt)) {
-            std::snprintf(
-                text,
-                sizeof(text),
-                "RTC             %04d-%02d-%02d %02d:%02d:%02d",
-                dt.year,
-                dt.month,
-                dt.day,
-                dt.hour,
-                dt.minute,
-                dt.second
-            );
-        } else {
-            std::snprintf(text, sizeof(text), "RTC             N/A");
-        }
-        draw_menu_message(row++, text);
-
-        std::snprintf(
-            text,
-            sizeof(text),
-            "Last RUN        %lu ms",
-            static_cast<unsigned long>(last_run_ms_)
-        );
-        draw_menu_message(row++, text);
-
+        draw_menu_message(first+static_cast<int>(page_rows)+1, notice);
         const int key = platform::get_char();
-        if (key_is_enter(key) ||
-            key == kKeyEscape ||
-            key == 0x1b ||
-            key == kKeyHome) {
-            return;
-        }
+        if (key == kKeyLeft) page = page ? page-1 : pages-1;
+        else if (key == kKeyRight) page = (page+1)%pages;
+        else if (key == 'r' || key == 'R') { collect_system_information(*info); notice = "Snapshot refreshed"; }
+        else if (key == 's' || key == 'S') {
+            const auto result = platform::begin_usb_diagnostic();
+            if (result == platform::DiagnosticSerialResult::Busy) notice = "Serial busy - report not sent";
+            else if (result == platform::DiagnosticSerialResult::Unavailable) notice = "USB CDC not open - report not sent";
+            else {
+                const bool ok = info->render_serial([](const char* text, void*) {
+                    return platform::write_usb_diagnostic(text);
+                }, nullptr);
+                platform::end_usb_diagnostic();
+                notice = ok ? "Snapshot sent to USB Serial" : "USB disconnected - report may be incomplete";
+            }
+        } else if (key_is_enter(key) || key == kKeyEscape || key == 0x1b || key == kKeyHome) return;
     }
 }
 
@@ -4411,10 +4493,10 @@ void Repl::menu_program_storage() {
         draw_menu_message(top+1,row);
         std::snprintf(row,sizeof(row),"SD : %s",storage::card_present()?(storage::available()?"READY":"NOT MOUNTED"):"NOT AVAILABLE");draw_menu_message(top+2,row);
         char program_label[80]={};
-        if(has_current_filename())file_paths::compact_root_path(current_filename_,44-(program_dirty_?1u:0u),
+        if(has_current_filename())file_paths::compact_root_path(current_filename_,44-(program_modified()?1u:0u),
             file_paths::CompactPathPolicy::ProgramName,program_label,sizeof(program_label));
         else std::snprintf(program_label,sizeof(program_label),"UNTITLED");
-        std::snprintf(row,sizeof(row),"Program: %s%s",program_label,program_dirty_?"*":"");draw_menu_message(top+3,row);
+        std::snprintf(row,sizeof(row),"Program: %s%s",program_label,program_modified()?"*":"");draw_menu_message(top+3,row);
         std::snprintf(
             row,sizeof(row),
             "Lines: %lu/%lu  Max body: %lu",
@@ -4431,7 +4513,7 @@ void Repl::menu_program_storage() {
         if(selected==4) return;
         if(selected==1) {save_as();continue;}
         if(selected==2) {
-            if(program_dirty_&&!discard_confirm()) continue;
+            if(!confirm_unsaved_changes()) continue;
             if(!program_.clear()) message(program_.error());
             else {vm_.clear_direct_state();set_current_filename("UNTITLED",false);}
             continue;
@@ -4456,7 +4538,7 @@ void Repl::menu_program_storage() {
             if(to_sd) {message("Reinsert card; select Resume SD Storage.");continue;}
             if(!discard_confirm()) continue;
             discard=true;
-        } else if(to_sd&&program_.backend_type()==ProgramBackend::Ram&&program_dirty_) {
+        } else if(to_sd&&program_.backend_type()==ProgramBackend::Ram&&program_modified()) {
             draw_menu_header("RAM PROGRAM HAS BEEN MODIFIED", "S SAVE   D DISCARD   ESC CANCEL");
             draw_menu_message(top,"Save to SD card before switching?");
             while(true) {
@@ -4552,6 +4634,7 @@ void Repl::menu_save_program(bool save_as) {
 void Repl::service_background() {
     platform::audio_service();
     wireless::service_board_led();
+    network::operation_poll();
     network::file_server_poll();
     bluetooth_manager::service();
 
@@ -5733,6 +5816,7 @@ void Repl::show_system_menu() {
         BoardLed,
         Firmware,
         SystemInformation,
+        Diagnostics,
         PsramDiagnostics,
         Exit
     };
@@ -5770,8 +5854,9 @@ void Repl::show_system_menu() {
         {"Power / CPU", ControlAction::PowerCpu, true},
         {"Board LED", ControlAction::BoardLed, true},
         {"Firmware", ControlAction::Firmware, true},
-        {"Diagnostics", ControlAction::None, false},
         {"System Information", ControlAction::SystemInformation, true},
+        {"Diagnostics", ControlAction::None, false},
+        {"Last Error / System", ControlAction::Diagnostics, true},
         {"PSRAM Diagnostics", ControlAction::PsramDiagnostics, true},
         {"Exit", ControlAction::Exit, false}
     };
@@ -5877,23 +5962,7 @@ void Repl::show_system_menu() {
                 if(key_is_enter(key))break;
             }
             if(!cancel) {
-                bool replace=true;
-                if(program_.is_dirty()||program_dirty_) {
-                    int choice=2;
-                    while(true) {
-                        draw_menu_header("REPLACE CURRENT PROGRAM","UP/DOWN  ENTER");
-                        draw_menu_option(6,"Save then replace",choice==0);
-                        draw_menu_option(7,"Discard then replace",choice==1);
-                        draw_menu_option(8,"Cancel",choice==2);
-                        const int key=platform::get_char();
-                        if(key==kKeyUp)choice=(choice+2)%3;
-                        if(key==kKeyDown)choice=(choice+1)%3;
-                        if(key==kKeyEscape||key==0x1b){replace=false;break;}
-                        if(key_is_enter(key)) {
-                            replace=choice==1||(choice==0&&save_current_program());break;
-                        }
-                    }
-                }
+                const bool replace=confirm_unsaved_changes();
                 if(replace) {
                     if(program_.new_program(selected?ProgramSourceMode::Structured:ProgramSourceMode::ClassicNumbered)) {
                         vm_.clear_direct_state();set_current_filename("UNTITLED",false);
@@ -5920,6 +5989,7 @@ void Repl::show_system_menu() {
         else if (action == ControlAction::BoardLed) menu_board_led();
         else if (action == ControlAction::Firmware) menu_firmware();
         else if (action == ControlAction::SystemInformation) menu_system_info();
+        else if (action == ControlAction::Diagnostics) menu_system_info(true);
         else if (action == ControlAction::PsramDiagnostics) menu_psram_diagnostics();
     }
 
@@ -5946,16 +6016,21 @@ void Repl::open_full_screen_editor() {
     auto* editor = new(memory) FullScreenEditor(
         program_, current_filename_, sizeof(current_filename_), program_dirty_);
     full_screen_editor_active_ = true;
-    const bool ok = editor->run(compile_error_location_);
+    const std::int32_t error_line = last_error_.valid
+        ? (last_error_.can_edit(program_, current_filename_) && program_.saved_source_present() ? last_error_.location : 0)
+        : compile_error_location_;
+    const EditorResult result = editor->run(error_line,
+        last_error_.valid && last_error_.phase == ErrorPhase::Runtime ? "RUNTIME ERROR" : "COMPILE ERROR");
     full_screen_editor_active_ = false;
     editor->~FullScreenEditor();
     std::free(memory);
-    if (!ok) {
+    if (!result) {
         platform::put_char('?');
         platform::put_string(program_.error());
         platform::put_string("\r\n");
     }
     leave_menu_screen();
+    if (result.action == EditorExitAction::Run) run_program();
 }
 
 void Repl::menu_file_transfer() {
@@ -6485,6 +6560,26 @@ void Repl::command_datetime(char* argument) {
     }
 }
 
+bool Repl::handle_prompt_special(int key) {
+    if (key == kKeyHome || key == input_hotkeys::ControlCenter) {
+        show_system_menu();
+        return true;
+    }
+    if (key == input_hotkeys::Editor) {
+        open_full_screen_editor();
+        return true;
+    }
+    if (key == input_hotkeys::Run) {
+        run_program();
+        return true;
+    }
+    if (function_key_index(key) >= 0) {
+        handle_quick_key(key);
+        return true;
+    }
+    return false;
+}
+
 void Repl::run() {
     platform::set_status_refresh_callback(
         [](void* context) {
@@ -6545,18 +6640,10 @@ void Repl::run() {
 
     while (true) {
         print_prompt();
-        LineEditor::read(input, sizeof(input), &command_history_);
+        LineEditor::read(input, sizeof(input), &command_history_, nullptr, true);
 
         const int special = LineEditor::last_special_key();
-        if (special == kKeyHome) {
-            show_system_menu();
-            continue;
-        }
-
-        if (function_key_index(special) >= 0) {
-            handle_quick_key(special);
-            continue;
-        }
+        if (handle_prompt_special(special)) continue;
 
         process_line(input);
     }

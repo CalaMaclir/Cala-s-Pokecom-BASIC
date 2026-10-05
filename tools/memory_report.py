@@ -16,6 +16,7 @@ for line in sections.splitlines():
     if len(parts) >= 3 and parts[0].startswith('.'):
         sizes[parts[0]] = int(parts[1])
 print('DATA_PLUS_BSS_BYTES', sizes.get('.data', 0) + sizes.get('.bss', 0))
+print('FLASH_LOAD_BYTES', sum(sizes.get(name,0) for name in ('.text','.rodata','.data','.binary_info','.boot2','.vectors')))
 symbols = run('arm-none-eabi-nm', '-S', '--size-sort', '--radix=d', '-C', str(elf))
 print('\nLargest writable symbols (bytes):')
 print('\n'.join([line for line in symbols.splitlines() if len(line.split()) > 3 and 0x20000000 <= int(line.split()[0]) < 0x20082000][-40:]))

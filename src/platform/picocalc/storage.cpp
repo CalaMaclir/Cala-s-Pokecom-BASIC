@@ -3,6 +3,7 @@
 #include "file_path.hpp"
 #include "program_file_guard.hpp"
 #include "safe_file.hpp"
+#include "image_io.hpp"
 
 #include <cctype>
 #include <cerrno>
@@ -134,12 +135,8 @@ bool make_bmp_path(const char* input, char* out, std::size_t capacity) {
     char name[80] = {};
     std::size_t n = 0;
 
-    while (*input && *input != ' ' && *input != '\t') {
+    while (*input) {
         const unsigned char ch = static_cast<unsigned char>(*input++);
-        if (!(std::isalnum(ch) || ch == '_' || ch == '-' || ch == '.')) {
-            set_error("BAD FILENAME");
-            return false;
-        }
         if (n + 1 >= sizeof(name)) {
             set_error("FILENAME TOO LONG");
             return false;
@@ -152,6 +149,14 @@ bool make_bmp_path(const char* input, char* out, std::size_t capacity) {
         set_error("BAD FILENAME");
         return false;
     }
+
+    char normalized[80] = {};
+    if (!file_paths::normalize(name, normalized, sizeof(normalized))) {
+        set_error("BAD FILENAME");
+        return false;
+    }
+    std::strcpy(name, normalized);
+    n = std::strlen(name);
 
     bool has_bmp = false;
     if (n >= 4) {
@@ -180,17 +185,6 @@ bool make_bmp_path(const char* input, char* out, std::size_t capacity) {
     return true;
 }
 
-void put_le16(std::uint8_t* p, std::uint16_t v) {
-    p[0] = static_cast<std::uint8_t>(v & 0xffu);
-    p[1] = static_cast<std::uint8_t>((v >> 8) & 0xffu);
-}
-
-void put_le32(std::uint8_t* p, std::uint32_t v) {
-    p[0] = static_cast<std::uint8_t>(v & 0xffu);
-    p[1] = static_cast<std::uint8_t>((v >> 8) & 0xffu);
-    p[2] = static_cast<std::uint8_t>((v >> 16) & 0xffu);
-    p[3] = static_cast<std::uint8_t>((v >> 24) & 0xffu);
-}
 
 
 } // namespace
@@ -333,6 +327,14 @@ bool recover_firmware_ownership() {
             std::memory_order_acq_rel)) {
         if (expected == Owner::Firmware) return true;
         set_error("USB HOST STILL OWNS SD CARD");
+        return false;
+    }
+    // Unavailable may have been published by disconnect or an I/O failure
+    // while a raw request is still inside the SD driver. Closing admission
+    // is not equivalent to that request having finished.
+    if (raw_io_active.load(std::memory_order_acquire) != 0) {
+        storage_owner.store(Owner::Unavailable, std::memory_order_release);
+        set_error("USB SD I/O STILL ACTIVE - RETRY RECOVERY");
         return false;
     }
     if (!card_present() || !sd_device ||
@@ -970,63 +972,11 @@ bool save_screenshot(
         return false;
     }
 
-    const int image_width = x2 - x1 + 1;
-    const int image_height = y2 - y1 + 1;
-    const std::uint32_t row_bytes =
-        static_cast<std::uint32_t>(image_width * 3);
-    const std::uint32_t row_stride = (row_bytes + 3u) & ~3u;
-    const std::uint32_t pixel_bytes =
-        row_stride * static_cast<std::uint32_t>(image_height);
-    const std::uint32_t file_size = 54u + pixel_bytes;
-
-    std::uint8_t header[54] = {};
-    header[0] = 'B';
-    header[1] = 'M';
-    put_le32(header + 2, file_size);
-    put_le32(header + 10, 54u);
-    put_le32(header + 14, 40u);
-    put_le32(header + 18, static_cast<std::uint32_t>(image_width));
-    put_le32(header + 22, static_cast<std::uint32_t>(image_height));
-    put_le16(header + 26, 1u);
-    put_le16(header + 28, 24u);
-    put_le32(header + 34, pixel_bytes);
-
-    bool ok =
-        std::fwrite(header, 1, sizeof(header), fp) == sizeof(header);
-
-    std::uint8_t row[320 * 3 + 3] = {};
-    const std::uint8_t padding[3] = {0, 0, 0};
-    const std::size_t pad =
-        static_cast<std::size_t>(row_stride - row_bytes);
-
-    // BMP is stored bottom-up.
-    for (int y = y2; ok && y >= y1; --y) {
-        if (!picocalc::display::read_visible_row_bgr(
-                y,
-                x1,
-                x2,
-                row
-            )) {
-            ok = false;
-            break;
-        }
-
-        if (std::fwrite(
-                row,
-                1,
-                static_cast<std::size_t>(row_bytes),
-                fp
-            ) != static_cast<std::size_t>(row_bytes)) {
-            ok = false;
-            break;
-        }
-
-        if (pad != 0 &&
-            std::fwrite(padding, 1, pad, fp) != pad) {
-            ok = false;
-            break;
-        }
-    }
+    const char* error = image_io::save_bmp(fp, x1, y1, x2, y2,
+        [](void*, int y, int left, int right, std::uint8_t* row) {
+            return picocalc::display::read_visible_row_bgr(y, left, right, row);
+        });
+    bool ok = error == nullptr;
 
     if (std::fclose(fp) != 0) ok = false;
 
@@ -1037,6 +987,35 @@ bool save_screenshot(
 
     set_error("OK");
     return true;
+}
+
+bool load_image(const char* name, int x, int y) {
+    // init() enforces the existing SD owner/HTTP transaction policy.
+    if (!init()) return false;
+    char path[96] = {};
+    if (!make_bmp_path(name, path, sizeof(path))) return false;
+    FILE* fp = std::fopen(path, "rb");
+    if (!fp) {
+        set_error(errno == ENOENT ? "IMAGE FILE NOT FOUND" : "CANNOT OPEN IMAGE FILE");
+        return false;
+    }
+    const auto previous_color = platform::graphics_color();
+    const char* error = image_io::load_bmp(fp, x, y,
+        [](void*, int left, int row, const std::uint8_t* bgr, int pixels) {
+            for (int i = 0; i < pixels; ++i) {
+                const auto* p = bgr + i * 3;
+                platform::set_graphics_color((std::uint32_t(p[2]) << 16) |
+                    (std::uint32_t(p[1]) << 8) | p[0]);
+                platform::graphics_pixel(left + i, row);
+            }
+            // Uses the existing LCD pixel stream and POINT occupancy map.
+            platform::graphics_flush();
+        });
+    platform::graphics_flush();
+    platform::set_graphics_color(previous_color);
+    if (std::fclose(fp) != 0 && !error) error = "IMAGE READ ERROR";
+    set_error(error ? error : "OK");
+    return error == nullptr;
 }
 
 } // namespace rmb::storage

@@ -36,6 +36,7 @@ public:
     bool caps_lock_enabled() const { return caps_lock_; }
     void set_caps_lock(bool enabled) { caps_lock_ = enabled; }
     bool shift_held() const;
+    bool last_key_repeat() const { return last_key_repeat_; }
     std::uint32_t overflow_count() const { return overflow_count_; }
 
     static int translate_usage(
@@ -47,12 +48,14 @@ public:
     static bool repeatable(int code);
 
 private:
-    bool enqueue(int code);
+    bool enqueue(int code, bool repeat = false);
     bool was_pressed(std::uint8_t usage) const;
     bool is_pressed(std::uint8_t usage) const;
     void service_repeat(std::uint32_t now_ms);
 
     int queue_[kQueueCapacity] = {};
+    bool queue_repeat_[kQueueCapacity] = {};
+    bool last_key_repeat_ = false;
     std::size_t queue_read_ = 0;
     std::size_t queue_write_ = 0;
     std::uint8_t last_keys_[kMaxKeys] = {};

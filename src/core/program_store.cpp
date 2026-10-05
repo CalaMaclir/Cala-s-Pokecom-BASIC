@@ -18,6 +18,17 @@
 #include <sys/stat.h>
 
 namespace rmb {
+bool ProgramStore::saved_source_present() const {
+    if (!*filename_) return true;
+    if (!storage::available() || !storage::try_lock()) return false;
+    char path[192] = {};
+    const int n=std::snprintf(path,sizeof(path),"%s%s",root_,filename_);
+    struct stat info = {};
+    const bool present=n>=0 && static_cast<std::size_t>(n)<sizeof(path) &&
+        ::stat(path,&info)==0 && S_ISREG(info.st_mode);
+    storage::unlock();
+    return present;
+}
 SdProgramStore::~SdProgramStore() { std::free(lines); }
 bool SdProgramStore::reserve(std::size_t count) {
     if(count<=capacity) return true;
@@ -1402,6 +1413,12 @@ bool ProgramStore::edit_sd(
     std::int32_t number,const char* text,std::size_t length,bool remove
 ) {
     if(!ready()) return false;
+    if (remove) {
+        bool exists = false;
+        for (std::size_t i = 0; i < count_; ++i)
+            if (sd_->lines[i].number == number) { exists = true; break; }
+        if (!exists) { error_ = "OK"; return true; }
+    }
     Lease lease; if(!lease.locked) return fail(storage::last_error());
     BackendPtr<SdProgramStore> next(allocate_backend<SdProgramStore>());
     if(!next) return fail("OUT OF MEMORY");
@@ -1576,6 +1593,32 @@ bool ProgramStore::replace_line_pair(
 bool ProgramStore::set_line(std::int32_t number,const char* text) {
     if(!text)return fail("BAD LINE");
     const std::size_t length=std::strlen(text);
+    if (!ready()) return false;
+    const auto address = reinterpret_cast<std::uintptr_t>(text);
+    auto borrowed = [&](const void* buffer, std::size_t bytes) {
+        const auto start = reinterpret_cast<std::uintptr_t>(buffer);
+        return buffer && address >= start && address - start < bytes;
+    };
+    std::unique_ptr<char[]> stable;
+    if (borrowed(ram_, sizeof(RamProgramStore)) ||
+        borrowed(ram_long_scratch_, kMaxPsramProgramLineLength) ||
+        (sd_ && borrowed(sd_->scratch, sizeof(sd_->scratch)))) {
+        stable.reset(new (std::nothrow) char[length + 1]);
+        if (!stable) return fail("OUT OF MEMORY");
+        std::memcpy(stable.get(), text, length + 1); text = stable.get();
+    }
+    // Re-entering an identical numbered line is not a modification. Compare
+    // through the shared reader, so SRAM / PSRAM / SD use the same semantics.
+    for (std::size_t i = 0; i < count_; ++i) {
+        std::int32_t at = 0; std::size_t size = 0;
+        if (!read_line_metadata(i, at, size)) return false;
+        if (at > number) break;
+        if (at != number || size != length) continue;
+        const char* original = nullptr;
+        if (!read_line_text(i, at, original, size)) return false;
+        if (!std::strcmp(original, text)) { error_ = "OK"; return true; }
+        break;
+    }
     if(backend_==ProgramBackend::Sd) {
         if(length>=kMaxSdProgramLineLength)return fail("SD LINE TOO LONG");
         return edit_sd(number,text,length,false);

@@ -38,6 +38,14 @@ void audio_stop();
 void audio_pause();
 void audio_resume();
 bool audio_playing();
+struct AudioDiagnostics {
+    const char* state = "Stopped";
+    const char* source = "None";
+    char file[80] = {};
+    bool file_active = false;
+    const char* power_state = "Unavailable";
+};
+AudioDiagnostics audio_diagnostics();
 bool audio_beep(int frequency_hz, int duration_ms);
 bool audio_play_mml(const char* const* voices, int count);
 bool audio_wavplay(const char* filename);
@@ -150,7 +158,7 @@ struct InternalKeyboardDiagnostics {
     std::uint32_t startup_attempts = 0;
 };
 
-InternalKeyboardDiagnostics get_internal_keyboard_diagnostics();
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics(bool query_bios = true);
 bool caps_lock_enabled();
 bool shift_held();
 bool get_datetime(DateTime& value);
@@ -161,6 +169,9 @@ bool set_lcd_backlight(std::uint8_t value);
 bool get_lcd_backlight(std::uint8_t& value);
 
 int get_char();
+int get_char_timeout(std::uint32_t milliseconds);
+// Metadata for the last command key. Serial terminals do not carry release/repeat events.
+bool last_key_repeat();
 RuntimeKeyResult poll_runtime_key();
 RuntimeKeyResult wait_runtime_key();
 void reset_runtime_input();

@@ -6,6 +6,7 @@
 #include "external_i2c.hpp"
 #include "system_controls.hpp"
 #include "usb_msc.hpp"
+#include "storage.hpp"
 #include "wireless.hpp"
 #include "graphics_text.hpp"
 #include "bluetooth_manager.hpp"
@@ -304,6 +305,11 @@ void sleep_millis(std::uint32_t milliseconds) {
 }
 
 void enter_sleep_mode(bool refresh_status) {
+    const auto owner = storage::owner();
+    if (owner == storage::Owner::UsbHost || owner == storage::Owner::Transition) {
+        put_string("RETURN / EJECT USB STORAGE BEFORE STANDBY\r\n");
+        return;
+    }
     const bool bluetooth_was_enabled = bluetooth_manager::enabled();
     wireless::suspend_board_led();
     if (sleep_prepare_callback) sleep_prepare_callback(sleep_prepare_context);
@@ -430,10 +436,11 @@ bool get_battery_status(int& percent, bool& charging) {
     return picocalc::keyboard::read_battery(percent, charging);
 }
 
-InternalKeyboardDiagnostics get_internal_keyboard_diagnostics() {
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics(bool query_bios) {
     unsigned char bios_version = 0;
     const bool bios_reply_received =
-        picocalc::keyboard::read_bios_version(bios_version);
+        query_bios ? picocalc::keyboard::read_bios_version(bios_version) :
+            picocalc::keyboard::cached_bios_version_value(bios_version);
     const auto& state = picocalc::keyboard::diagnostics();
     return {
         picocalc::keyboard::health_name(state.health),
@@ -1266,7 +1273,11 @@ void collect_navigation_burst(
     }
 }
 
-int get_char(){
+namespace { bool command_key_repeat = false; }
+bool last_key_repeat() { return command_key_repeat; }
+int get_char_timeout(std::uint32_t milliseconds){
+ const auto input_started = to_ms_since_boot(get_absolute_time());
+ command_key_repeat=false;
  if(serial_transfer_active())return -1;constexpr uint32_t blink_ms=500;bool cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);uint32_t next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;static bool last_shift_held=false;
  while(true){
   // Poll USB/UART before I2C work and background callbacks.
@@ -1284,9 +1295,11 @@ int get_char(){
   if(key==picocalc::keyboard::key_hotkey_screenshot){if(screenshot_callback)screenshot_callback(screenshot_context);continue;}
   if(key==picocalc::keyboard::key_hotkey_sleep){if(console_uses_lcd())picocalc::display::set_cursor_visible(false);enter_sleep_mode();cursor_visible=true;if(console_uses_lcd())picocalc::display::set_cursor_visible(true);next_blink=to_ms_since_boot(get_absolute_time())+blink_ms;continue;}
   if(key==0xc1){if(status_refresh_callback)status_refresh_callback(status_refresh_context);continue;}
-  if(key>=0){audio_key_click();if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=CommandInputSource::Local;if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return key;}
-  const uint32_t now=to_ms_since_boot(get_absolute_time());if(static_cast<int32_t>(now-next_blink)>=0){cursor_visible=!cursor_visible;if(console_uses_lcd())picocalc::display::set_cursor_visible(cursor_visible);next_blink=now+blink_ms;}sleep_ms(4);
+  if(key>=0){command_key_repeat=unified_keyboard::last_key_repeat();audio_key_click();if(command_input_active&&command_input_source==CommandInputSource::None)command_input_source=CommandInputSource::Local;if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return key;}
+  const uint32_t now=to_ms_since_boot(get_absolute_time());if(milliseconds && static_cast<uint32_t>(now-input_started)>=milliseconds){if(console_uses_lcd())picocalc::display::set_cursor_visible(false);return -1;}if(static_cast<int32_t>(now-next_blink)>=0){cursor_visible=!cursor_visible;if(console_uses_lcd())picocalc::display::set_cursor_visible(cursor_visible);next_blink=now+blink_ms;}sleep_ms(4);
  }
 }
+
+int get_char() { return get_char_timeout(0); }
 
 } // namespace rmb::platform

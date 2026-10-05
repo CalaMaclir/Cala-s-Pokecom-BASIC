@@ -33,6 +33,9 @@ def repetitions(case, metric):
     if metric == "compile":
         return 20000
     if metric == "vm":
+        if case in ("examples/v093/performance/for-empty.bas", "examples/v093/performance/for-nested.bas",
+                    "examples/v093/performance/for-step2.bas", "examples/v093/performance/for-negative.bas"):
+            return 16  # Million-iteration research fixtures; equal for A/B/C.
         return 2 if "fractal" in case or "picocalc" in case else 1000
     return 10000
 

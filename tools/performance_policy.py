@@ -10,6 +10,7 @@ from pathlib import Path
 ACCEPTED_SHA = '2a7b1c568d7a6cbef8b9a34b438f05258f5ca84a'
 STAGE1_SHA = '35367d7b6156fce92fbebbee7407261041e7af28'
 STAGE2_SHA = 'a4b54b596a674dfa231c45743ff977376d8b62d4'
+V093_STAGE1_SHA = '1ee0477ca8b157e8e953cb4fecf48291705f3731'
 
 class SemanticMismatch(AssertionError):
     pass
@@ -77,7 +78,10 @@ def validate_evidence(data):
         same(data[key], calculated[key], key)
     if data.get('accepted_sha'):
         same(data['accepted_sha'], ACCEPTED_SHA, 'accepted SHA')
-    if 'stage1_sha' in data:
+    v093 = data.get('comparison_kind') == 'v093-stage1'
+    if v093:
+        same(data['baseline_sha'], V093_STAGE1_SHA, 'v0.93 Stage 1 frozen main SHA')
+    elif 'stage1_sha' in data:
         same(data['stage1_sha'], STAGE1_SHA, 'Stage 1 SHA')
         same(data['stage2_sha'], STAGE2_SHA, 'Stage 2 SHA')
         if not any(r['baseline'] == 'Accepted 3AB' for r in data['comparisons']):
@@ -86,9 +90,9 @@ def validate_evidence(data):
         same(data['baseline_sha'], STAGE1_SHA, 'Stage 1 SHA')
     # Recompute medians/deltas and required coverage, never trust status alone.
     runs = data['runs']
-    baselines=('Stage 1','Stage 2','Accepted 3AB') if 'stage1_sha' in data else ('Stage 1',)
+    baselines=('v0.93 baseline',) if v093 else (('Stage 1','Stage 2','Accepted 3AB') if 'stage1_sha' in data else ('Stage 1',))
     same(set(runs),set(baselines)|{'Current'},'measured revisions')
-    metrics=('compile','vm','cache_miss','cache_hit') if 'stage1_sha' in data else ('compile_us','vm_us')
+    metrics=('compile','vm','cache_miss','cache_hit') if v093 or 'stage1_sha' in data else ('compile_us','vm_us')
     expected=set()
     for revision in baselines+('Current',):
         same(len(runs[revision]),1,'measured run count')
@@ -96,7 +100,7 @@ def validate_evidence(data):
         same(len({c['name'] for c in cases}),len(cases),'duplicate measured case')
         if not cases:raise ValueError('Missing measured cases')
         for case in cases:
-            for key in ('output_hash','graphics_hash','pixels') if 'stage1_sha' in data else ('output_hash','dispatches','logical_ops','ops'):
+            for key in ('output_hash','graphics_hash','pixels','logical_ops') if v093 else (('output_hash','graphics_hash','pixels') if 'stage1_sha' in data else ('output_hash','dispatches','logical_ops','ops')):
                 if revision != 'Current':
                     matches=[c for c in runs['Current'][0]['cases'] if c['name']==case['name']]
                     if len(matches)!=1:raise ValueError('Missing current measured case')
@@ -104,6 +108,11 @@ def validate_evidence(data):
                     same(case[key],right[key],(revision,case['name'],key))
             if revision!='Current':
                 expected.update((revision,case['name'],metric) for metric in metrics)
+    if v093:
+        required={'examples/mandel_text.bas','examples/picocalc_mand.bas','examples/stage3/tiny-function.bas'}
+        required.update(f'examples/stage3/{g}-{m}.bas' for g in ('arithmetic','numeric','fractal') for m in ('classic','colon','rows','function'))
+        for revision in baselines+('Current',):
+            same({c['name'] for c in runs[revision][0]['cases']},required,'v0.93 required benchmark coverage')
     actual={(r.get('baseline') if isinstance(r.get('baseline'),str) else 'Stage 1',r['case'],r['metric']) for r in data['comparisons']}
     same(actual,expected,'required comparison coverage')
     same(len(actual),len(data['comparisons']),'duplicate comparisons')
@@ -125,6 +134,20 @@ def load_summary(directory, mode):
         return off()
     if mode != 'report':
         raise ValueError('Unknown performance mode')
+    if (directory / 'stage5-evidence.json').is_file():
+        from stage5_evidence import validate
+        measured=json.loads((directory / 'stage5-evidence.json').read_text())
+        status=validate(measured)
+        return {'schema_version':2,'performance_mode':mode,'performance_status':status,
+                'measurement_status':'COMPLETE','correctness_status':'PASS',
+                'reports':{'v093_stage5ab_compile_vm_cache':status},'host_only':True}
+    if (directory / 'v093-evidence.json').is_file():
+        measured=json.loads((directory / 'v093-evidence.json').read_text())
+        same(measured.get('comparison_kind'),'v093-stage1','v0.93 evidence identity')
+        status=validate_evidence(measured)
+        return {'schema_version':2,'performance_mode':mode,'performance_status':status,
+                'measurement_status':'COMPLETE','correctness_status':'PASS',
+                'reports':{'v093_stage1_compile_vm_cache':status},'host_only':True}
     classic = json.loads((directory / 'stage2-evidence.json').read_text())
     full = json.loads((directory / 'stage3-evidence.json').read_text())
     statuses = {'classic': validate_evidence(classic), 'full_compile_vm_cache': validate_evidence(full)}
@@ -152,3 +175,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

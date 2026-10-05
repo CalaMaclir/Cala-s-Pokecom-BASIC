@@ -1,6 +1,8 @@
-# Cala's Pokecom BASIC Version 0.92
+# Cala's Pokecom BASIC Version 0.94
 
 **for ClockworkPi PicoCalc + Raspberry Pi Pico 2 W**
+
+v0.94は画像I/O、Filesの音声操作、Runtime ErrorとDiagnostics、Structured自動indent、未保存Program保護、日時・文字列関数をまとめた正式版です。Stage 1～11の最終実機受入は2026-10-04に完了しました。受入対象と公開buildの対応はRelease checklistへ記録します。
 
 Cala's Pokecom BASIC（CPB）は、PicoCalcだけでプログラムの作成・実行・保存、グラフィック、音楽、通信を行えるスタンドアロンBASIC環境です。現時点の対象は **Raspberry Pi Pico 2 W専用**です。
 
@@ -10,7 +12,7 @@ Copyright (C) 2026 Cala Maclir
 
 ## 導入して最初のプログラムを動かす
 
-1. [公開Releases](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases)からv0.92の完全ZIPを取得・展開します。
+1. [公開Releases](https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases)から対象版の完全ZIPを取得し、ZIP全体を展開します。RC確認中はpublic releaseをまだ公開しません。
 2. build/CPokecombasic.uf2をBOOTSELで書き込みます。Windows updaterはZIP内の配置を保ち、picotool.exeをPATHへ置いて実行します。
 3. BASIC>で次を入力します。
 
@@ -29,11 +31,21 @@ FUNCTION SQUARE(X)
 END FUNCTION
 ```
 
-F1で保存、Escで戻ってRUNすると144を表示します。Editorの00001の番号は表示専用でBASには保存しません。Tabは4列ごとのspace挿入です。
+F1で保存、Escで戻ってRUNすると144を表示します。Editorの00001の番号は表示専用でBASには保存しません。Tabは4列ごとのspace挿入、Alt+UはOutdent、Alt+Mは対応block、Alt+RはEditorからのRUNです。
 
 ## 主な機能
 
+- LOADIMAGE／SAVEIMAGE、SAVE IMAGE互換、24-bit BMP
+- Files音声プレビューの停止キー所有権、Runtime Error→Editor、INFO／LASTERRORとUSB Serial report
+- Structured自動indent、Save／Discard／Cancel共通保護、DATE$()／TIME$()、TRIM$系／REPLACE$／SPACE$
+
 - 行番号なしStructured BASIC、block IF、数値／文字列FUNCTION、localと明示GLOBAL
+- 行番号付きClassic BASICを継続。GOTO／GOSUB／ON GOTO/GOSUBを従来どおり使用可能
+- StructuredのSELECT CASE、EXIT FOR／EXIT DO、Classic／Structured共通のDATA／READ／RESTORE
+- `LOG`（底10）、`LN`（自然対数）、`ASIN`、`ACOS`、`ATAN2(y,x)`、整数除算`\`、`<<`、`>>`、`XOR`
+- Full-Screen Editor 3のAlt+E／Alt+R／Alt+C、Tab／Outdent、Alt+M matching block
+- 本体keyboard I2C診断・受動回復、USB Storage／STANDBY／Program Storageの所有権保護
+- 最大5件のWi-Fi profile、Enable／Disable／Delete、5秒scan、strongest Enabled APとfallback、ESC／BREAK cancellation
 - フォルダー管理、Filesの6文字属性欄と行全体配色、STANDBYのLCD消灯／復帰
 - BASICの直接実行、行番号付きプログラム、配列、文字列、`GOSUB`、`ON GOTO/GOSUB`
 - 320×320 LCDと仮想座標によるグラフィック、`PAINT`、PCG
@@ -55,11 +67,11 @@ F1で保存、Escで戻ってRUNすると144を表示します。Editorの00001�
 
 [日本語マニュアル一覧](docs/manual-ja.md)から原稿・PDF3冊を開けます。
 
-- [導入マニュアル](docs/install-manual-ja.md) / [v0.92 PDF](docs/Cala-Pokecom-BASIC-v0.92-Install-Manual-ja.pdf)
-- [システムマニュアル](docs/system-manual-ja.md) / [v0.92 PDF](docs/Cala-Pokecom-BASIC-v0.92-System-Manual-ja.pdf)
-- [プログラミング・リファレンス](docs/programming-reference-ja.md) / [v0.92 PDF](docs/Cala-Pokecom-BASIC-v0.92-Programming-Reference-ja.pdf)
-- [v0.92 リリースノート](docs/release/v0.92-release-notes.md)
-- [v0.92 制限事項](docs/release/v0.92-known-limitations.md)
+- [導入マニュアル](docs/install-manual-ja.md) / [v0.94 PDF](docs/Cala-Pokecom-BASIC-v0.94-Install-Manual-ja.pdf)
+- [システムマニュアル](docs/system-manual-ja.md) / [v0.94 PDF](docs/Cala-Pokecom-BASIC-v0.94-System-Manual-ja.pdf)
+- [プログラミング・リファレンス](docs/programming-reference-ja.md) / [v0.94 PDF](docs/Cala-Pokecom-BASIC-v0.94-Programming-Reference-ja.pdf)
+- [v0.94 リリースノート](docs/release/v0.94-release-notes.md)
+- [v0.94 制限事項](docs/release/v0.94-known-limitations.md)
 
 ## 動作環境
 
@@ -72,7 +84,7 @@ Pico、Pico W、Pico 2（非W）は現在の配布対象ではありません。
 
 ## インストール
 
-GitHub Actions artifact **`CPokecombasic-v0.92-build<run>-pico2w`** を取得し、内部の **`build/CPokecombasic.uf2`** を使用します。
+GitHub Actions artifact **`CPokecombasic-v0.94-build<run>-pico2w`** を取得し、内部の **`build/CPokecombasic.uf2`** を使用します。
 
 初回はPico 2 W側Micro-USBと物理BOOTSEL操作でUF2を書き込みます。対応版導入後は次も利用できます。
 
@@ -128,8 +140,9 @@ System
     Power / CPU
     Board LED
     Firmware
-Diagnostics
     System Information
+Diagnostics
+    Last Error / System
     PSRAM Diagnostics
 Exit
 ```
@@ -182,6 +195,11 @@ cmake --build build
 
 外向け成果物は`build/CPokecombasic.uf2`と`build/CPokecombasic.elf`です。内部CMake targetの`retrominibasic_picocalc`は互換性のため残しています。
 
+
+## 開発規約
+
+公開sourceのbuildと検証は[公開用開発案内](docs/development/public-source-build.md)を参照してください。
+
 ## Version history
 
 - v0.8：初公開。USB CDC + MSC、Program Storage、XMODEM／YMODEM、Wi-Fi File Server
@@ -203,6 +221,7 @@ cmake --build build
 - v0.91 Stage 3：DirectState PSRAM、Compiled Program cache、INTERNAL 1024×2047、LIST中断、LOAD／RUN進捗表示
 
 - v0.92：STANDBY LCD制御、Editor分割／連結、Directory管理、Structured BASIC／FUNCTION、Files UI、compiler／VM／cache改善
+- v0.93：Full-Screen Editor 3 shortcut、構造化制御、DATA、数学／int32 operator、hardware安定化、5件Wi-Fi profileとcancel可能なnetwork操作
 
 ## 系譜と名称
 
@@ -211,3 +230,14 @@ CPBはCala MaclirのRetroMiniBASICを技術的基盤としてPicoCalc向けに�
 ## License
 
 本repositoryのlicense fileを参照してください。
+
+### v0.94 Runtime / Editor / Diagnostics
+
+Runtime Error／Compile ErrorのLast Error保持、未変更ソースへのEDIT行移動、Structuredの4-space自動indent、Diagnostics／USB Serial reportを追加しています。Stage 1+2とStage 3の画像I/Oを保持します。[確認サンプル](examples/v094/README.md)と[確認サンプル](examples/v094/README.md)を参照してください。
+
+
+### v0.94 Program Safety / Daily Functions
+
+未保存Programの共通確認（NEW / LOAD / quick / Files / New Program）、INFO / LASTERROR、DATE$() / TIME$()と文字列関数を追加しました。keyboard-i2c-recoveryの独立CIは手動実行のみとし、通常firmwareの回復処理は保持します。
+
+[確認サンプル](examples/v094/README.md)。[最終検証・Release checklist](docs/release/v0.94-release-checklist.md)を参照してください。

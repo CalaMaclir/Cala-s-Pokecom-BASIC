@@ -1,0 +1,30 @@
+{
+  "version": "0.92",
+  "generator": "tools/generate_manual_pdfs.py",
+  "generator_sha256": "1a91f4210f3ec1e2256d01051328c4a05086647bee974f6ec0e0eb8f873f3cda",
+  "reportlab": "4.4.9",
+  "font": "CpbIPAexGothic",
+  "font_sha256": "6726fb3c804e3fbc3ff5f45eddfd2fb1a858c2b1e03d3f1d8619bbca8d0a0ccd",
+  "font_package": "japanize-matplotlib==1.1.3",
+  "canvas_invariant": true,
+  "manuals": [
+    {
+      "source": "docs/archive/v0.92/install-manual-ja.md",
+      "output": "docs/Cala-Pokecom-BASIC-v0.92-Install-Manual-ja.pdf",
+      "source_sha256": "07b0e7c44c6469e0d67f7367cd5880bfb41c9921f4dc62cc4b6cd134e3eae660",
+      "output_sha256": "64b033298f28b637b2012b5f9d72db77f9aeeba41953dda266d6b25bd00b34ce"
+    },
+    {
+      "source": "docs/archive/v0.92/system-manual-ja.md",
+      "output": "docs/Cala-Pokecom-BASIC-v0.92-System-Manual-ja.pdf",
+      "source_sha256": "35a7322b67fe9afc201d2b05d3e46884b7fca214d999cdc52738748e568d91ce",
+      "output_sha256": "e63b2ee41f7c0540049105066eafca60244205fa8f43d8c3d740b7d9a730c56f"
+    },
+    {
+      "source": "docs/archive/v0.92/programming-reference-ja.md",
+      "output": "docs/Cala-Pokecom-BASIC-v0.92-Programming-Reference-ja.pdf",
+      "source_sha256": "a8d00cff8f82c2e392101a22f07a7e62e1ffe35f288f1f6bfc3180c647529a0f",
+      "output_sha256": "b5e93747bbecb7d67d6a5dbb0dc723743d566ac57bfb551507efa7b02ce8d516"
+    }
+  ]
+}

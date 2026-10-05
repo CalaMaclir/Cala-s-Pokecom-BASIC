@@ -1,5 +1,6 @@
 #include "local_numeric_fusion.hpp"
 #include "basic_compiler.hpp"
+#include "basic_lexical.hpp"
 
 #include <cctype>
 #include <initializer_list>
@@ -36,6 +37,13 @@ int function_id(const char* name) {
     if (std::strcmp(name, "TAB") == 0) return FnId::TAB;
     if (std::strcmp(name, "INSTR") == 0) return FnId::INSTR;
     if (std::strcmp(name, "STRING$") == 0) return FnId::STRINGS;
+    if (std::strcmp(name, "TRIM$") == 0) return FnId::TRIMS;
+    if (std::strcmp(name, "LTRIM$") == 0) return FnId::LTRIMS;
+    if (std::strcmp(name, "RTRIM$") == 0) return FnId::RTRIMS;
+    if (std::strcmp(name, "REPLACE$") == 0) return FnId::REPLACES;
+    if (std::strcmp(name, "SPACE$") == 0) return FnId::SPACES;
+    if (std::strcmp(name, "DATE$") == 0) return FnId::DATES;
+    if (std::strcmp(name, "TIME$") == 0) return FnId::TIMES;
 
     if (std::strcmp(name, "SIN") == 0) return FnId::SIN;
     if (std::strcmp(name, "COS") == 0) return FnId::COS;
@@ -43,6 +51,7 @@ int function_id(const char* name) {
     if (std::strcmp(name, "SQR") == 0) return FnId::SQR;
     if (std::strcmp(name, "ATN") == 0) return FnId::ATN;
     if (std::strcmp(name, "LOG") == 0) return FnId::LOG;
+
     if (std::strcmp(name, "EXP") == 0) return FnId::EXP;
     if (std::strcmp(name, "PI") == 0) return FnId::PI;
     if (std::strcmp(name, "RAD") == 0) return FnId::RAD;
@@ -58,6 +67,13 @@ int function_id(const char* name) {
     if (std::strcmp(name, "PLAYING") == 0) return FnId::PLAYING;
 
     if (std::strcmp(name, "POINT") == 0) return FnId::GPOINT;
+    // New names avoid extra strcmp calls for the usual one-letter variables.
+    if (name[0] == 'L' && name[1] == 'N' && name[2] == '\0') return FnId::LN;
+    if (name[0] == 'A' && name[1] != '\0') {
+        if (name[1] == 'S' && std::strcmp(name, "ASIN") == 0) return FnId::ASIN;
+        if (name[1] == 'C' && std::strcmp(name, "ACOS") == 0) return FnId::ACOS;
+        if (name[1] == 'T' && std::strcmp(name, "ATAN2") == 0) return FnId::ATAN2;
+    }
     return -1;
 }
 
@@ -81,7 +97,9 @@ bool function_returns_string(int id) {
            id == FnId::MIDS ||
            id == FnId::SPC ||
            id == FnId::TAB ||
-           id == FnId::STRINGS;
+           id == FnId::STRINGS || id == FnId::TRIMS || id == FnId::LTRIMS ||
+           id == FnId::RTRIMS || id == FnId::REPLACES || id == FnId::SPACES ||
+           id == FnId::DATES || id == FnId::TIMES;
 }
 
 bool zero_arg_function(int id) {
@@ -90,13 +108,20 @@ bool zero_arg_function(int id) {
 }
 
 struct CompileControl {
+    struct Depths {
+        std::uint8_t for_depth=0, while_depth=0, do_depth=0, if_depth=0;
+        std::uint8_t select_depth=0;
+    };
     struct ForEntry {
         int slot = -1;
         std::size_t skip_jump = 0;
+        int exits = -1;
+        Depths opening{};
     };
     struct WhileEntry {
         std::size_t start_pc = 0;
         std::size_t jz_pc = 0;
+        Depths opening{};
     };
 
     ForEntry for_stack[16] = {};
@@ -105,15 +130,41 @@ struct CompileControl {
     WhileEntry while_stack[16] = {};
     std::size_t while_depth = 0;
 
-    struct DoEntry { std::size_t start=0; int exit=-1; };
+    struct DoEntry {
+        std::size_t start=0;
+        int exit=-1, exits=-1;
+        Depths opening{};
+    };
     struct IfEntry {
         int pending=-1,end=-1; bool seen_else=false;
-        std::size_t for_depth=0,while_depth=0,do_depth=0;
+        Depths opening{};
     };
     IfEntry if_stack[16]={};
     std::size_t if_depth=0;
     DoEntry do_stack[16] = {};
     std::size_t do_depth = 0;
+    struct SelectEntry {
+        ExprType type=ExprType::Invalid;
+        int pending=-1,end=-1;
+        bool seen_case=false,seen_else=false;
+        Depths opening{};
+    };
+    SelectEntry select_stack[16]={};
+    std::size_t select_depth=0;
+    Depths depths() const {
+        return {static_cast<std::uint8_t>(for_depth),static_cast<std::uint8_t>(while_depth),
+                static_cast<std::uint8_t>(do_depth),static_cast<std::uint8_t>(if_depth),
+                static_cast<std::uint8_t>(select_depth)};
+    }
+    bool at_boundary(Depths opening, char kind) const {
+        if(kind=='F')++opening.for_depth;
+        if(kind=='W')++opening.while_depth;
+        if(kind=='D')++opening.do_depth;
+        if(kind=='I')++opening.if_depth;
+        if(kind=='S')++opening.select_depth;
+        return for_depth==opening.for_depth&&while_depth==opening.while_depth&&
+               do_depth==opening.do_depth&&if_depth==opening.if_depth&&select_depth==opening.select_depth;
+    }
 };
 
 bool numeric_slot(const CompiledProgram& program, int slot) {
@@ -122,56 +173,13 @@ bool numeric_slot(const CompiledProgram& program, int slot) {
            !program.symbols[slot].is_string;
 }
 
-void optimize_program(CompiledProgram& program) {
-    std::uint8_t target[kMaxOps] = {};
-
-    // bit 1: Classic independently addressable line; bit 2: real flow entry.
-    // Structured source_rows are diagnostic locations, not executable entries.
-    auto mark=[&](int pc,unsigned bits=2u) {
-        if(pc>=0&&static_cast<std::size_t>(pc)<program.code_count)target[pc]|=bits;
-    };
-    for(std::size_t i=0;i<program.line_count;++i)mark(program.line_at(i).pc,1u);
-    for(std::size_t i=0;i<program.function_count;++i) {
-        mark(program.functions[i].entry_pc);mark(program.functions[i].end_pc);
-    }
-    for(std::size_t i=0;i<program.code_count;++i) {
-        const auto& op=program.code[i];
-        switch(op.code) {
-        case OpCode::JMP:case OpCode::JZ:case OpCode::GOSUB:
-        case OpCode::CEQ_NUM_JZ:case OpCode::CNE_NUM_JZ:case OpCode::CLT_NUM_JZ:
-        case OpCode::CLE_NUM_JZ:case OpCode::CGT_NUM_JZ:case OpCode::CGE_NUM_JZ:
-        case OpCode::NOT_NUM_JZ:case OpCode::AND_NUM_JZ:case OpCode::OR_NUM_JZ:
-        case OpCode::SQ2_GT_CONST_OR_JZ:case OpCode::SUMSQ_GT_CONST_JZ:
-            mark(op.a);mark(static_cast<int>(i+1));break;
-        case OpCode::COMPLEX_ITER_OR_JZ:case OpCode::COMPLEX_ITER_SUMSQ_JZ:
-            mark(op.b&0xfff);break;
-        case OpCode::FOR_CHECK:case OpCode::FOR_LOCAL_CHECK:
-            mark(op.b);mark(static_cast<int>(i));mark(static_cast<int>(i+1));break;
-        case OpCode::FOR_INIT:case OpCode::FOR_LOCAL_INIT:
-        case OpCode::FOR_INCR:case OpCode::FOR_LOCAL_INCR:
-        case OpCode::CALL_USER:case OpCode::RETURN_USER:
-        case OpCode::FUNCTION_FALLTHROUGH:case OpCode::RETSUB:case OpCode::HALT:
-            mark(static_cast<int>(i));mark(static_cast<int>(i+1));break;
-        case OpCode::ON_GOTO:case OpCode::ON_GOSUB:
-            mark(static_cast<int>(i));mark(static_cast<int>(i+1+op.a));break;
-        default:break;
-        }
-    }
-
-    auto tail_is_straight = [&](std::size_t start, std::size_t length) {
-        if (start + length > program.code_count) return false;
-        for (std::size_t i = start + 1; i < start + length; ++i) {
-            if (target[i]) return false;
-        }
-        return true;
-    };
-
-    auto flow_is_straight=[&](std::size_t start,std::size_t length) {
+// Keep FUNCTION-only pattern growth out of the top-level optimizer code.
+[[gnu::noinline]] void optimize_function_locals(CompiledProgram& program,const std::uint8_t* target) {
+    auto tail_is_straight=[&](std::size_t start,std::size_t length) {
         if(start+length>program.code_count)return false;
-        for(std::size_t i=start+1;i<start+length;++i)if(target[i]&2u)return false;
+        for(std::size_t i=start+1;i<start+length;++i)if(target[i])return false;
         return true;
     };
-
     // Function numeric expressions use separate 7-bit local operands.
     // No DIV/domain functions/string operations are folded here.
     for(std::size_t f=0;f<program.function_count;++f) {
@@ -196,6 +204,24 @@ void optimize_program(CompiledProgram& program) {
                 program.code[i]=fused;i+=length-1;return true;
             };
             auto a=[&](unsigned j){return program.code[i+j].a;};
+            // Same gray pipeline as the global fusion, with separate 7-bit locals.
+            // Check real control entries, not diagnostic physical source rows.
+            if(i+12<=static_cast<std::size_t>(fn.end_pc)&&tail_is_straight(i,12)&&
+               code(0,OpCode::LOAD_LOCAL_NUM)&&code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::MUL_NUM)&&
+               ((code(3,OpCode::CALLFN)&&a(3)==FnId::INT&&program.code[i+3].b==1)||
+                (code(3,OpCode::FN1_NUM)&&a(3)==FnId::INT))&&
+               code(4,OpCode::STORE_LOCAL_NUM)&&code(5,OpCode::LOAD_LOCAL_NUM)&&
+               code(6,OpCode::LOAD_LOCAL_NUM)&&code(7,OpCode::LOAD_LOCAL_NUM)&&
+               a(5)==a(4)&&a(6)==a(4)&&a(7)==a(4)&&
+               code(8,OpCode::CALLFN)&&a(8)==FnId::GCOLOR&&program.code[i+8].b==3&&
+               code(9,OpCode::LOAD_LOCAL_NUM)&&code(10,OpCode::LOAD_LOCAL_NUM)&&
+               code(11,OpCode::CALLFN)&&a(11)==FnId::GPSET&&program.code[i+11].b==2) {
+                Op fused;fused.code=OpCode::LOCAL_GRAY_PSET_MUL_INT;fused.s=12;
+                fused.a=a(4)|(a(0)<<7)|(a(1)<<14)|(a(9)<<21);fused.b=a(10);
+                if(valid_local_gray(fused,fn.numeric_local_count)) {
+                    program.code[i]=fused;i+=11;continue;
+                }
+            }
             if(code(0,OpCode::LOAD_LOCAL_NUM)) {
                 if(code(1,OpCode::LOAD_LOCAL_NUM)&&code(2,OpCode::MUL_NUM)&&
                    code(3,OpCode::LOAD_LOCAL_NUM)&&code(4,OpCode::LOAD_LOCAL_NUM)&&
@@ -242,6 +268,62 @@ void optimize_program(CompiledProgram& program) {
             }
         }
     }
+
+}
+
+void optimize_program(CompiledProgram& program) {
+    std::uint8_t target[kMaxOps] = {};
+
+    // bit 1: Classic independently addressable line; bit 2: real flow entry.
+    // Structured source_rows are diagnostic locations, not executable entries.
+    auto mark=[&](int pc,unsigned bits=2u) {
+        if(pc>=0&&static_cast<std::size_t>(pc)<program.code_count)target[pc]|=bits;
+    };
+    for(std::size_t i=0;i<program.line_count;++i)mark(program.line_at(i).pc,1u);
+    for(std::size_t i=0;i<program.function_count;++i) {
+        mark(program.functions[i].entry_pc);mark(program.functions[i].end_pc);
+    }
+    for(std::size_t i=0;i<program.code_count;++i) {
+        const auto& op=program.code[i];
+        switch(op.code) {
+        case OpCode::EXIT_LOOP:
+            mark(static_cast<int>(i));mark(op.a);mark(static_cast<int>(i+1));break;
+        case OpCode::JMP:case OpCode::JZ:case OpCode::GOSUB:
+        case OpCode::CEQ_NUM_JZ:case OpCode::CNE_NUM_JZ:case OpCode::CLT_NUM_JZ:
+        case OpCode::CLE_NUM_JZ:case OpCode::CGT_NUM_JZ:case OpCode::CGE_NUM_JZ:
+        case OpCode::NOT_NUM_JZ:case OpCode::AND_NUM_JZ:case OpCode::OR_NUM_JZ:
+        case OpCode::SQ2_GT_CONST_OR_JZ:case OpCode::SUMSQ_GT_CONST_JZ:
+            mark(op.a);mark(static_cast<int>(i+1));break;
+        case OpCode::COMPLEX_ITER_OR_JZ:case OpCode::COMPLEX_ITER_SUMSQ_JZ:
+            mark(op.b&0xfff);break;
+        case OpCode::FOR_CHECK:case OpCode::FOR_LOCAL_CHECK:
+            mark(op.b);mark(static_cast<int>(i));mark(static_cast<int>(i+1));break;
+        case OpCode::FOR_INIT:case OpCode::FOR_LOCAL_INIT:
+        case OpCode::FOR_INCR:case OpCode::FOR_LOCAL_INCR:
+        case OpCode::CALL_USER:case OpCode::RETURN_USER:
+        case OpCode::FUNCTION_FALLTHROUGH:case OpCode::RETSUB:case OpCode::HALT:
+            mark(static_cast<int>(i));mark(static_cast<int>(i+1));break;
+        case OpCode::ON_GOTO:case OpCode::ON_GOSUB:
+            mark(static_cast<int>(i));mark(static_cast<int>(i+1+op.a));break;
+        default:break;
+        }
+    }
+
+    auto tail_is_straight = [&](std::size_t start, std::size_t length) {
+        if (start + length > program.code_count) return false;
+        for (std::size_t i = start + 1; i < start + length; ++i) {
+            if (target[i]) return false;
+        }
+        return true;
+    };
+
+    auto flow_is_straight=[&](std::size_t start,std::size_t length) {
+        if(start+length>program.code_count)return false;
+        for(std::size_t i=start+1;i<start+length;++i)if(target[i]&2u)return false;
+        return true;
+    };
+
+    if(program.function_count)optimize_function_locals(program,target);
 
     for (std::size_t i = 0; i < program.code_count; ++i) {
         Op& first = program.code[i];
@@ -1037,6 +1119,9 @@ void optimize_program(CompiledProgram& program) {
             case FnId::SQR:
             case FnId::ATN:
             case FnId::LOG:
+            case FnId::LN:
+            case FnId::ASIN:
+            case FnId::ACOS:
             case FnId::EXP:
             case FnId::RAD:
             case FnId::DEG:
@@ -1045,6 +1130,7 @@ void optimize_program(CompiledProgram& program) {
                 if (op.b == 1) op.code = OpCode::FN1_NUM;
                 break;
 
+            case FnId::ATAN2:
             case FnId::MIN:
             case FnId::MAX:
                 if (op.b == 2) op.code = OpCode::FN2_NUM;
@@ -1300,6 +1386,7 @@ struct Parser {
     CompileControl* control = nullptr;
     std::int32_t line = 0;
     int scope=-1;
+    bool stored_program=false;
     char error[96] = {};
 
     int resolve_symbol(const char* name) {
@@ -1351,25 +1438,7 @@ struct Parser {
     }
 
     bool match_word(const char* word) {
-        skip_spaces();
-
-        const char* q = p;
-        const char* w = word;
-
-        while (*w && *q && upper(*q) == *w) {
-            ++q;
-            ++w;
-        }
-
-        if (*w != '\0') return false;
-
-        if (std::isalnum(static_cast<unsigned char>(*q)) ||
-            *q == '_' || *q == '$') {
-            return false;
-        }
-
-        p = q;
-        return true;
+        return basic_lexical::match_word(p, word);
     }
 
     bool peek_word(const char* word) {
@@ -1478,16 +1547,33 @@ struct Parser {
     }
 
     ExprType parse_or() {
-        ExprType type = parse_and();
+        ExprType type = parse_xor();
         if (type == ExprType::Invalid) return type;
 
         while (match_word("OR")) {
-            ExprType rhs = parse_and();
+            ExprType rhs = parse_xor();
             if (type != ExprType::Number || rhs != ExprType::Number) {
                 set_error("TYPE MISMATCH");
                 return ExprType::Invalid;
             }
             if (!emit(OpCode::OR_NUM)) return ExprType::Invalid;
+            type = ExprType::Number;
+        }
+
+        return type;
+    }
+
+    ExprType parse_xor() {
+        ExprType type = parse_and();
+        if (type == ExprType::Invalid) return type;
+
+        while (match_word("XOR")) {
+            ExprType rhs = parse_and();
+            if (type != ExprType::Number || rhs != ExprType::Number) {
+                set_error("TYPE MISMATCH");
+                return ExprType::Invalid;
+            }
+            if (!emit(OpCode::BXOR_NUM)) return ExprType::Invalid;
             type = ExprType::Number;
         }
 
@@ -1512,7 +1598,7 @@ struct Parser {
     }
 
     ExprType parse_relation() {
-        ExprType left = parse_add_sub();
+        ExprType left = parse_shift();
         if (left == ExprType::Invalid) return left;
 
         skip_spaces();
@@ -1538,7 +1624,7 @@ struct Parser {
 
         if (!found) return left;
 
-        ExprType right = parse_add_sub();
+        ExprType right = parse_shift();
         if (right == ExprType::Invalid) return right;
 
         if (left == ExprType::Number && right == ExprType::Number) {
@@ -1547,6 +1633,25 @@ struct Parser {
 
         if (!emit(op)) return ExprType::Invalid;
         return ExprType::Number;
+    }
+
+    ExprType parse_shift() {
+        ExprType type = parse_add_sub();
+        if (type == ExprType::Invalid) return type;
+        while (true) {
+            skip_spaces();
+            if (!((p[0] == '<' && p[1] == '<') ||
+                  (p[0] == '>' && p[1] == '>'))) break;
+            const OpCode op = p[0] == '<' ? OpCode::SHL_NUM : OpCode::SHR_NUM;
+            p += 2;
+            const ExprType rhs = parse_add_sub();
+            if (type != ExprType::Number || rhs != ExprType::Number) {
+                set_error("TYPE MISMATCH");
+                return ExprType::Invalid;
+            }
+            if (!emit(op)) return ExprType::Invalid;
+        }
+        return type;
     }
 
     ExprType parse_add_sub() {
@@ -1596,6 +1701,8 @@ struct Parser {
                 op = OpCode::MUL; ++p;
             } else if (*p == '/') {
                 op = OpCode::DIV; ++p;
+            } else if (*p == '\\') {
+                op = OpCode::IDIV_NUM; ++p;
             } else if (match_word("MOD")) {
                 op = OpCode::MOD;
             } else {
@@ -1923,6 +2030,82 @@ struct Parser {
         return true;
     }
 
+    ExprType parse_literal(DataItem& item) {
+        skip_spaces();
+        if(*p=='"') {
+            const char* start=++p;
+            while(*p&&*p!='"')++p;
+            if(*p!='"'){set_error("UNTERMINATED STRING");return ExprType::Invalid;}
+            const auto offset=out->intern_string(start,static_cast<std::size_t>(p-start));
+            ++p;
+            if(offset==0xffffu){set_error("STRING POOL FULL");return ExprType::Invalid;}
+            item.reference=DataItem::kStringTag|offset;return ExprType::String;
+        }
+        bool negative=false;
+        if(*p=='+'||*p=='-'){negative=*p=='-';++p;skip_spaces();}
+        BasicNumber value=0;
+        char* end=nullptr;
+        if(p[0]=='&'&&(p[1]=='H'||p[1]=='h')) {
+            const long number=std::strtol(p+2,&end,16);
+            if(end==p+2||number<0||number>0x7fffffffL){set_error("BAD NUMBER");return ExprType::Invalid;}
+            value=static_cast<BasicNumber>(number);
+        } else if(std::isdigit(static_cast<unsigned char>(*p))||
+                  (*p=='.'&&std::isdigit(static_cast<unsigned char>(p[1])))) {
+            value=std::strtof(p,&end);
+        } else {set_error("EXPECTED LITERAL");return ExprType::Invalid;}
+        p=end;
+        if(negative)value=-value;
+        const auto index=out->intern_number(value);
+        if(index<0){set_error("NUMBER POOL FULL");return ExprType::Invalid;}
+        item.reference=static_cast<std::uint16_t>(index);return ExprType::Number;
+    }
+    bool data_statement_allowed() {
+        if(stored_program)return true;
+        set_error("DATA/READ/RESTORE REQUIRE STORED PROGRAM");return false;
+    }
+    bool statement_end() {
+        skip_spaces();return !*p||*p==':'||peek_word("ELSE");
+    }
+    bool compile_data() {
+        if(!data_statement_allowed())return false;
+        if(scope>=0){set_error("DATA NOT ALLOWED IN FUNCTION");return false;}
+        do {
+            DataItem item;
+            if(parse_literal(item)==ExprType::Invalid)return false;
+            if(!out->append_data(item)) {
+                set_error(out->data_count==kMaxDataItems?"TOO MANY DATA ITEMS":"OUT OF MEMORY");return false;
+            }
+        } while(match_char(','));
+        if(!statement_end()){set_error("DATA REQUIRES LITERALS");return false;}
+        return true;
+    }
+    bool compile_read() {
+        if(!data_statement_allowed())return false;
+        do {
+            char name[kSymbolNameLength]={};
+            if(!parse_identifier(name,sizeof(name))){set_error("EXPECTED READ VARIABLE");return false;}
+            const int slot=resolve_symbol(name);
+            if(slot<0){set_error("TOO MANY VARIABLES");return false;}
+            int dims=0;
+            if(match_char('(')) {
+                if(scope>=0){set_error("ARRAYS NOT SUPPORTED IN FUNCTION");return false;}
+                do {
+                    if(++dims>2||parse_expression()!=ExprType::Number){set_error("BAD ARRAY INDEX");return false;}
+                } while(match_char(','));
+                if(!expect_char(')'))return false;
+            }
+            const bool string=symbol(slot).is_string;
+            if(!emit(string?OpCode::READ_DATA_STR:OpCode::READ_DATA_NUM))return false;
+            if(!emit(dims?OpCode::STORE_ARR:string?OpCode::STORE_STR:OpCode::STORE_NUM,slot,dims))return false;
+        } while(match_char(','));
+        return true;
+    }
+    bool compile_restore() {
+        if(!data_statement_allowed())return false;
+        if(!statement_end()){set_error("RESTORE TAKES NO ARGUMENT");return false;}
+        return emit(OpCode::RESTORE_DATA);
+    }
+
     bool compile_assignment() {
         char name[kSymbolNameLength] = {};
         if (!parse_identifier(name, sizeof(name))) {
@@ -2226,8 +2409,9 @@ struct Parser {
         skip_spaces();
         if(*p=='\0' && out->source_mode==ProgramSourceMode::Structured) {
             if(control->if_depth>=16){set_error("IF NESTING TOO DEEP");return false;}
+            const auto opening=control->depths();
             control->if_stack[control->if_depth++]={static_cast<int>(jz_pos),-1,false,
-                control->for_depth,control->while_depth,control->do_depth};
+                opening};
             return true;
         }
         if (!compile_inline_branch()) return false;
@@ -2346,10 +2530,8 @@ struct Parser {
         out->code[check_pc].b =
             static_cast<std::int32_t>(out->code_count);
 
-        control->for_stack[control->for_depth++] = {
-            slot,
-            skip_jump
-        };
+        const auto opening=control->depths();
+        control->for_stack[control->for_depth++] = {slot,skip_jump,-1,opening};
 
         return true;
     }
@@ -2373,6 +2555,10 @@ struct Parser {
         const auto entry =
             control->for_stack[control->for_depth - 1];
 
+        if(out->source_mode==ProgramSourceMode::Structured&&!control->at_boundary(entry.opening,'F')) {
+            set_error("CROSSED CONTROL BLOCK");return false;
+        }
+
         if (requested_slot >= 0 && requested_slot != entry.slot) {
             set_error("NEXT VARIABLE MISMATCH");
             return false;
@@ -2382,6 +2568,7 @@ struct Parser {
 
         out->code[entry.skip_jump].a =
             static_cast<std::int32_t>(out->code_count);
+        patch_exits(entry.exits);
 
         --control->for_depth;
         return true;
@@ -2400,10 +2587,8 @@ struct Parser {
         const std::size_t jz_pc = out->code_count;
         if (!emit(OpCode::JZ, -1)) return false;
 
-        control->while_stack[control->while_depth++] = {
-            start_pc,
-            jz_pc
-        };
+        const auto opening=control->depths();
+        control->while_stack[control->while_depth++] = {start_pc,jz_pc,opening};
 
         return true;
     }
@@ -2414,8 +2599,11 @@ struct Parser {
             return false;
         }
 
-        const auto entry =
-            control->while_stack[--control->while_depth];
+        const auto entry = control->while_stack[control->while_depth-1];
+        if(out->source_mode==ProgramSourceMode::Structured&&!control->at_boundary(entry.opening,'W')) {
+            set_error("CROSSED CONTROL BLOCK");return false;
+        }
+        --control->while_depth;
 
         if (!emit(
                 OpCode::JMP,
@@ -2432,7 +2620,7 @@ struct Parser {
 
     bool compile_do() {
         if(!control||control->do_depth>=16){set_error("DO NESTING TOO DEEP");return false;}
-        CompileControl::DoEntry entry{out->code_count,-1};
+        CompileControl::DoEntry entry{out->code_count,-1,-1,control->depths()};
         if(match_word("WHILE")) {
             if(parse_expression()!=ExprType::Number)return false;
             entry.exit=static_cast<int>(out->code_count);
@@ -2442,12 +2630,46 @@ struct Parser {
     }
     bool compile_loop() {
         if(!control||!control->do_depth){set_error("LOOP WITHOUT DO");return false;}
-        const auto entry=control->do_stack[--control->do_depth];
+        const auto entry=control->do_stack[control->do_depth-1];
+        if(out->source_mode==ProgramSourceMode::Structured&&!control->at_boundary(entry.opening,'D')) {
+            set_error("CROSSED CONTROL BLOCK");return false;
+        }
+        --control->do_depth;
         if(match_word("UNTIL")) {
             if(parse_expression()!=ExprType::Number ||
                !emit(OpCode::JZ,static_cast<int>(entry.start)))return false;
         } else if(!emit(OpCode::JMP,static_cast<int>(entry.start)))return false;
         if(entry.exit>=0)out->code[entry.exit].a=static_cast<int>(out->code_count);
+        patch_exits(entry.exits);
+        return true;
+    }
+    void patch_exits(int head) {
+        while(head>=0) {
+            auto& op=out->code[head];
+            const int next=op.a;
+            op.a=static_cast<int>(out->code_count);
+            head=next;
+        }
+    }
+    bool compile_exit() {
+        if(out->source_mode!=ProgramSourceMode::Structured) {
+            set_error("EXIT REQUIRES STRUCTURED MODE");return false;
+        }
+        int* head=nullptr;
+        int discard=0;
+        if(match_word("FOR")) {
+            if(!control->for_depth){set_error("EXIT FOR WITHOUT FOR");return false;}
+            head=&control->for_stack[control->for_depth-1].exits;
+            discard=1;
+        } else if(match_word("DO")) {
+            if(!control->do_depth){set_error("EXIT DO WITHOUT DO");return false;}
+            auto& entry=control->do_stack[control->do_depth-1];
+            head=&entry.exits;
+            discard=static_cast<int>(control->for_depth-entry.opening.for_depth);
+        } else {set_error("EXPECTED FOR OR DO");return false;}
+        const auto pc=static_cast<int>(out->code_count);
+        if(!emit(OpCode::EXIT_LOOP,*head,discard,0,static_cast<std::uint16_t>(control->for_depth)))return false;
+        *head=pc;
         return true;
     }
     bool block_if_boundary(bool elseif_branch,bool end) {
@@ -2455,8 +2677,7 @@ struct Parser {
             set_error(end?"END IF WITHOUT IF":"ELSE WITHOUT IF");return false;
         }
         auto& block=control->if_stack[control->if_depth-1];
-        if(block.for_depth!=control->for_depth||block.while_depth!=control->while_depth||
-           block.do_depth!=control->do_depth){set_error("CROSSED CONTROL BLOCK");return false;}
+        if(!control->at_boundary(block.opening,'I')){set_error("CROSSED CONTROL BLOCK");return false;}
         if(end) {
             if(block.pending>=0)out->code[block.pending].a=static_cast<int>(out->code_count);
             int jump=block.end;
@@ -2475,6 +2696,103 @@ struct Parser {
             block.pending=static_cast<int>(out->code_count);return emit(OpCode::JZ,-1);
         }
         block.seen_else=true;return true;
+    }
+
+    void patch_jumps(int head,int target) {
+        while(head>=0) {
+            auto& op=out->code[head];const int next=op.b;
+            op.a=target;op.b=0;head=next;
+        }
+    }
+    bool compile_select() {
+        if(!match_word("CASE")){set_error("EXPECTED CASE");return false;}
+        if(control->select_depth>=16){set_error("SELECT NESTING TOO DEEP");return false;}
+        const auto type=parse_expression();
+        if(type==ExprType::Invalid)return false;
+        const auto opening=control->depths();
+        control->select_stack[control->select_depth++]={type,-1,-1,false,false,opening};
+        return true;
+    }
+    bool push_literal(DataItem item,ExprType type) {
+        return type==ExprType::String?emit(OpCode::PUSH_STR,0,0,0,item.index()):
+            emit(OpCode::PUSH_NUM,0,0,out->number_pool[item.index()]);
+    }
+    bool compile_case() {
+        if(!control->select_depth){set_error("CASE WITHOUT SELECT");return false;}
+        auto& block=control->select_stack[control->select_depth-1];
+        if(!control->at_boundary(block.opening,'S')){set_error("CROSSED CONTROL BLOCK");return false;}
+        const bool otherwise=match_word("ELSE");
+        if(block.seen_else){set_error(otherwise?"DUPLICATE CASE ELSE":"CASE AFTER CASE ELSE");return false;}
+        if(block.seen_case) {
+            const int end=static_cast<int>(out->code_count);
+            if(!emit(OpCode::JMP,-1,block.end))return false;
+            block.end=end;
+            out->code[block.pending].a=static_cast<int>(out->code_count);
+            block.pending=-1;
+        }
+        block.seen_case=true;
+        if(otherwise) {
+            if(!statement_end()){set_error("BAD CASE SYNTAX");return false;}
+            block.seen_else=true;
+            return emit(OpCode::DROP);
+        }
+        int matches=-1, final_low_fail=-1, final_high_fail=-1;
+        do {
+            DataItem low,high;
+            const auto type=parse_literal(low);
+            if(type==ExprType::Invalid)return false;
+            if(type!=block.type){set_error("CASE TYPE MISMATCH");return false;}
+            const bool range=match_word("TO");
+            if(range) {
+                if(type!=ExprType::Number){set_error("STRING CASE RANGE NOT ALLOWED");return false;}
+                if(parse_literal(high)!=ExprType::Number){set_error("CASE TYPE MISMATCH");return false;}
+            }
+            if(!emit(OpCode::DUP)||!push_literal(low,type)||
+               !emit(range?OpCode::CGE_NUM:type==ExprType::Number?OpCode::CEQ_NUM:OpCode::CEQ))return false;
+            const int low_fail=static_cast<int>(out->code_count);
+            if(!emit(OpCode::JZ,-1))return false;
+            int high_fail=-1;
+            if(range) {
+                if(!emit(OpCode::DUP)||!push_literal(high,type)||!emit(OpCode::CLE_NUM))return false;
+                high_fail=static_cast<int>(out->code_count);
+                if(!emit(OpCode::JZ,-1))return false;
+            }
+            const int match=static_cast<int>(out->code_count);
+            if(!emit(OpCode::JMP,-1,matches))return false;
+            matches=match;
+            if(match_char(',')) {
+                out->code[low_fail].a=static_cast<int>(out->code_count);
+                if(high_fail>=0)out->code[high_fail].a=static_cast<int>(out->code_count);
+            } else {
+                final_low_fail=low_fail;final_high_fail=high_fail;
+                break;
+            }
+        } while(true);
+        if(!statement_end()){set_error("CASE REQUIRES LITERALS");return false;}
+        // Both range failures skip the match chain and retain the selector.
+        const int no_match=static_cast<int>(out->code_count);
+        if(!emit(OpCode::JMP,-1))return false;
+        out->code[final_low_fail].a=no_match;
+        if(final_high_fail>=0)out->code[final_high_fail].a=no_match;
+        block.pending=no_match;
+        patch_jumps(matches,static_cast<int>(out->code_count));
+        return emit(OpCode::DROP);
+    }
+    bool end_select() {
+        if(!control->select_depth){set_error("END SELECT WITHOUT SELECT");return false;}
+        auto& block=control->select_stack[control->select_depth-1];
+        if(!control->at_boundary(block.opening,'S')){set_error("CROSSED CONTROL BLOCK");return false;}
+        if(!block.seen_case){set_error("SELECT WITHOUT CASE");return false;}
+        if(!block.seen_else) {
+            const int end=static_cast<int>(out->code_count);
+            if(!emit(OpCode::JMP,-1,block.end))return false;
+            block.end=end;
+            out->code[block.pending].a=static_cast<int>(out->code_count);
+            if(!emit(OpCode::DROP))return false;
+        }
+        patch_jumps(block.end,static_cast<int>(out->code_count));
+        --control->select_depth;
+        return true;
     }
 
     bool compile_statement() {
@@ -2499,10 +2817,20 @@ struct Parser {
         if(scope>=0)out->functions[scope].body_started=true;
         if(upper(*p)=='F'&&peek_word("FUNCTION")) {set_error("FUNCTION REQUIRES STRUCTURED MODE");return false;}
         if(out->source_mode==ProgramSourceMode::Structured) {
+            if(control->select_depth&&!control->select_stack[control->select_depth-1].seen_case&&
+               !peek_word("CASE")) {
+                const char* boundary=p;
+                const bool close=match_word("END")&&match_word("SELECT");p=boundary;
+                if(!close){set_error("EXPECTED CASE");return false;}
+            }
+            if(initial=='S'&&match_word("SELECT"))return compile_select();
+            if(initial=='C'&&match_word("CASE"))return compile_case();
             if(match_word("ELSEIF"))return block_if_boundary(true,false);
             if(match_word("ELSE"))return block_if_boundary(false,false);
             const char* saved=p;
             if(match_word("END")&&match_word("IF"))return block_if_boundary(false,true);
+            p=saved;
+            if(match_word("END")&&match_word("SELECT"))return end_select();
             p=saved;
         }
         if (initial == 'P' && match_word("PRINT")) return compile_print();
@@ -2515,7 +2843,11 @@ struct Parser {
         if (initial == 'W' && match_word("WEND")) return compile_wend();
         if (initial == 'D' && match_word("DO")) return compile_do();
         if (initial == 'L' && match_word("LOOP")) return compile_loop();
+        if (initial == 'E' && out->source_mode==ProgramSourceMode::Structured&&match_word("EXIT")) return compile_exit();
         if (initial == 'D' && match_word("DIM")) return compile_dim();
+        if (initial == 'D' && match_word("DATA")) return compile_data();
+        if (initial == 'R' && match_word("READ")) return compile_read();
+        if (initial == 'R' && match_word("RESTORE")) return compile_restore();
         if (initial == 'O' && match_word("ON")) return compile_on_branch();
 
         if (initial == 'G' && match_word("GOTO")) {
@@ -2573,6 +2905,8 @@ struct Parser {
         if (initial == 'G' && match_word("GDEF")) return compile_gdef();
         if (initial == 'G' && match_word("GPALETTE")) return compile_gpalette();
         if (initial == 'R' && match_word("RANDOMIZE")) return compile_call_statement(FnId::RANDOMIZE);
+        if (initial == 'L' && match_word("LOADIMAGE")) return compile_call_statement(FnId::GLOAD);
+        // Both image-save spellings already normalize to the same GSAVE IL.
         if (initial == 'S' && match_word("SAVEIMAGE")) return compile_call_statement(FnId::GSAVE);
 
         {
@@ -2644,6 +2978,10 @@ CompileResult BasicCompiler::compile_source(
     const ProgramStore* source, const char* direct_line, CompiledProgram& output
 ) {
     output.reset();
+    struct OutputGuard {
+        CompiledProgram& program;bool complete=false;
+        ~OutputGuard(){if(!complete)program.reset();}
+    } guard{output};
 
     if (source && !source->ready()) return fail_result(0, source->error());
     const std::size_t count = source ? source->size() : 1;
@@ -2731,11 +3069,12 @@ CompileResult BasicCompiler::compile_source(
         parser.control = &control;
         parser.line = number;
         parser.scope=active_function;
+        parser.stored_program=source!=nullptr;
         if(structured) {
             for(std::size_t f=0;f<output.function_count;++f) {
                 auto& fn=output.functions[f];
                 if(fn.source_row!=number)continue;
-                if(active_function>=0||control.for_depth||control.while_depth||control.do_depth||control.if_depth)
+                if(active_function>=0||control.for_depth||control.while_depth||control.do_depth||control.if_depth||control.select_depth)
                     return failure(number,"FUNCTION MUST BE TOP LEVEL");
                 active_function=static_cast<int>(f);
                 Op skip;skip.code=OpCode::JMP;skip.a=-1;
@@ -2748,7 +3087,7 @@ CompileResult BasicCompiler::compile_source(
                 auto& fn=output.functions[active_function];
                 if(number==fn.source_row)continue;
                 if(number==fn.end_row) {
-                    if(control.for_depth||control.while_depth||control.do_depth||control.if_depth)
+                    if(control.for_depth||control.while_depth||control.do_depth||control.if_depth||control.select_depth)
                         return failure(number,"UNTERMINATED BLOCK IN FUNCTION");
                     if(!fn.has_return)return failure(number,"FUNCTION RETURN MISSING");
                     Op fallthrough;fallthrough.code=OpCode::FUNCTION_FALLTHROUGH;
@@ -2769,6 +3108,7 @@ CompileResult BasicCompiler::compile_source(
         }
     }
 
+    if(control.select_depth!=0)return failure(static_cast<std::int32_t>(count),"SELECT WITHOUT END SELECT");
     if(control.if_depth!=0)return failure(static_cast<std::int32_t>(count),"IF WITHOUT END IF");
     if (control.for_depth != 0) {
         return failure(structured?static_cast<int>(count):0, "FOR WITHOUT NEXT");
@@ -2810,9 +3150,13 @@ CompileResult BasicCompiler::compile_source(
     if(!optimizer_test_disabled)
 #endif
     optimize_program(output);
+    if(!output.compact_data())return failure(0,"OUT OF MEMORY");
+    if(output.function_count&&!validate_compiled_program(output))
+        return fail_result(0,"INVALID COMPILED PROGRAM");
 
     CompileResult result;
     result.ok = true;
+    guard.complete=true;
     return result;
 }
 

@@ -7,6 +7,7 @@ set(CMAKE_BUILD_TYPE "" CACHE STRING "Host flags are set per test" FORCE)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+add_compile_options(-ffp-contract=off)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 find_program(CPB_CCACHE ccache REQUIRED)
 set(CMAKE_CXX_COMPILER_LAUNCHER "${CPB_CCACHE}")
@@ -64,9 +65,21 @@ set(SAN -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer)
 set(WARN -Wall -Wextra)
 set(SECTIONS -ffunction-sections -fdata-sections)
 
+option(CPB_BENCHMARK_ONLY "Configure only benchmark targets in historical evidence checkouts" OFF)
+if(NOT CPB_BENCHMARK_ONLY)
+cpb_test(editor-workflow-model-test
+    SOURCES tests/editor_workflow_model_test.cpp src/core/editor_model.cpp
+    INCLUDES include FLAGS ${SAN} ${WARN} -Werror)
+cpb_test(editor-workflow-integration-test
+    SOURCES tests/editor_workflow_integration_test.cpp tests/runtime_stubs/editor_workflow_ui.cpp src/core/transfer_file.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/line_editor.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS} LINK -Wl,--gc-sections)
+
 
 cpb_test(editor-structure-test
     SOURCES tests/editor_structure_test.cpp src/core/editor_model.cpp
+    INCLUDES include FLAGS ${SAN} ${WARN} -Werror)
+cpb_test(editor-autoindent-test
+    SOURCES tests/editor_autoindent_test.cpp src/core/editor_model.cpp
     INCLUDES include FLAGS ${SAN} ${WARN} -Werror)
 cpb_test(file-path-test
     SOURCES tests/file_path_test.cpp src/core/file_management.cpp src/core/safe_file.cpp src/core/transfer_file.cpp
@@ -77,6 +90,10 @@ cpb_test(program-pair-test
     LINK -Wl,--wrap=fwrite,--wrap=rename)
 cpb_register_test(stage1-source-contract
     "${Python3_EXECUTABLE}" "${CPB_ROOT}/tests/stage1_source_contract_test.py")
+cpb_register_test(power-transition-test
+    "${Python3_EXECUTABLE}" "${CPB_ROOT}/tests/power_transition_test.py")
+cpb_register_test(audio-output-lifecycle-test
+    "${Python3_EXECUTABLE}" "${CPB_ROOT}/tests/audio_output_lifecycle_test.py")
 
 # All 31 native tests from build.yml at 93793f2, with original flags/stubs.
 cpb_test(status-layout-test
@@ -148,7 +165,7 @@ cpb_test(bluetooth-registry-storage-test
     SOURCES tests/bluetooth_registry_storage_test.cpp src/core/bluetooth_device_registry.cpp src/platform/picocalc/bluetooth_device_registry_storage.cpp
     INCLUDES tests/ble_stubs include FLAGS ${SAN} ${WARN} -Werror)
 cpb_test(runtime-test EXAMPLES
-    SOURCES tests/runtime_workspace_test.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/repl.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    SOURCES tests/runtime_workspace_test.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
     INCLUDES tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS} LINK -Wl,--gc-sections)
 cpb_test(program-storage-test EXAMPLES
     SOURCES tests/program_storage_test.cpp tests/program_psram_stubs.cpp src/core/program_store.cpp src/core/file_management.cpp src/core/safe_file.cpp src/core/transfer_file.cpp src/core/basic_compiler.cpp src/core/il.cpp
@@ -165,7 +182,7 @@ cpb_test(usb-msc-test NO_LEAKS
     FLAGS ${SAN} ${WARN}
     DEFINES __unused= PICO_ENABLE_USB_RESET_VIA_VENDOR_INTERFACE=1 PICO_USB_RESET_INCLUDE_DEFAULT_APP_DRIVER_CB=1 PICO_USB_RESET_SUPPORT_MS_OS_20_DESCRIPTOR=1 PICO_USB_RESET_MS_OS_20_DESCRIPTOR_ITF=3)
 cpb_test(storage-ownership-test NO_LEAKS
-    SOURCES tests/storage_ownership_test.cpp src/platform/picocalc/storage.cpp
+    SOURCES tests/storage_ownership_test.cpp src/platform/picocalc/storage.cpp src/core/image_io.cpp
     INCLUDES tests/storage_stubs include FLAGS ${SAN} ${WARN} -pthread ${SECTIONS} LINK -Wl,--gc-sections)
 
 cpb_test(structured-source-test
@@ -176,19 +193,91 @@ cpb_test(structured-source-test
 cpb_test(path-compaction-test SOURCES tests/path_compaction_test.cpp INCLUDES include FLAGS ${WARN} -Werror)
 
 cpb_test(files-ui-integration-test
-    SOURCES tests/files_ui_integration_test.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/repl.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    SOURCES tests/files_ui_integration_test.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
     INCLUDES tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS} LINK -Wl,--gc-sections)
+
+cpb_test(image-io-test
+    SOURCES tests/image_io_test.cpp src/platform/picocalc/storage.cpp src/core/image_io.cpp
+    INCLUDES tests/storage_stubs include FLAGS ${SAN} ${WARN} -pthread ${SECTIONS}
+    LINK -Wl,--gc-sections,--wrap=fopen)
+cpb_test(image-io-resources-test
+    SOURCES tests/image_io_test.cpp src/platform/picocalc/storage.cpp src/core/image_io.cpp
+    INCLUDES tests/storage_stubs include FLAGS -O2 ${WARN} -pthread ${SECTIONS}
+    LINK -Wl,--gc-sections,--wrap=fopen)
+cpb_test(image-statement-test
+    SOURCES tests/image_statement_test.cpp tests/runtime_stubs/editor_workflow_ui.cpp src/core/transfer_file.cpp tests/program_psram_stubs.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+cpb_test(error-diagnostics-test
+    SOURCES tests/error_diagnostics_test.cpp tests/runtime_stubs/editor_workflow_ui.cpp src/core/transfer_file.cpp tests/program_psram_stubs.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+
+cpb_test(system-information-test SOURCES tests/system_information_test.cpp INCLUDES include FLAGS ${SAN} ${WARN} -Werror)
+cpb_test(system-information-integration-test
+    SOURCES tests/system_information_integration_test.cpp tests/runtime_stubs/editor_workflow_ui.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS} LINK -Wl,--gc-sections)
+
+cpb_test(math-intops-test
+    SOURCES tests/math_intops_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+
+cpb_test(exit-loop-test
+    SOURCES tests/exit_loop_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+
+cpb_test(stability-language-test
+    SOURCES tests/stability_language_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+cpb_register_test(release-package-test "${Python3_EXECUTABLE}" "${CPB_ROOT}/tests/release_package_test.py")
+
+cpb_test(daily-functions-test
+    SOURCES tests/daily_functions_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+cpb_test(program-protection-test
+    SOURCES tests/program_protection_test.cpp src/core/line_editor.cpp tests/runtime_stubs/editor_workflow_ui.cpp src/core/transfer_file.cpp tests/program_psram_stubs.cpp src/core/repl.cpp tests/runtime_stubs/network_operation.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 CPB_REAL_LINE_EDITOR=1 LINK -Wl,--gc-sections)
+
+cpb_test(data-read-test
+    SOURCES tests/data_read_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections,--wrap=realloc)
+
+cpb_test(select-case-test
+    SOURCES tests/select_case_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+
+cpb_test(manual-examples-test
+    SOURCES tests/manual_examples_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+    INCLUDES tests/runtime_stubs include FLAGS ${SAN} -fsanitize=float-cast-overflow ${SECTIONS}
+    DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
 
 cpb_test(stage3-optimizer-test
     SOURCES tests/stage3_optimizer_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
     INCLUDES tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS}
     DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections,--wrap=calloc,--wrap=free)
 
+endif()
+
 cpb_test(classic-benchmark SOURCES tests/classic_benchmark.cpp FLAGS -O3 ARGS --verify-classic)
 
 cpb_test(performance-benchmark ARGS --verify-only
     SOURCES tests/performance_benchmark.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
     INCLUDES tests/runtime_stubs include FLAGS -O3 -Werror=return-type ${SECTIONS} LINK -Wl,--gc-sections)
+
+# The shared harness is also copied into frozen Stage 1-3 checkouts, whose
+# platform API predates AudioDiagnostics. Keep those APIs and timed code intact.
+file(STRINGS "${CPB_ROOT}/include/platform.hpp" CPB_AUDIO_DIAGNOSTICS_DECL
+    REGEX "^struct AudioDiagnostics")
+if(NOT CPB_AUDIO_DIAGNOSTICS_DECL)
+    target_compile_definitions(performance-benchmark PRIVATE CPB_LEGACY_AUDIO_DIAGNOSTICS=1)
+endif()
 
 # Canonicalize diagnostic __FILE__ strings in every timing revision. Different
 # checkout roots otherwise change host binary rodata/layout despite identical code.
@@ -211,3 +300,31 @@ cpb_register_test(benchmark-semantic-contract
     "${Python3_EXECUTABLE}" "${CPB_ROOT}/tools/benchmark_correctness.py" "$<TARGET_FILE:performance-benchmark>")
 cpb_register_test(performance-policy-regression
     "${Python3_EXECUTABLE}" "${CPB_ROOT}/tests/performance_policy_test.py")
+
+# Research code is absent from the ordinary performance/firmware targets.
+if(NOT CPB_BENCHMARK_ONLY)
+option(CPB_STAGE5_INTEGER_FOR_EXPERIMENT "Build performance target with experimental integer FOR" OFF)
+if(CPB_STAGE5_INTEGER_FOR_EXPERIMENT)
+    target_compile_definitions(performance-benchmark PRIVATE RMB_STAGE5_INTEGER_FOR_EXPERIMENT=1)
+endif()
+foreach(kind IN ITEMS normal experimental)
+    cpb_test(stage5-for-${kind}-test
+        SOURCES tests/stage5_for_test.cpp tests/program_psram_stubs.cpp src/core/file_management.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp
+        INCLUDES tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS} -fsanitize=float-cast-overflow
+        DEFINES RMB_OPTIMIZER_TEST=1 LINK -Wl,--gc-sections)
+endforeach()
+target_compile_definitions(stage5-for-experimental-test PRIVATE RMB_STAGE5_INTEGER_FOR_EXPERIMENT=1)
+
+cpb_test(wifi-profiles-test
+    SOURCES tests/wifi_profiles_test.cpp INCLUDES include FLAGS ${SAN} ${WARN} -Werror)
+cpb_test(network-operation-test
+    SOURCES tests/network_operation_test.cpp src/platform/picocalc/network.cpp tests/runtime_stubs/wireless.cpp
+    INCLUDES tests/network_stubs include FLAGS ${SAN} ${WARN} -Werror)
+endif()
+
+if(NOT CPB_BENCHMARK_ONLY)
+cpb_test(wifi-retry-integration-test
+    SOURCES tests/wifi_retry_integration_test.cpp tests/runtime_stubs/editor_workflow_ui.cpp tests/runtime_stubs/bluetooth_hid_keyboard.cpp tests/runtime_stubs/wireless.cpp tests/program_psram_stubs.cpp src/core/line_editor.cpp src/core/repl.cpp src/platform/picocalc/network.cpp src/core/editor_model.cpp src/core/psram_editor_history.cpp src/core/full_screen_editor.cpp src/core/file_management.cpp src/core/transfer_file.cpp src/core/basic_compiler.cpp src/core/compiled_cache.cpp src/core/program_store.cpp src/core/safe_file.cpp src/core/il.cpp src/core/vm.cpp src/core/ymodem.cpp src/core/xmodem.cpp
+    DEFINES CPB_PRODUCTION_NETWORK=1
+    INCLUDES tests/network_stubs tests/runtime_stubs include FLAGS ${SAN} ${SECTIONS} LINK -Wl,--gc-sections)
+endif()

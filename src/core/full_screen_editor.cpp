@@ -1,5 +1,7 @@
 #include "path_compaction.hpp"
 #include "full_screen_editor.hpp"
+#include "input_hotkeys.hpp"
+#include "firmware_version.hpp"
 
 #include <climits>
 #include <cstdio>
@@ -73,7 +75,7 @@ FullScreenEditor::FullScreenEditor(
     filename_(filename),
     filename_capacity_(filename_capacity),
     program_dirty_(program_dirty),
-    entry_dirty_(program_dirty),
+    entry_dirty_(program_dirty || program.is_dirty()),
     document_(program),
     model_(document_, &history_) {
     model_.configure_viewport(kVisibleLines, body_columns());
@@ -112,7 +114,7 @@ void FullScreenEditor::render_header() {
         file_paths::CompactPathPolicy::ProgramName,label,sizeof(label));
     else std::snprintf(label,sizeof(label),"UNTITLED");
     std::snprintf(
-        row, sizeof(row), "CPB v0.92 [%s] %s%s",
+        row, sizeof(row), "CPB v%s [%s] %s%s", RMB_VERSION,
         model_.structured() ? "STRUCTURED" : "CLASSIC",
         label,
         dirty ? " *" : "");
@@ -121,7 +123,9 @@ void FullScreenEditor::render_header() {
     render_location();
     platform::draw_text_row(
         2,
-        "ARROWS  HOME/END  TAB INDENT  SHIFT+UP/DN PAGE  ESC",
+        model_.structured()
+            ? "TAB INDENT ALT+U OUTDENT ALT+M MATCH ALT+R RUN ESC"
+            : "ARROWS HOME/END SHIFT+UP/DN PAGE ALT+R RUN ESC EXIT",
         0xa0a0a0,
         0x000000);
 }
@@ -704,19 +708,19 @@ bool FullScreenEditor::exit_requested() {
     return false;
 }
 
-bool FullScreenEditor::run(std::int32_t initial_line) {
-    if (!program_.ready()) return false;
+EditorResult FullScreenEditor::run(std::int32_t initial_line, const char* error_type) {
+    if (!program_.ready()) return {};
     editor_perf::reset();
     (void)history_.begin();
     model_.set_history(history_.ready() ? &history_ : nullptr);
     model_.configure_viewport(kVisibleLines, body_columns());
     if (!model_.begin()) {
         history_.end();
-        return false;
+        return {};
     }
 
     if (initial_line > 0 && model_.goto_line(initial_line)) {
-        std::snprintf(message_, sizeof(message_), "COMPILE ERROR AT %s %ld",
+        std::snprintf(message_, sizeof(message_), "%s AT %s %ld", error_type,
             model_.structured() ? "ROW" : "LINE", static_cast<long>(initial_line));
     }
 
@@ -730,6 +734,7 @@ bool FullScreenEditor::run(std::int32_t initial_line) {
     render_full();
 
     bool finished = false;
+    EditorExitAction exit_action = EditorExitAction::Exit;
     while (!finished) {
         const int key = platform::get_char();
         editor_perf::key_event();
@@ -740,6 +745,35 @@ bool FullScreenEditor::run(std::int32_t initial_line) {
         const EditorVisualPosition previous_top = model_.visual_top();
         bool redraw_all = false;
         bool redraw_navigation = false;
+
+        if (key == input_hotkeys::Run) {
+            if (!model_.commit()) {
+                set_model_error();
+                render_full();
+            } else if (sync_committed_dirty()) {
+                exit_action = EditorExitAction::Run;
+                finished = true;
+            } else {
+                render_full();
+            }
+            continue;
+        }
+        if (key == input_hotkeys::Outdent || key == input_hotkeys::ShiftTab) {
+            if (model_.structured()) {
+                if (!model_.outdent()) set_model_error();
+                render_full();
+            }
+            continue;
+        }
+        if (key == input_hotkeys::Match) {
+            if (model_.structured()) {
+                if (!model_.matching_block()) set_model_error();
+                else set_message("MATCHING BLOCK");
+                render_full();
+            }
+            continue;
+        }
+        if (input_hotkeys::workflow_event(key)) continue;
 
         if (!shift &&
             (key == kLeft || key == kRight ||
@@ -903,7 +937,7 @@ bool FullScreenEditor::run(std::int32_t initial_line) {
     platform::set_function_key_bar_enabled(true);
     platform::clear_lcd_color(0x000000);
     history_.end();
-    return true;
+    return {exit_action};
 }
 
 } // namespace rmb

@@ -7,20 +7,24 @@
 #include "bluetooth_hid_keyboard_core.hpp"
 #include "command_history.hpp"
 #include "compiled_cache.hpp"
+#include "error_context.hpp"
 #include "platform.hpp"
 #include "program_store.hpp"
 #include "serial_transfer.hpp"
 #include "system_controls.hpp"
 #include "vm.hpp"
+#include "wifi_profiles.hpp"
 
 namespace rmb {
 namespace storage { struct DirectoryEntry; }
+struct SystemInformation;
 
 class Repl {
 public:
     void run();
 
 private:
+    bool handle_prompt_special(int key);
     static constexpr int kQuickKeyCount = 10;
     static constexpr int kFilenameSize = 80;
 
@@ -51,8 +55,7 @@ private:
         bool wifi_auto_rtc = true;
         int wifi_timezone_minutes = 540;
         char wifi_ntp_server[64] = "pool.ntp.org";
-        char wifi_ssid[33] = {};
-        char wifi_password[64] = {};
+        wifi_profiles::Profiles wifi_profiles = {};
         QuickKey quick[kQuickKeyCount] = {};
     };
 
@@ -79,6 +82,9 @@ private:
     std::uint64_t compile_error_revision_ = 0;
     std::int32_t compile_error_location_ = 0;
     ProgramSourceMode compile_error_mode_ = ProgramSourceMode::ClassicNumbered;
+    ErrorContext last_error_;
+    void capture_runtime_error(const VmResult& result, const char* direct_text = nullptr);
+    void print_error_context() const;
 
     void print_banner();
     void print_prompt();
@@ -121,6 +127,15 @@ private:
     void menu_datetime();
     void menu_audio();
     void menu_wifi();
+    void menu_known_networks();
+    void menu_wifi_profile(int slot);
+    void add_wifi_network();
+    bool prompt_wifi_password(char (&output)[64]);
+    bool wait_wifi_radio_ready();
+    bool wait_network_operation(const char* context = nullptr);
+    void wait_message(const char* title, const char* message);
+    bool connect_wifi_profile(int slot, const char* context = nullptr, bool restore_active = false);
+    bool auto_connect_wifi();
     void menu_bluetooth();
     void menu_bluetooth_keyboard();
     void menu_bluetooth_devices();
@@ -136,7 +151,8 @@ private:
     void print_program_error();
     void menu_power();
     void menu_board_led();
-    void menu_system_info();
+    void menu_system_info(bool diagnostics = false);
+    void collect_system_information(SystemInformation& info) const;
     void menu_psram_diagnostics();
 
     bool pick_program_file(char* output, std::size_t capacity);
@@ -145,6 +161,8 @@ private:
     bool choose_quick_mode(bool& run);
     bool pick_wifi_network(char* ssid, std::size_t capacity, bool& secure);
     bool sync_rtc_from_network(bool show_result);
+    char ntp_sync_status_[80] = "Not attempted";
+    char ntp_sync_server_[64] = {};
     void apply_network_settings();
     void assign_quick_key(int index, const char* filename, bool run);
     void handle_quick_key(int key);
@@ -157,6 +175,10 @@ private:
     bool save_program_as(const char* filename);
     void menu_save_program(bool save_as);
     bool confirm_program_overwrite(const char* filename);
+    bool confirm_unsaved_changes();
+    bool program_modified() const { return program_dirty_ || program_.is_dirty(); }
+    void command_info();
+    void command_last_error();
 
     void draw_menu_header(const char* title, const char* help);
     void draw_menu_option(int row, const char* text, bool selected);

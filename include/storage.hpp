@@ -96,6 +96,8 @@ bool read_root_text(
 );
 bool write_root_text(const char* filename, const char* text);
 
+// SD-root-relative BMP paths, identical extension policy for load/save.
+bool load_image(const char* name, int x = 0, int y = 0);
 bool screenshot_exists(const char* name);
 bool save_screenshot(
     const char* name,

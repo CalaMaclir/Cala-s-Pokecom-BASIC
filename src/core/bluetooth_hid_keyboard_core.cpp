@@ -1,4 +1,5 @@
 #include "bluetooth_hid_keyboard_core.hpp"
+#include "input_hotkeys.hpp"
 
 #include <cstring>
 
@@ -17,8 +18,6 @@ constexpr int kKeyRight = 0xb7;
 constexpr int kKeyHome = 0xd2;
 constexpr int kKeyDelete = 0xd4;
 constexpr int kKeyEnd = 0xd5;
-constexpr int kKeyHotkeyScreenshot = 0xe2;
-constexpr int kKeyHotkeySleep = 0xe3;
 
 bool elapsed(std::uint32_t now, std::uint32_t deadline) {
     return static_cast<std::int32_t>(now - deadline) >= 0;
@@ -67,6 +66,7 @@ int us_symbol(std::uint8_t usage, bool shift) {
 
 void KeyboardCore::reset() {
     queue_read_ = queue_write_ = 0;
+    last_key_repeat_ = false;
     std::memset(last_keys_, 0, sizeof(last_keys_));
     key_count_ = 0;
     modifiers_ = 0;
@@ -75,7 +75,7 @@ void KeyboardCore::reset() {
     caps_lock_ = false;
 }
 
-bool KeyboardCore::enqueue(int code) {
+bool KeyboardCore::enqueue(int code, bool repeat) {
     if (code < 0) return false;
     const std::size_t next = (queue_write_ + 1u) % kQueueCapacity;
     if (next == queue_read_) {
@@ -83,6 +83,7 @@ bool KeyboardCore::enqueue(int code) {
         return false;
     }
     queue_[queue_write_] = code;
+    queue_repeat_[queue_write_] = repeat;
     queue_write_ = next;
     return true;
 }
@@ -117,8 +118,10 @@ int KeyboardCore::translate_usage(
         const bool uppercase = caps_lock != shift;
         int code = (uppercase ? 'A' : 'a') + index;
         if (ctrl) code = index + 1;
-        if (alt && index == ('s' - 'a')) return kKeyHotkeyScreenshot;
-        if (alt && index == ('p' - 'a')) return kKeyHotkeySleep;
+        if (alt) {
+            const int hotkey = input_hotkeys::alt_letter('a' + index);
+            if (hotkey >= 0) return hotkey;
+        }
         return code;
     }
 
@@ -137,7 +140,7 @@ int KeyboardCore::translate_usage(
     case 0x28: return '\n';
     case 0x29: return kKeyEscape;
     case 0x2a: return 0x08;
-    case 0x2b: return '\t';
+    case 0x2b: return shift ? input_hotkeys::ShiftTab : '\t';
     case 0x2c: return ' ';
     case 0x39: return -1; // Caps Lock is handled as state, not text.
     case 0x3a: return 0x81;
@@ -260,14 +263,16 @@ void KeyboardCore::service_repeat(std::uint32_t now_ms) {
 
     const int code =
         translate_usage(layout_, repeat_usage_, modifiers_, caps_lock_);
-    if (repeatable(code)) enqueue(code);
+    if (repeatable(code)) enqueue(code, true);
     repeat_due_ms_ = now_ms + kRepeatIntervalMs;
 }
 
 int KeyboardCore::read_key(std::uint32_t now_ms) {
+    last_key_repeat_ = false;
     service_repeat(now_ms);
     if (queue_read_ == queue_write_) return -1;
     const int code = queue_[queue_read_];
+    last_key_repeat_ = queue_repeat_[queue_read_];
     queue_read_ = (queue_read_ + 1u) % kQueueCapacity;
     return code;
 }

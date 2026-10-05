@@ -1,5 +1,6 @@
 #include "editor_model.hpp"
 #include "editor_perf.hpp"
+#include "basic_lexical.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -10,6 +11,95 @@
 
 namespace rmb {
 namespace {
+
+enum class BlockKind : std::uint8_t { None, If, For, While, Do, Function, Sub, Select };
+enum class BoundaryAction : std::uint8_t { None, Open, Close, Branch, Else };
+struct BlockBoundary {
+    BlockKind kind = BlockKind::None;
+    BoundaryAction action = BoundaryAction::None;
+};
+
+BlockBoundary classify_boundary(const char* start, const char* end) {
+    using basic_lexical::match_word;
+    const char* p = start;
+    if (match_word(p, "IF")) {
+        // The compiler opens a multiline IF only when THEN ends the entire
+        // logical row. IF ... THEN statement / comment is an inline branch.
+        const char* last_word = nullptr;
+        bool quoted = false;
+        while (p < end) {
+            if (*p == '"') { quoted = !quoted; last_word = nullptr; ++p; }
+            else if (!quoted && basic_lexical::identifier_char(*p)) {
+                last_word = p;
+                while (p < end && basic_lexical::identifier_char(*p)) ++p;
+            } else {
+                if (*p != ' ' && *p != '\t') last_word = nullptr;
+                ++p;
+            }
+        }
+        if (!quoted && *end == '\0' && last_word) {
+            p = last_word;
+            if (match_word(p, "THEN")) {
+                basic_lexical::skip_spaces(p);
+                if (p == end) return {BlockKind::If, BoundaryAction::Open};
+            }
+        }
+        return {};
+    }
+    p = start;
+    if (match_word(p, "ELSEIF")) return {BlockKind::If, BoundaryAction::Branch};
+    p = start;
+    if (match_word(p, "ELSE")) return {BlockKind::If, BoundaryAction::Else};
+    p = start;
+    if (match_word(p, "END")) {
+        if (match_word(p, "IF")) return {BlockKind::If, BoundaryAction::Close};
+        if (match_word(p, "FUNCTION")) return {BlockKind::Function, BoundaryAction::Close};
+        if (match_word(p, "SUB")) return {BlockKind::Sub, BoundaryAction::Close};
+        if (match_word(p, "SELECT")) return {BlockKind::Select, BoundaryAction::Close};
+        return {};
+    }
+    p=start;
+    if(match_word(p,"SELECT")&&match_word(p,"CASE"))return {BlockKind::Select,BoundaryAction::Open};
+    p=start;
+    if(match_word(p,"CASE"))return {BlockKind::Select,
+        match_word(p,"ELSE")?BoundaryAction::Else:BoundaryAction::Branch};
+    struct Pair { const char* open; const char* close; BlockKind kind; };
+    static constexpr Pair pairs[] = {
+        {"FOR", "NEXT", BlockKind::For}, {"WHILE", "WEND", BlockKind::While},
+        {"DO", "LOOP", BlockKind::Do}, {"FUNCTION", "", BlockKind::Function},
+        {"SUB", "", BlockKind::Sub}
+    };
+    for (const auto& pair : pairs) {
+        p = start;
+        if (match_word(p, pair.open)) return {pair.kind, BoundaryAction::Open};
+        p = start;
+        if (*pair.close && match_word(p, pair.close)) return {pair.kind, BoundaryAction::Close};
+    }
+    return {};
+}
+
+std::size_t leading_space(const char* text) {
+    std::size_t n = 0;
+    while (text[n]==' ' || text[n]=='\t') ++n;
+    return n;
+}
+
+BlockBoundary row_boundary(const char* text) {
+    const char* p=text;
+    basic_lexical::skip_spaces(p);
+    const char* comment=p;
+    if (*p=='\'' || basic_lexical::match_word(comment,"REM")) return {};
+    const char* end=p;
+    bool quoted=false;
+    while (*end) {
+        if (*end=='"') quoted=!quoted;
+        if (!quoted && (*end==':' || *end=='\'')) break;
+        ++end;
+    }
+    // Auto-indent complete rows only. Colon rows keep the existing indent.
+    if (*end==':') return {};
+    return classify_boundary(p,end);
+}
 
 bool position_before(
     EditorVisualPosition left,
@@ -456,6 +546,87 @@ bool EditorModel::insert_tab() {
     return true;
 }
 
+bool EditorModel::outdent() {
+    if (!structured() || !has_line_) return fail("STRUCTURED ROW REQUIRED");
+    std::size_t spaces = 0;
+    while (spaces < 4 && spaces < length_ && body_[spaces] == ' ') ++spaces;
+    if (!spaces) { error_ = "OK"; return true; }
+    history_boundary();
+    capture_current(history_snapshot_);
+    std::memmove(body_, body_ + spaces, length_ - spaces + 1);
+    length_ -= spaces;
+    cursor_ = cursor_ > spaces ? cursor_ - spaces : 0;
+    preferred_visual_column_ = cursor_visual_column();
+    line_dirty_ = true;
+    record_edit(history_snapshot_, EditGroup::None);
+    ensure_visual_cursor_visible();
+    error_ = "OK";
+    return true;
+}
+
+bool EditorModel::matching_block() {
+    if (!structured() || !has_line_) return fail("STRUCTURED ROW REQUIRED");
+    // Compiler permits 16 each of IF/FOR/WHILE/DO/SELECT plus one FUNCTION. A
+    // small transient stack stores row IDs only, never a copy of the source.
+    struct OpenBlock { std::size_t row; BlockKind kind; bool seen_else; };
+    OpenBlock stack[81] = {};
+    std::size_t depth = 0;
+    const std::size_t no_row = document_.line_count();
+    std::size_t target = no_row;
+    unsigned current_boundaries = 0;
+    for (std::size_t row = 0; row < document_.line_count(); ++row) {
+        std::int32_t number = 0;
+        const char* text = nullptr;
+        std::size_t length = 0;
+        // line_view uses the uncommitted working row at the current index.
+        if (!line_view(row, number, text, length)) return fail(document_.error());
+        const char* statement = text;
+        while (*statement) {
+            basic_lexical::skip_spaces(statement);
+            const char* comment = statement;
+            if (*statement == '\'' || basic_lexical::match_word(comment, "REM")) break;
+            const char* end = statement;
+            bool quoted = false;
+            while (*end) {
+                if (*end == '"') quoted = !quoted;
+                if (!quoted && (*end == ':' || *end == '\'')) break;
+                ++end;
+            }
+            const auto boundary = classify_boundary(statement, end);
+            if (boundary.action != BoundaryAction::None) {
+                if (row == index_) ++current_boundaries;
+                if (boundary.action == BoundaryAction::Open) {
+                    if (depth == 81 || (boundary.kind == BlockKind::Function && depth != 0))
+                        return fail("STRUCTURE ERROR");
+                    stack[depth++] = {row, boundary.kind, false};
+                } else {
+                    if (depth == 0 || stack[depth - 1].kind != boundary.kind)
+                        return fail("STRUCTURE ERROR");
+                    auto& opening = stack[depth - 1];
+                    if (boundary.action == BoundaryAction::Close) {
+                        if (opening.row == index_) target = row;
+                        if (row == index_) target = opening.row;
+                        --depth;
+                    } else {
+                        if (opening.seen_else) return fail("STRUCTURE ERROR");
+                        if (boundary.action == BoundaryAction::Else) opening.seen_else = true;
+                        if (row == index_) target = opening.row;
+                    }
+                }
+            }
+            if (*end != ':') break;
+            statement = end + 1;
+        }
+    }
+    if (depth) return fail("STRUCTURE ERROR");
+    if (current_boundaries != 1 || target == no_row) return fail("NO MATCHING BLOCK");
+    // Publish pending edits only after a successful match, exactly like Goto.
+    if (!commit()) return false;
+    history_boundary();
+    preferred_visual_column_ = 0;
+    return load_index(target, true);
+}
+
 bool EditorModel::backspace() {
     if (!has_line_) return false;
     if (cursor_ == 0) return join_line(true);
@@ -529,6 +700,29 @@ bool EditorModel::split_line(std::int32_t new_number) {
         Buffer left(static_cast<char*>(std::malloc(kWorkingCapacity)),&std::free);
         if(!left)return fail("OUT OF MEMORY");
         std::memcpy(left.get(),body_,cursor_);left.get()[cursor_]=0;
+        if (cursor_ == length_) {
+            const auto boundary = row_boundary(left.get());
+            auto indent = leading_space(left.get());
+            if (line_dirty_ && (boundary.action == BoundaryAction::Close ||
+                boundary.action == BoundaryAction::Branch || boundary.action == BoundaryAction::Else)) {
+                std::size_t aligned=0;
+                if (matching_indent(left.get(), aligned)) {
+                    const auto tail=length_-indent;
+                    if (aligned+tail > document_.max_body_length()) return fail("LINE TOO LONG");
+                    std::memmove(left.get()+aligned,left.get()+indent,tail+1);
+                    std::memset(left.get(),' ',aligned);
+                    indent=aligned;
+                }
+            }
+            if (boundary.action == BoundaryAction::Open || boundary.action == BoundaryAction::Branch ||
+                boundary.action == BoundaryAction::Else) indent+=4;
+            if (indent > document_.max_body_length()) return fail("LINE TOO LONG");
+            Buffer right(static_cast<char*>(std::malloc(indent+1)),&std::free);
+            if (!right) return fail("OUT OF MEMORY");
+            std::memset(right.get(),' ',indent);right.get()[indent]=0;
+            const char* rows[]={left.get(),right.get()};
+            return structured_replace(index_,1,rows,2,index_+1,indent);
+        }
         const char* rows[]={left.get(),body_+cursor_};
         return structured_replace(index_,1,rows,2,index_+1,0);
     }
@@ -607,6 +801,46 @@ bool EditorModel::split_line(std::int32_t new_number) {
     record_edit(history_snapshot_, EditGroup::None);
     ensure_visual_cursor_visible();
     error_ = "OK";
+    return true;
+}
+
+bool EditorModel::matching_indent(const char* current, std::size_t& indent) const {
+    const auto wanted=row_boundary(current);
+    struct Entry { BlockKind kind; std::size_t indent; };
+    Entry stack[81] = {};
+    std::size_t depth=0;
+    // Only Enter on newly typed boundaries scans preceding source. Nothing is
+    // rewritten when a file is opened, navigated, saved, or split mid-line.
+    for (std::size_t row=0; row<index_; ++row) {
+        std::int32_t number=0;const char* text=nullptr;std::size_t length=0;
+        if (!line_view(row,number,text,length)) return false;
+        const auto space=leading_space(text);
+        const char* statement=text;
+        while (*statement) {
+            basic_lexical::skip_spaces(statement);
+            const char* comment=statement;
+            if (*statement=='\'' || basic_lexical::match_word(comment,"REM")) break;
+            const char* end=statement;bool quoted=false;
+            while (*end) {
+                if (*end=='"') quoted=!quoted;
+                if (!quoted && (*end==':' || *end=='\'')) break;
+                ++end;
+            }
+            const auto boundary=classify_boundary(statement,end);
+            if (boundary.action==BoundaryAction::Open) {
+                if (depth==81) return false;
+                stack[depth++]={boundary.kind,space};
+            } else if (boundary.action!=BoundaryAction::None) {
+                if (!depth || stack[depth-1].kind!=boundary.kind) return false;
+                if (boundary.action==BoundaryAction::Close) --depth;
+            }
+            if (*end!=':') break;
+            statement=end+1;
+        }
+    }
+    if (!depth || stack[depth-1].kind!=wanted.kind) return false;
+    indent=stack[depth-1].indent;
+    if (wanted.kind==BlockKind::Select && wanted.action!=BoundaryAction::Close) indent+=4;
     return true;
 }
 

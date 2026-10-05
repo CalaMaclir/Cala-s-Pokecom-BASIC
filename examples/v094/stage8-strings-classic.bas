@@ -1,0 +1,5 @@
+10 PRINT "["+TRIM$("  CPB  ")+"]"
+20 PRINT REPLACE$("banana","an","X")
+30 PRINT "A"+SPACE$(3)+"B"
+40 PRINT INSTR("SENSOR=OK","OK");STRING$(3,"!")
+50 END

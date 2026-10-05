@@ -28,6 +28,7 @@ using Route = SerialTransferRoute;
 Route command_route = Route::Auto, transfer_route = Route::Auto;
 stdio_driver_t* transfer_driver = nullptr;
 bool active = false, local_cancel = false;
+bool diagnostic_active = false;
 std::uint32_t next_key_poll = 0;
 const char* last_error = "SERIAL NOT AVAILABLE";
 SerialTransferPerformance performance;
@@ -222,7 +223,21 @@ void restore_uart() {
 }
 }
 
-bool serial_transfer_active() { return active; }
+bool serial_transfer_active() { return active || diagnostic_active; }
+bool usb_cdc_ready() { return stdio_usb_connected(); }
+DiagnosticSerialResult begin_usb_diagnostic() {
+    if (serial_transfer_active()) return DiagnosticSerialResult::Busy;
+    if (!usb_cdc_ready()) return DiagnosticSerialResult::Unavailable;
+    diagnostic_active = true;
+    return DiagnosticSerialResult::Ready;
+}
+bool write_usb_diagnostic(const char* text) {
+    if (!diagnostic_active || active || !text || !usb_cdc_ready()) return false;
+    stdio_usb.out_chars(text, static_cast<int>(std::strlen(text)));
+    return usb_cdc_ready();
+}
+void end_usb_diagnostic() { diagnostic_active = false; }
+
 
 const SerialTransferPerformance& serial_transfer_performance() {
     return performance;
@@ -249,7 +264,7 @@ void console_local_input() {
 }
 
 int console_serial_read(unsigned timeout_us, bool same_route) {
-    if (active) return -1;
+    if (serial_transfer_active()) return -1;
     const auto deadline = make_timeout_time_us(timeout_us);
     do {
         char c;
@@ -281,7 +296,7 @@ const char* serial_transfer_route_name(SerialTransferRoute route) {
 const char* serial_transfer_error() { return last_error; }
 
 bool begin_serial_transfer(SerialTransferRoute route) {
-    if (active) {
+    if (serial_transfer_active()) {
         last_error = "SERIAL BUSY";
         return false;
     }

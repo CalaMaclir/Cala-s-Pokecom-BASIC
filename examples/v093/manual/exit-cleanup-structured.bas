@@ -1,0 +1,8 @@
+DO
+    FOR I=1 TO 10
+        IF I=3 THEN EXIT DO
+    NEXT I
+LOOP
+FOR J=1 TO 3
+    PRINT J
+NEXT J

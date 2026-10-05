@@ -150,7 +150,7 @@ int main() {
         repl.draw_file_option(8,&dir,false,true);
         assert(backgrounds[8]==bg&&foregrounds[8]==fg);
         repl.draw_file_option(8,&file,false,true);
-        assert(backgrounds[8]==0&&rows[8].rfind("      demo.bas",0)==0);
+        assert(backgrounds[8]==0&&rows[8].rfind("[BAS] demo.bas",0)==0);
         assert(rows[8].substr(43)=="4294967295");
         std::memset(file.name,'X',79);file.name[79]=0;
         repl.draw_file_option(8,&file,false,true);assert(rows[8].size()==53);

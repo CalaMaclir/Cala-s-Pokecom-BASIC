@@ -28,6 +28,9 @@ runtime-test program-storage-test program-session-test ble-report-sdk-parser
 usb-msc-test storage-ownership-test
 """.split())
 STAGE1_REQUIRED_TESTS = {"editor-structure-test", "file-path-test", "program-pair-test", "stage1-source-contract"}
+STAGE93_REQUIRED_TESTS = {"editor-workflow-model-test", "editor-workflow-integration-test", "wifi-retry-integration-test", "math-intops-test",
+                          "exit-loop-test", "data-read-test", "select-case-test", "power-transition-test", "stage5-for-normal-test", "stage5-for-experimental-test"}
+STAGE94_REQUIRED_TESTS = {"image-io-resources-test", "stability-language-test", "release-package-test", "image-io-test", "image-statement-test", "audio-output-lifecycle-test", "system-information-test", "system-information-integration-test", "editor-autoindent-test", "error-diagnostics-test", "daily-functions-test", "program-protection-test"}
 STAGE23_REQUIRED_TESTS = {"structured-source-test", "path-compaction-test", "classic-benchmark",
                          "files-ui-integration-test", "performance-benchmark", "stage3-optimizer-test", "paired-benchmark-protocol",
                          "benchmark-semantic-contract", "performance-policy-regression"}
@@ -155,7 +158,7 @@ def run() -> int:
             env=env, text=True, stdout=subprocess.PIPE, check=True).stdout)
         tests = inventory["tests"]
         names = {test["name"] for test in tests}
-        if not (REQUIRED_TESTS | STAGE1_REQUIRED_TESTS | STAGE23_REQUIRED_TESTS).issubset(names) or len(names) != len(tests):
+        if not (REQUIRED_TESTS | STAGE1_REQUIRED_TESTS | STAGE23_REQUIRED_TESTS | STAGE93_REQUIRED_TESTS | STAGE94_REQUIRED_TESTS).issubset(names) or len(names) != len(tests):
             raise RuntimeError(f"Missing/duplicate host tests: {sorted(REQUIRED_TESTS - names)}")
         for test in tests:
             properties = {p["name"]: p["value"] for p in test.get("properties", [])}
@@ -245,4 +248,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
