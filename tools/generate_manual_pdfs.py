@@ -238,7 +238,7 @@ def markdown_story(source, st, source_path):
             marker = None
             if marker_index < len(lines):
                 marker = re.fullmatch(
-                    r"> \\*\\*対応モード:\\*\\* Classic=(対応|非対応|共通|利用可) / Structured=(対応|非対応|共通|利用可)",
+                    r"> \*\*対応モード:\*\* Classic=(対応|非対応|共通|利用可) / Structured=(対応|非対応|共通|利用可)",
                     lines[marker_index].strip(),
                 )
             if marker:
