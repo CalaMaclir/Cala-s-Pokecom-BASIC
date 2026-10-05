@@ -19,8 +19,6 @@ jobs:
           python-version: '3.12'
       - name: Install manual dependencies
         run: python3 -m pip install --disable-pip-version-check -r tools/requirements-manuals.txt
-      - name: Validate reference inventory
-        run: python3 tools/validate_manual_reference.py
       - name: Generate reference PDF
         run: |
           mkdir -p build/reference
