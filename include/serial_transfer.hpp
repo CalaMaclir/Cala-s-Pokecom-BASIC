@@ -36,6 +36,11 @@ bool begin_serial_transfer(
 );
 void end_serial_transfer();
 bool serial_transfer_active();
+bool usb_cdc_ready();
+enum class DiagnosticSerialResult { Ready, Busy, Unavailable };
+DiagnosticSerialResult begin_usb_diagnostic();
+bool write_usb_diagnostic(const char* text);
+void end_usb_diagnostic();
 int serial_transfer_read(unsigned timeout_ms);
 int serial_transfer_read_some(
     std::uint8_t* data,

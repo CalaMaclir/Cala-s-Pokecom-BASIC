@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import tempfile
 from collections.abc import Mapping
 
 # A version-only branch is a release branch; v0.91-stage* remains FAST.
@@ -19,6 +20,18 @@ def is_release_branch(name: str) -> bool:
     )
 
 
+def pr_has_label(env: Mapping[str, str], name: str) -> bool:
+    path = env.get("GITHUB_EVENT_PATH")
+    if not path:
+        return False
+    try:
+        event = json.loads(Path(path).read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    labels = event.get("pull_request", {}).get("labels", [])
+    return any(label.get("name") == name for label in labels)
+
+
 def select_mode(env: Mapping[str, str]) -> tuple[bool, str]:
     event = env.get("GITHUB_EVENT_NAME", "")
     if event == "workflow_dispatch" and env.get("CI_REQUESTED_FULL", "false").lower() == "true":
@@ -26,12 +39,28 @@ def select_mode(env: Mapping[str, str]) -> tuple[bool, str]:
     if event in {"pull_request", "pull_request_target"}:
         head = env.get("GITHUB_HEAD_REF", "")
         base = env.get("GITHUB_BASE_REF", "")
+        if pr_has_label(env, "full-validation"):
+            return True, "explicit PR full-validation label"
+        if head == "v0.94-stage10-11-final":
+            return True, "v0.94 Stage 10-11 release candidate validation"
+        if head == "v0.93-stage6-release":
+            return True, "v0.93 Stage 6 release candidate validation"
+        if head == "v0.93-integration":
+            return True, "v0.93 accepted stack integration validation"
+        if head == "v0.93-stage5ab-performance-integer-research":
+            return True, "v0.93 Stage 5 normal and experimental integration validation"
+        if head == "v0.93-stage4-hardware-stability":
+            return True, "v0.93 Stage 4 hardware stability validation"
+        if head=="v0.93-stage3c3d3e-control-data-select":
+            return True,"v0.93 Stage 3C/3D/3E integration validation"
         if not head:
             return True, "missing PR head ref: fail safe to FULL"
         if is_release_branch(head) or is_release_branch(base):
             return True, "release source or target branch"
         return False, "ordinary development PR"
     ref = env.get("GITHUB_REF_NAME", "")
+    if ref == "v0.93-stage6-release":
+        return True, "v0.93 Stage 6 release candidate validation"
     if env.get("GITHUB_REF_TYPE") == "tag":
         return True, "tag validation"
     if ref == "main" or is_release_branch(ref):
@@ -49,11 +78,8 @@ def performance_mode(env: Mapping[str, str]) -> str:
         if mode not in ("off", "report"):raise ValueError("Unknown performance mode")
         return mode
     if env.get("GITHUB_EVENT_NAME") == "pull_request":
-        path=env.get("GITHUB_EVENT_PATH")
-        if path:
-            event=json.loads(Path(path).read_text())
-            labels=event["pull_request"].get("labels",[])
-            if any(label["name"]=="performance-report" for label in labels):return "report"
+        if pr_has_label(env, "performance-report"):
+            return "report"
     return "off"
 
 
@@ -73,6 +99,20 @@ def self_test() -> None:
             "GITHUB_HEAD_REF": branch, "GITHUB_BASE_REF": "main",
         }, expected and branch != "main"))
     cases.extend([
+        ({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_HEAD_REF": "v0.94-stage10-11-final", "GITHUB_BASE_REF": "main"}, True),
+        ({"GITHUB_EVENT_NAME":"pull_request", "GITHUB_HEAD_REF":"v0.93-additional-a1-wifi-retry-settle",
+          "GITHUB_BASE_REF":"main"}, False),
+        ({"GITHUB_EVENT_NAME":"pull_request", "GITHUB_HEAD_REF":"v0.93-stage6-release",
+          "GITHUB_BASE_REF":"main"}, True),
+        ({"GITHUB_EVENT_NAME":"push", "GITHUB_REF_NAME":"v0.93-stage6-release"}, True),
+        ({"GITHUB_EVENT_NAME":"pull_request", "GITHUB_HEAD_REF":"v0.93-integration",
+          "GITHUB_BASE_REF":"main"}, True),
+        ({"GITHUB_EVENT_NAME":"pull_request", "GITHUB_HEAD_REF":"v0.93-stage5ab-performance-integer-research",
+          "GITHUB_BASE_REF":"v0.93-stage4-hardware-stability"}, True),
+        ({"GITHUB_EVENT_NAME":"pull_request", "GITHUB_HEAD_REF":"v0.93-stage4-hardware-stability",
+          "GITHUB_BASE_REF":"main"}, True),
+        ({"GITHUB_EVENT_NAME":"pull_request","GITHUB_HEAD_REF":"v0.93-stage3c3d3e-control-data-select",
+          "GITHUB_BASE_REF":"v0.93-stage3a3b-math-intops"}, True),
         ({"GITHUB_EVENT_NAME": "pull_request", "GITHUB_HEAD_REF": "feature/test",
           "GITHUB_BASE_REF": "v0.91", "GITHUB_REF_NAME": "53/merge"}, True),
         ({"GITHUB_EVENT_NAME": "workflow_dispatch", "GITHUB_REF_NAME": "feature/test",
@@ -92,7 +132,33 @@ def self_test() -> None:
         actual, reason = select_mode(env)
         if actual != expected:
             raise AssertionError(f"{env}: expected {expected}, got {actual}: {reason}")
-    print(f"CI validation policy: {len(cases)} cases PASS")
+    with tempfile.TemporaryDirectory(prefix="cpb-ci-policy-") as folder:
+        event_path = Path(folder) / "event.json"
+        event_path.write_text(json.dumps({
+            "pull_request": {"labels": [{"name": "full-validation"}]}
+        }))
+        actual, reason = select_mode({
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_HEAD_REF": "feature/additional-stage",
+            "GITHUB_BASE_REF": "main",
+            "GITHUB_EVENT_PATH": str(event_path),
+        })
+        if not actual:
+            raise AssertionError(f"full-validation label did not request FULL: {reason}")
+        if performance_mode({
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_EVENT_PATH": str(event_path),
+        }) != "off":
+            raise AssertionError("full-validation label must not enable timing reports")
+        event_path.write_text(json.dumps({
+            "pull_request": {"labels": [{"name": "performance-report"}]}
+        }))
+        if performance_mode({
+            "GITHUB_EVENT_NAME": "pull_request",
+            "GITHUB_EVENT_PATH": str(event_path),
+        }) != "report":
+            raise AssertionError("performance-report label did not enable timing")
+    print(f"CI validation policy: {len(cases) + 3} cases PASS")
 
 
 def main() -> None:

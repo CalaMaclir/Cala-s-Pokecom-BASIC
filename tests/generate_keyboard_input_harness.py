@@ -21,6 +21,9 @@ functions = [
     function("void end_command_input()"),
     function("int read_command_source("),
     function("int decode_terminal_key("),
+    "namespace { bool command_key_repeat = false; }",
+    function("bool last_key_repeat()"),
+    function("int get_char_timeout("),
     function("int get_char()"),
 ]
 template = Path("tests/keyboard_input_progress_test.cpp").read_text()

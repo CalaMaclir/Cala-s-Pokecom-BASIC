@@ -1,0 +1,73 @@
+# Frozen development build step topology for inherited regression assertions.
+# This is a fixture, not the public workflow or a runner configuration.
+performance_mode:
+        description: Frozen performance selector
+        default: off
+      - name: Select local or GitHub-hosted runner
+      - name: Checkout
+      - name: Test and select validation mode
+      - name: Install ARM toolchain on GitHub-hosted runner
+        if: needs.select-runner.outputs.local != 'true'
+      - name: Verify local build environment
+        if: needs.select-runner.outputs.local == 'true'
+      - name: Prepare Pico SDK 2.3.1
+      - name: Build cached host tests and run all regressions serially
+      - name: Upload host diagnostics on failure
+        if: failure()
+      - name: Configure
+      - name: Build
+      - name: Build editor performance artifact
+        if: env.FULL_VALIDATION == 'true' && env.PERFORMANCE_MODE == 'report'
+      - name: Verify ARM numeric-local fusion does not contract floating operations
+      - name: Measure SRAM and stack usage
+        if: success()
+      - name: Checkout Stage 1 evidence baseline
+        if: env.PERFORMANCE_MODE == 'report' && env.V093_PERFORMANCE_BRANCH != 'true' && env.STAGE5_BRANCH != 'true'
+      - name: Checkout frozen Stage 2 evidence baseline
+        if: env.PERFORMANCE_MODE == 'report' && env.V093_PERFORMANCE_BRANCH != 'true' && env.STAGE5_BRANCH != 'true'
+      - name: Measure Stage 1 and compare Classic performance and ARM memory
+        if: env.PERFORMANCE_MODE == 'report' && env.V093_PERFORMANCE_BRANCH != 'true' && env.STAGE5_BRANCH != 'true'
+      - name: Checkout accepted Stage 3A and 3B baseline
+        if: env.PERFORMANCE_MODE == 'report' && env.V093_PERFORMANCE_BRANCH != 'true' && env.STAGE5_BRANCH != 'true' && (success() || (failure() && steps.classic_evidence.conclusion == 'failure'))
+      - name: Measure Stage 2 baseline and identical Stage 3 A/B/C/D harness
+        if: env.PERFORMANCE_MODE == 'report' && env.V093_PERFORMANCE_BRANCH != 'true' && env.STAGE5_BRANCH != 'true' && (success() || (failure() && steps.classic_evidence.conclusion == 'failure'))
+      - name: Checkout v0.93 Stage 1 frozen main baseline
+        if: env.PERFORMANCE_MODE == 'report' && (github.head_ref == 'v0.93-stage1-structured-performance' || github.ref_name == 'v0.93-stage1-structured-performance')
+      - name: Measure v0.93 Stage 1 baseline, paired VM and ARM memory
+        if: env.PERFORMANCE_MODE == 'report' && (github.head_ref == 'v0.93-stage1-structured-performance' || github.ref_name == 'v0.93-stage1-structured-performance')
+      - name: Checkout frozen Stage 4 baseline
+        if: env.STAGE5_BRANCH == 'true'
+      - name: Build Stage 4 and integer FOR experiment; verify shared-source oracle
+        if: env.STAGE5_BRANCH == 'true'
+      - name: Stage 5 paired A-B and B-C performance report
+        if: env.STAGE5_BRANCH == 'true' && env.PERFORMANCE_MODE == 'report'
+      - name: Record advisory timing status
+      - name: Preserve performance evidence even when measurement fails
+        if: always() && env.PERFORMANCE_MODE == 'report'
+      - name: Checkout Version 0.90 release memory baseline
+        if: env.FULL_VALIDATION == 'true'
+      - name: Build and compare Version 0.90 release memory baseline
+        if: env.FULL_VALIDATION == 'true'
+      - name: Checkout Version 0.89 SPP memory baseline
+        if: env.FULL_VALIDATION == 'true'
+      - name: Build and compare Version 0.89 SPP memory baseline
+        if: env.FULL_VALIDATION == 'true'
+      - name: Show ARM compiler cache statistics
+        if: needs.select-runner.outputs.local == 'true'
+      - name: Resolve versioned artifact name
+      - name: Prepare isolated Python for PDF dependencies
+        if: env.FULL_VALIDATION == 'true'
+      - name: Checkout A-1 main memory baseline
+        if: env.FULL_VALIDATION == 'true' && github.head_ref == 'v0.93-additional-a1-wifi-retry-settle'
+      - name: Compare A-1 with main memory baseline
+        if: env.FULL_VALIDATION == 'true' && github.head_ref == 'v0.93-additional-a1-wifi-retry-settle'
+      - name: Generate current Japanese manuals
+        if: env.FULL_VALIDATION == 'true'
+      - name: Collect stability and resource evidence
+      - name: Record firmware identity and verify complete host results
+      - name: Stage and audit complete release package
+      - name: Upload firmware and memory evidence
+      - name: Stage and audit experimental integer FOR package
+        if: env.STAGE5_BRANCH == 'true'
+      - name: Upload EXPERIMENTAL integer FOR firmware
+        if: env.STAGE5_BRANCH == 'true'

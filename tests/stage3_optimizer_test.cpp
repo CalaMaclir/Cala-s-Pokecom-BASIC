@@ -4,7 +4,7 @@
 #include <memory>
 #include <cmath>
 #include <sstream>
-namespace rmb { extern bool optimizer_test_disabled,vm_test_generic; }
+namespace rmb { extern bool optimizer_test_disabled,vm_test_generic,vm_test_unverified; }
 namespace rmb::platform { int stage3_break_polls=0; }
 extern "C" void* __real_calloc(std::size_t,std::size_t);
 extern "C" void __real_free(void*);
@@ -39,12 +39,13 @@ void equivalent(const std::string& text,bool classic=false,bool require_fusion=f
     auto plain=std::make_unique<rmb::CompiledProgram>(),fast=std::make_unique<rmb::CompiledProgram>();
     rmb::optimizer_test_disabled=true;assert(compiler.compile(p,*plain).ok);
     rmb::optimizer_test_disabled=false;assert(compiler.compile(p,*fast).ok);
+    assert(rmb::validate_compiled_program(*plain)&&rmb::validate_compiled_program(*fast));
     assert(plain->code_count==fast->code_count);
     assert(plain->source_row_count==fast->source_row_count);
     assert(!plain->source_row_count||!std::memcmp(plain->source_rows,fast->source_rows,plain->source_row_count*sizeof(rmb::SourceRowPc)));
     bool fused=false;for(std::size_t i=0;i<fast->code_count;++i)fused|=fast->code[i].code==rmb::OpCode::LOCAL_NUM_FUSED;
     assert(!require_fusion||fused);
-    bool gray=false;for(std::size_t i=0;i<fast->code_count;++i)gray|=fast->code[i].code==rmb::OpCode::GRAY_PSET_MUL_INT;
+    bool gray=false;for(std::size_t i=0;i<fast->code_count;++i)gray|=fast->code[i].code==rmb::OpCode::GRAY_PSET_MUL_INT||fast->code[i].code==rmb::OpCode::LOCAL_GRAY_PSET_MUL_INT;
     assert(!require_gray||gray);
     auto vm=std::make_unique<rmb::VM>();
     vm->set_profile_mode(rmb::VmProfileMode::Counts);
@@ -63,6 +64,7 @@ void equivalent(const std::string& text,bool classic=false,bool require_fusion=f
     rmb::CompiledProgramCache cache;auto restored=std::make_unique<rmb::CompiledProgram>();
     assert(cache.store(p.revision(),*fast));
     assert(cache.restore(p.revision(),*restored,p.source_mode()));
+    assert(rmb::validate_compiled_program(*restored));
     auto hit=execute(*vm,*restored);
     assert(hit.text==b.text&&hit.hash==b.hash&&hit.pixels==b.pixels);
     assert(hit.diagnostic.pc==b.diagnostic.pc&&hit.diagnostic.source_row==b.diagnostic.source_row);
@@ -70,8 +72,38 @@ void equivalent(const std::string& text,bool classic=false,bool require_fusion=f
     assert(generic.text==b.text&&generic.hash==b.hash&&generic.pixels==b.pixels);
     assert(generic.diagnostic.pc==b.diagnostic.pc&&generic.diagnostic.source_row==b.diagnostic.source_row);
     assert(!std::strcmp(generic.diagnostic.message,b.diagnostic.message));
+    rmb::vm_test_unverified=true;auto checked=execute(*vm,*fast);rmb::vm_test_unverified=false;
+    assert(checked.text==b.text&&checked.hash==b.hash&&checked.pixels==b.pixels);
+    assert(checked.diagnostic.pc==b.diagnostic.pc&&checked.diagnostic.source_row==b.diagnostic.source_row);
+    assert(checked.diagnostic.call_source_row==b.diagnostic.call_source_row&&checked.diagnostic.call_depth==b.diagnostic.call_depth);
+    assert(!std::strcmp(checked.diagnostic.message,b.diagnostic.message));
     cache.invalidate();
 }
+void gray_overflow_equivalent() {
+    rmb::ProgramStore p;load(p,"PRINT F()\nEND\nFUNCTION F()\nA=3:B=4:X=0:Y=0\nG=INT(A*B)\nCOLOR G,G,G\nPSET X,Y\nRETURN G\nEND FUNCTION");
+    rmb::BasicCompiler compiler;
+    auto plain=std::make_unique<rmb::CompiledProgram>(),fast=std::make_unique<rmb::CompiledProgram>();
+    rmb::optimizer_test_disabled=true;assert(compiler.compile(p,*plain).ok);
+    rmb::optimizer_test_disabled=false;assert(compiler.compile(p,*fast).ok);
+    for(auto* il:{plain.get(),fast.get()}) {
+        const int prefix=190;
+        assert(il->code_count+prefix<rmb::kMaxOps&&il->number_count>0);
+        std::memmove(il->code+prefix,il->code,il->code_count*sizeof(rmb::Op));
+        il->code_count+=prefix;
+        for(int i=0;i<prefix;++i)il->code[i]={rmb::OpCode::PUSH_NUM,0,0,0,0};
+        for(std::size_t i=prefix;i<il->code_count;++i)if(il->code[i].code==rmb::OpCode::JMP)il->code[i].a+=prefix;
+        for(std::size_t i=0;i<il->function_count;++i){il->functions[i].entry_pc+=prefix;il->functions[i].end_pc+=prefix;}
+        for(std::size_t i=0;i<il->source_row_count;++i)il->source_rows[i].pc+=prefix;
+        assert(rmb::validate_compiled_program(*il));
+    }
+    auto vm=std::make_unique<rmb::VM>();const auto a=execute(*vm,*plain),b=execute(*vm,*fast);
+    assert(!a.diagnostic.ok&&std::strstr(a.diagnostic.message,"STACK OVERFLOW"));
+    assert(a.text==b.text&&a.hash==b.hash&&a.pixels==b.pixels);
+    assert(a.diagnostic.pc==b.diagnostic.pc&&a.diagnostic.source_row==b.diagnostic.source_row);
+    assert(a.diagnostic.call_source_row==b.diagnostic.call_source_row&&a.diagnostic.call_depth==b.diagnostic.call_depth);
+    assert(!std::strcmp(a.diagnostic.message,b.diagnostic.message));
+}
+
 int main() {
     // Keyword initial filtering keeps case/whitespace and identifier boundaries.
     equivalent("10 letter=3:printer=4\n20 remnant=letter+printer\n30 print remnant\n40 end\n",true);
@@ -79,6 +111,16 @@ int main() {
     equivalent("A=3:B=4:X=0:Y=0\nG=INT(A*B):COLOR G,G,G:PSET X,Y\nPRINT G\nEND",false,false,true);
     equivalent("A=3\nB=4\nX=0\nY=0\nG=INT(A*B)\nCOLOR G,G,G\nREM source map only\nPSET X,Y\nPRINT G\nEND",false,false,true);
     equivalent("10 A=3:B=4:G=7:X=0:Y=0\n20 GOTO 40\n30 G=INT(A*B):COLOR G,G,G\n40 PSET X,Y\n50 PRINT G:END",true);
+    // Local graphics: clamping, fractional/negative coordinates, aliasing and high slots.
+    equivalent("PRINT F()\nEND\nFUNCTION F()\nA=3:B=4:X=-0.7:Y=1.9\nG=INT(A*B)\nCOLOR G,G,G\nPSET X,Y\nRETURN G\nEND FUNCTION",false,true,true);
+    for(const char* product:{"-2*3","100*10","0.7*3"})
+        equivalent(std::string("PRINT F()\nEND\nFUNCTION F()\nA=")+product+"\nB=1:X=0:Y=0\nX=INT(A*B):COLOR X,X,X:PSET X,Y\nRETURN X\nEND FUNCTION",false,true,true);
+    std::string gray_high="PRINT F()\nEND\nFUNCTION F()\n";
+    for(int i=0;i<128;++i)gray_high+="V"+std::to_string(i)+"="+std::to_string(i)+"\n";
+    gray_high+="V127=INT(V64*V126):COLOR V127,V127,V127:PSET V127,V0\nRETURN V127\nEND FUNCTION";
+    equivalent(gray_high,false,true,true);
+    equivalent("PRINT F()\nEND\nFUNCTION F()\nA=2:B=3:X=0:Y=0\nG=INT(A*B)\nIF A>0 THEN\nCOLOR G,G,G\nEND IF\nPSET X,Y\nRETURN G\nEND FUNCTION");
+    gray_overflow_equivalent();
     // All expression patterns, self assignment and evaluation order; no FMA.
     equivalent("PRINT F()\nEND\nFUNCTION F()\nA=2:B=3:C=5:D=7:E=11\n"
         "X=A*B-C*D+E\nY=A+B*C\nZ=A*B+C\nQ=2*A*B+C\nA=A+B\nB=B-C\nC=C*D\n"
@@ -131,5 +173,47 @@ int main() {
     assert(interrupted.diagnostic.interrupted&&live==0);
     rmb::platform::stage3_break_polls=0;
     load(p,"PRINT 42\nEND");assert(compiler.compile(p,*il).ok);assert(execute(*vm,*il).diagnostic.ok);
+    // Public IL mutation must invalidate the RUN-scoped proof automatically.
+    load(p,"PRINT F()\nEND\nFUNCTION F()\nA=1:B=2:C=A+B\nRETURN C\nEND FUNCTION");
+    assert(compiler.compile(p,*il).ok&&rmb::validate_compiled_program(*il));
+    bool corrupted=false;
+    for(std::size_t i=0;i<il->code_count;++i)if(il->code[i].code==rmb::OpCode::LOCAL_NUM_FUSED) {
+        il->code[i].s=65535;corrupted=true;break;
+    }
+    assert(corrupted&&!rmb::validate_compiled_program(*il));
+    auto bad=execute(*vm,*il);assert(!bad.diagnostic.ok&&std::strstr(bad.diagnostic.message,"BAD LOCAL FUSION"));
+    rmb::CompiledProgramCache bad_cache;assert(!bad_cache.store(p.revision(),*il));
+    assert(compiler.compile(p,*il).ok&&execute(*vm,*il).diagnostic.ok);
+    // Cross-FUNCTION control flow cannot earn the RUN-scoped proof. Raw IL
+    // still takes the checked runtime path and reports the local-frame error.
+    load(p,"PRINT SMALL()\nEND\nFUNCTION SMALL()\nRETURN 1\nEND FUNCTION\n"
+        "FUNCTION BIG()\nA=1:B=2:C=A+B\nRETURN C\nEND FUNCTION");
+    assert(compiler.compile(p,*il).ok&&il->function_count==2);
+    const auto entry=il->functions[0].entry_pc;
+    int other=-1;
+    for(int i=il->functions[1].entry_pc;i<il->functions[1].end_pc;++i)
+        if(il->code[i].code==rmb::OpCode::LOCAL_NUM_FUSED){other=i;break;}
+    assert(other>=0);
+    il->code[entry]={rmb::OpCode::JMP,0,0,other,0};
+    assert(!rmb::validate_compiled_program(*il));
+    auto wrong_frame=execute(*vm,*il);
+    assert(!wrong_frame.diagnostic.ok&&std::strstr(wrong_frame.diagnostic.message,"BAD LOCAL FUSION"));
+    // Invalid parameter metadata must fail before writing outside a new frame.
+    load(p,"PRINT F(1)\nEND\nFUNCTION F(N)\nRETURN N\nEND FUNCTION");
+    assert(compiler.compile(p,*il).ok);
+    il->functions[0].locals[0].slot=128;
+    assert(!rmb::validate_compiled_program(*il));
+    auto bad_parameter=execute(*vm,*il);
+    assert(!bad_parameter.diagnostic.ok&&std::strstr(bad_parameter.diagnostic.message,"BAD LOCAL SLOT"));
+    // A corrupt retained graphics tail must not be trusted on a raw RUN.
+    load(p,"PRINT F()\nEND\nFUNCTION F()\nA=2:B=3:X=0:Y=0\nG=INT(A*B):COLOR G,G,G:PSET X,Y\nRETURN G\nEND FUNCTION");
+    assert(compiler.compile(p,*il).ok);
+    bool gray_corrupted=false;
+    for(std::size_t i=0;i<il->code_count;++i)if(il->code[i].code==rmb::OpCode::LOCAL_GRAY_PSET_MUL_INT) {
+        il->code[i+1].a=128;gray_corrupted=true;break;
+    }
+    assert(gray_corrupted&&!rmb::validate_compiled_program(*il));
+    auto bad_gray=execute(*vm,*il);
+    assert(!bad_gray.diagnostic.ok&&std::strstr(bad_gray.diagnostic.message,"BAD LOCAL GRAPHICS FUSION"));
     std::puts("Stage 3 optimizer, diagnostics, slots, cache and cleanup: PASS");
 }

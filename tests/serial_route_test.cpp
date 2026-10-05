@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <climits>
+#include <string>
 
 std::uint64_t test_time = 0;
 bool usb_connected = false, usb_enabled = true, uart_enabled = true;
@@ -245,6 +246,33 @@ int main() {
     console_local_input();
     assert(std::strcmp(serial_transfer_route_name(), "USB CDC") == 0);
 
+    usb_connected = false;
+    assert(begin_usb_diagnostic()==DiagnosticSerialResult::Unavailable);
+    usb_connected = true;
+    assert(begin_serial_transfer(SerialTransferRoute::Usb));
+    assert(begin_usb_diagnostic()==DiagnosticSerialResult::Busy);
+    end_serial_transfer();
+    assert(begin_serial_transfer(SerialTransferRoute::Uart));
+    assert(begin_usb_diagnostic()==DiagnosticSerialResult::Busy);
+    end_serial_transfer();
+    usb_input.push_back('z');
+    const auto route_before=std::string(serial_transfer_route_name());
+    const auto uart_before=uart_output.size();
+    const auto usb_before=usb_output.size();
+    assert(begin_usb_diagnostic()==DiagnosticSerialResult::Ready);
+    assert(serial_transfer_active());
+    assert(!begin_serial_transfer(SerialTransferRoute::Uart));
+    assert(console_serial_read(0)==-1);
+    assert(write_usb_diagnostic("report\r\n"));
+    assert(usb_output.size()==usb_before+8&&uart_output.size()==uart_before);
+    end_usb_diagnostic();
+    assert(!serial_transfer_active()&&!write_usb_diagnostic("invalid"));
+    assert(std::string(serial_transfer_route_name())==route_before);
+    assert(console_serial_read(0)=='z');
+    assert(begin_usb_diagnostic()==DiagnosticSerialResult::Ready);
+    usb_connected=false;
+    assert(!write_usb_diagnostic("disconnected"));
+    end_usb_diagnostic();usb_connected=true;
     std::puts(
         "USB bulk/short-read/cancel, UART 4 KiB ring/overflow, settings and routing passed"
     );

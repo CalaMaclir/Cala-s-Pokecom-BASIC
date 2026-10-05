@@ -5,6 +5,8 @@ namespace rmb {
 // Stored separately from globals and the native C++ call stack.
 struct UserCallFrame {
     UserCallFrame* previous=nullptr;
+    const FunctionInfo* function=nullptr; // SRAM hot metadata, fixed at CALL; never serialized
+
     std::int32_t return_pc=0, function_id=0, call_pc=0;
     std::size_t expression_base=0, for_base=0, return_base=0;
     std::size_t allocated_bytes=0;
@@ -14,3 +16,4 @@ struct UserCallFrame {
     }
 };
 } // namespace rmb
+

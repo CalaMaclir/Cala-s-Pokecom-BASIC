@@ -1,3 +1,4 @@
+#include "for_runtime.hpp"
 // Compile only, with the firmware ARM ABI. nm symbol sizes encode sizeof.
 #include <cstddef>
 #include <cstdint>
@@ -42,3 +43,13 @@ char memory_size_call_frame_wrap[sizeof(rmb::UserCallFrame)+128];
 char memory_size_call_frame_max_strings[sizeof(rmb::UserCallFrame)+128*128];
 char memory_size_call_frame_max_strings_depth16[16*(sizeof(rmb::UserCallFrame)+128*128)];
 }
+
+SIZE(for_frame, rmb::ForFrame)
+
+SIZE(wifi_profile, rmb::wifi_profiles::WifiProfile)
+SIZE(wifi_profiles, rmb::wifi_profiles::Profiles)
+SIZE(settings, rmb::Repl::Settings)
+
+SIZE(error_context, rmb::ErrorContext)
+SIZE(vm_result, rmb::VmResult)
+SIZE(system_information_snapshot, rmb::SystemInformation)

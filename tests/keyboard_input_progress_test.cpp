@@ -14,6 +14,7 @@ int read_key() { const int v = fake_key; fake_key = -1; return v; }
 void set_caps_lock(bool) {}
 bool caps_lock_enabled() { return false; }
 bool shift_held() { return false; }
+bool last_key_repeat() { return false; }
 }
 namespace rmb::bluetooth_hid_ble {
 int fake_key = -1;
@@ -21,6 +22,7 @@ int read_key() { const int v = fake_key; fake_key = -1; return v; }
 void set_caps_lock(bool) {}
 bool caps_lock_enabled() { return false; }
 bool shift_held() { return false; }
+bool last_key_repeat() { return false; }
 }
 namespace rmb::picocalc::display { void set_cursor_visible(bool) {} }
 namespace rmb::platform {
@@ -59,6 +61,12 @@ void reset_input() {
 int main() {
     using namespace rmb::platform;
     using namespace rmb::picocalc::keyboard;
+
+    reset_fake_hardware(); rmb::picocalc::keyboard::init(); reset_input();
+    const auto before_timeout=fake_us;
+    assert(get_char_timeout(100)==-1);
+    assert(fake_us-before_timeout>=100000u&&fake_us-before_timeout<120000u);
+    assert(!rmb::platform::last_key_repeat());
 
     // During the 750 ms quiet window, serial wins without any I2C transfer.
     reset_fake_hardware(); rmb::picocalc::keyboard::init(); reset_input();
@@ -141,5 +149,19 @@ int main() {
     rmb::bluetooth_hid::fake_key = 'c'; assert(get_char() == 'c');
     end_command_input(); begin_command_input();
     rmb::bluetooth_hid_ble::fake_key = 'd'; assert(get_char() == 'd');
+    reset_fake_hardware(); rmb::picocalc::keyboard::init();
+    assert(boot_until_ready(3000));reset_input();
+    key_events.emplace_back(1,0xb4);key_events.emplace_back(2,0xb4);
+    assert(get_char()==0xb4&&!rmb::platform::last_key_repeat());
+    assert(get_char()==0xb4&&rmb::platform::last_key_repeat());
+    // Finish the local input transaction before checking Serial metadata.
+    // A healthy local partial line intentionally retains input ownership.
+    end_command_input();begin_command_input();
+    key_events.emplace_back(3,0xb4);serial_queue.push_back(13);
+    assert(get_char()==13&&!rmb::platform::last_key_repeat());
+    unsigned char bios=123;
+    const auto writes_before=i2c_write_calls;
+    (void)cached_bios_version_value(bios);
+    assert(i2c_write_calls==writes_before);
     std::puts("production input progress with cold-boot deferral passed");
 }

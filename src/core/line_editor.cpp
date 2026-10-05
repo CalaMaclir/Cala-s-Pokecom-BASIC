@@ -1,4 +1,5 @@
 #include "line_editor.hpp"
+#include "input_hotkeys.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -143,10 +144,17 @@ int LineEditor::last_special_key() {
 class CommandInputLease { public: CommandInputLease(){platform::begin_command_input();} ~CommandInputLease(){platform::end_command_input();} };
 
 std::size_t LineEditor::read(
+    char* buffer, std::size_t capacity, CommandHistory* history, const char* initial
+) {
+    return read(buffer, capacity, history, initial, false);
+}
+
+std::size_t LineEditor::read(
     char* buffer,
     std::size_t capacity,
     CommandHistory* history,
-    const char* initial
+    const char* initial,
+    bool workflow_shortcuts
 ) {
     CommandInputLease input_lease;
     special_key = 0;
@@ -194,6 +202,18 @@ std::size_t LineEditor::read(
     while (true) {
         const int c = platform::get_char();
 
+        if (input_hotkeys::workflow_event(c)) {
+            if (workflow_shortcuts && length == 0 &&
+                input_hotkeys::prompt_action(c)) {
+                special_key = c;
+                buffer[0] = '\0';
+                platform::put_string("\r\n");
+                return 0;
+            }
+            // Dialogs and partially entered commands keep all input intact.
+            continue;
+        }
+
         if (c == kEnter || c == kCarriageReturn) {
             position_cursor(origin_col, origin_row, length);
             platform::put_string("\r\n");
@@ -203,6 +223,7 @@ std::size_t LineEditor::read(
         }
 
         if (c == kEscape || c == 0x1b || c == 0x03) {
+            special_key = c;
             const std::size_t old_length = rendered_length;
             length = 0;
             cursor = 0;

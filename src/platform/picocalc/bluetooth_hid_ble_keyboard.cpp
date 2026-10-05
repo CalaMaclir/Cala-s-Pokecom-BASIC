@@ -1307,6 +1307,8 @@ bluetooth_hid::KeyboardLayout layout() {
     return value;
 }
 
+bool last_key_repeat() { return keyboard.last_key_repeat(); }
+
 int read_key() {
     if (!wireless::initialized()) return -1;
     cyw43_arch_lwip_begin();

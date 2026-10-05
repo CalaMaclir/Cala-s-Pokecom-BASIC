@@ -1,12 +1,35 @@
 #include "bluetooth_hid_keyboard_core.hpp"
+#include "input_hotkeys.hpp"
 
 #include <cassert>
 #include <cstdint>
+#include <initializer_list>
 
 using rmb::bluetooth_hid::KeyboardCore;
 using rmb::bluetooth_hid::KeyboardLayout;
 
 int main() {
+    using namespace rmb::input_hotkeys;
+    for (auto layout : {KeyboardLayout::Us, KeyboardLayout::Jis}) {
+        for (bool caps : {false,true}) for (std::uint8_t modifiers : {0x04,0x40,0x06,0x60}) {
+            for (char letter : {'e','r','c','m','u','s','p'}) {
+                const auto usage=static_cast<std::uint8_t>(0x04+letter-'a');
+                assert(KeyboardCore::translate_usage(layout,usage,modifiers,caps)==alt_letter(letter));
+                KeyboardCore hotkey;hotkey.set_layout(layout);hotkey.set_caps_lock(caps);
+                hotkey.handle_report(modifiers,&usage,1,0);
+                assert(hotkey.read_key(0)==alt_letter(letter));
+                hotkey.handle_report(modifiers,&usage,1,1000);
+                assert(hotkey.read_key(1000)==-1&&!KeyboardCore::repeatable(alt_letter(letter)));
+                hotkey.handle_report(0,nullptr,0,1001);
+                hotkey.handle_report(modifiers,&usage,1,1002);
+                assert(hotkey.read_key(1002)==alt_letter(letter));
+            }
+            assert(KeyboardCore::translate_usage(layout,0x2b,modifiers|0x02,caps)==ShiftTab);
+            assert(KeyboardCore::translate_usage(layout,0x2c,modifiers,caps)==' ');
+            assert(KeyboardCore::translate_usage(layout,0x05,modifiers,caps)==
+                (caps != ((modifiers & 0x22) != 0) ? 'B' : 'b'));
+        }
+    }
     KeyboardCore core;
 
     const std::uint8_t a[] = {0x04};
@@ -14,6 +37,7 @@ int main() {
     assert(core.read_key(0) == 'a');
     assert(core.read_key(399) == -1);
     assert(core.read_key(400) == 'a');
+    assert(core.last_key_repeat());
     assert(core.read_key(449) == -1);
     assert(core.read_key(450) == 'a');
 
@@ -22,6 +46,7 @@ int main() {
 
     core.handle_report(0x02, a, 1, 1100);
     assert(core.read_key(1100) == 'A');
+    assert(!core.last_key_repeat());
     core.handle_report(0, nullptr, 0, 1101);
 
     const std::uint8_t caps[] = {0x39};

@@ -575,6 +575,12 @@ int main(int argc,char** argv) {
     assert(p.save("USBTEST.BAS"));
     assert(p.suspend_for_usb() && p.suspended());
     mounted=false;
+    ProgramLine suspended_line;
+    assert(!p.read_line(0,suspended_line));
+    assert(!p.set_line(10,"PRINT 999"));
+    assert(!p.save("USBTEST.BAS"));
+    assert(!p.load("USBTEST.BAS"));
+    assert(p.suspended());
     write(root+"USBTEST.BAS","10 PRINT 80\n20 END\n");
     mounted=true;
     assert(p.resume_after_usb());

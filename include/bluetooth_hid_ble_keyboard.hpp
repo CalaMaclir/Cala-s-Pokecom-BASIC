@@ -65,6 +65,7 @@ const char* last_error();
 void set_layout(bluetooth_hid::KeyboardLayout layout);
 bluetooth_hid::KeyboardLayout layout();
 int read_key();
+bool last_key_repeat();
 bool caps_lock_enabled();
 bool shift_held();
 void set_caps_lock(bool enabled);

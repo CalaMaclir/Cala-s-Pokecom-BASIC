@@ -78,6 +78,11 @@ enum class OpCode : std::uint8_t {
     CALL_USER, RETURN_USER, FUNCTION_FALLTHROUGH,
     FOR_LOCAL_INIT, FOR_LOCAL_CHECK, FOR_LOCAL_INCR, INPUT_LOCAL,
     LOCAL_NUM_FUSED, // seven-bit local operands; raw IL tails/source PCs remain intact
+    LOCAL_GRAY_PSET_MUL_INT, // five 7-bit locals; preserved 12-slot numeric/color/pixel tail
+    // v0.93 integer operations; existing opcode values remain unchanged except HALT.
+    IDIV_NUM, SHL_NUM, SHR_NUM, BXOR_NUM,
+    EXIT_LOOP, // a: target PC; b: discard count; s: expected current-call FOR depth
+    READ_DATA_NUM, READ_DATA_STR, RESTORE_DATA,
     HALT
 };
 
@@ -97,6 +102,10 @@ constexpr int SPC = 12;
 constexpr int TAB = 13;
 constexpr int INSTR = 14;
 constexpr int STRINGS = 15;
+constexpr int TRIMS = 16;
+constexpr int LTRIMS = 17;
+constexpr int RTRIMS = 18;
+constexpr int REPLACES = 19;
 
 constexpr int SIN = 20;
 constexpr int COS = 21;
@@ -113,6 +122,10 @@ constexpr int MIN = 31;
 constexpr int MAX = 32;
 constexpr int CLAMP = 33;
 constexpr int RNDI = 34;
+constexpr int LN = 35;
+constexpr int ASIN = 36;
+constexpr int ACOS = 37;
+constexpr int ATAN2 = 38;
 constexpr int TIMER = 40;
 constexpr int RANDOMIZE = 41;
 constexpr int INKEY = 42;
@@ -130,6 +143,9 @@ constexpr int WAVPLAY = 53;
 constexpr int WAVSTOP = 54;
 constexpr int WAVPAUSE = 55;
 constexpr int WAVRESUME = 56;
+constexpr int DATES = 57;
+constexpr int TIMES = 58;
+constexpr int SPACES = 59;
 
 constexpr int INPUT = 100;
 constexpr int LOCATE = 120;
@@ -152,6 +168,7 @@ constexpr int GPAINT = 214;
 constexpr int PAUSE = 215;
 constexpr int GDEF = 216;
 constexpr int GPALETTE = 217;
+constexpr int GLOAD = 218; // Existing FnId values/cache layout remain unchanged.
 } // namespace FnId
 
 // Compact fixed-width VM instruction.
@@ -179,6 +196,19 @@ constexpr std::size_t kMaxSymbols = 64;
 static_assert(kMaxSymbols <= 64, "Stage-3 packed opcodes require 6-bit symbol slots");
 constexpr std::size_t kSymbolNameLength = 17;
 constexpr std::size_t kMaxLineMap = 256;
+
+// Two tag bits and a 14-bit pool reference. Tags 2/3 are reserved and invalid.
+// Keep runtime DATA values in the existing SRAM pools, not in PSRAM.
+struct DataItem {
+    std::uint16_t reference=0;
+    static constexpr std::uint16_t kIndexMask=0x3fffu, kStringTag=0x4000u;
+    unsigned type() const { return reference>>14; }
+    std::uint16_t index() const { return reference&kIndexMask; }
+};
+static_assert(sizeof(DataItem)==2,"DATA reference must stay compact");
+static_assert(kNumberPoolSize<=DataItem::kIndexMask&&kStringPoolSize<=DataItem::kIndexMask,
+              "DATA references must address existing pools");
+constexpr std::size_t kMaxDataItems=4096;
 
 struct Symbol {
     char name[kSymbolNameLength] = {};
@@ -208,6 +238,11 @@ struct SourceRowPc {
     std::int32_t row = 0, pc = 0, function_id = -1;
 };
 struct CompiledProgram {
+    DataItem* data_items=nullptr;
+    std::size_t data_count=0, data_capacity=0;
+    bool reserve_data(std::size_t count);
+    bool append_data(DataItem item);
+    bool compact_data();
     FunctionInfo* functions=nullptr;
     std::size_t function_count=0;
     int add_function(const char* name);
@@ -250,5 +285,9 @@ struct CompiledProgram {
     int find_or_add_symbol(const char* name);
     int find_pc_for_line(std::int32_t line) const;
 };
+
+// Shared operand/metadata validation. VM proof is scoped to one immutable RUN,
+// never serialized or trusted after externally mutable test IL has changed.
+bool validate_compiled_program(const CompiledProgram& program);
 
 } // namespace rmb

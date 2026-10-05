@@ -1,0 +1,2625 @@
+{
+  "schema_version": 1,
+  "tag": "v0.94.0",
+  "development_source": "14c23f0dede4df381726379fd4474f7750e54ddf",
+  "private_history_imported": false,
+  "public_parent": "87ae00637f3a3200a527f9bc4ddc632caebd06d4",
+  "files": [
+    {
+      "path": ".github/workflows/publish-release.yml",
+      "development_blob": null,
+      "public_blob": "283163f0c711fca36d5ef30c56cf91b68c68f0dd",
+      "intentional_adaptation": true,
+      "reason": "Public-only release automation; original private workflow and history are not imported."
+    },
+    {
+      "path": ".gitignore",
+      "development_blob": "04360158b81be145a4dd956a5f1fdcce9d7b9847",
+      "public_blob": "04360158b81be145a4dd956a5f1fdcce9d7b9847",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "CMakeLists.txt",
+      "development_blob": "3a0a1223713b73f8c4f17d8d718323be523035c3",
+      "public_blob": "3a0a1223713b73f8c4f17d8d718323be523035c3",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "README.en.md",
+      "development_blob": "fd53170d6f4244c87fb04e700aefbf4abef8c571",
+      "public_blob": "69ee1e0eac9881e739bbf4d988b874059edfba12",
+      "intentional_adaptation": true,
+      "reason": "Public contribution entry replaces private rules/archive references; formal current manuals retained."
+    },
+    {
+      "path": "README.md",
+      "development_blob": "0af5eddabf119c5c423e51a356079a2e3657faf6",
+      "public_blob": "7e1bbdd93c416c0fb6a47f0fe865cc5b46eafdca",
+      "intentional_adaptation": true,
+      "reason": "Public contribution entry replaces private rules/archive references; formal current manuals retained."
+    },
+    {
+      "path": "docs/Cala-Pokecom-BASIC-v0.92-Install-Manual-ja.pdf",
+      "development_blob": "196d89c607750c67f513c7ff352210f2007dbe3f",
+      "public_blob": "196d89c607750c67f513c7ff352210f2007dbe3f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/Cala-Pokecom-BASIC-v0.92-Programming-Reference-ja.pdf",
+      "development_blob": "677e8e62812e9185df7ee30a0bb1ab6e305e7fd1",
+      "public_blob": "677e8e62812e9185df7ee30a0bb1ab6e305e7fd1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/Cala-Pokecom-BASIC-v0.92-System-Manual-ja.pdf",
+      "development_blob": "ca4fa990c7b8b2be6bcb917b5c639f97543a6515",
+      "public_blob": "f61901da7c56aea624a273eacec26f8d2fcbab1a",
+      "intentional_adaptation": true,
+      "reason": "Preserve the existing public v0.92 PDF rather than the different private historical variant."
+    },
+    {
+      "path": "docs/Cala-Pokecom-BASIC-v0.94-Install-Manual-ja.pdf",
+      "development_blob": "6e48dc8757056e21a2a9a95e492afae0319fb642",
+      "public_blob": "6e48dc8757056e21a2a9a95e492afae0319fb642",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/Cala-Pokecom-BASIC-v0.94-Programming-Reference-ja.pdf",
+      "development_blob": "ce6f2beb60a763db240bb62669b51845c5641533",
+      "public_blob": "ce6f2beb60a763db240bb62669b51845c5641533",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/Cala-Pokecom-BASIC-v0.94-System-Manual-ja.pdf",
+      "development_blob": "c29fc6ac6281055fec3ab8833e36232d3d66431f",
+      "public_blob": "c29fc6ac6281055fec3ab8833e36232d3d66431f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/IPA-Font-License.txt",
+      "development_blob": "fe8db2478ac0895b54255b495c64b87617352ade",
+      "public_blob": "fe8db2478ac0895b54255b495c64b87617352ade",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/THIRD_PARTY_NOTICES.md",
+      "development_blob": "4a9dd3b16a8d74a633c35cbbe96293bba2bab636",
+      "public_blob": "4a9dd3b16a8d74a633c35cbbe96293bba2bab636",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/archive/v0.92/SHA256SUMS.txt",
+      "development_blob": "6e7678591cb0ebcb79d923bd39f3fb9ae9731a76",
+      "public_blob": "bdfcae2fb266789d178d9c376ab87250f328aaaf",
+      "intentional_adaptation": true,
+      "reason": "Preserve original public v0.92 hashes and generator provenance, normalize archived source paths; no published PDF changed."
+    },
+    {
+      "path": "docs/archive/v0.92/install-manual-ja.md",
+      "development_blob": "a8bee8cb47220ac904d8f58859d5ff117bb08499",
+      "public_blob": "a8bee8cb47220ac904d8f58859d5ff117bb08499",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/archive/v0.92/manuals-manifest.json",
+      "development_blob": "a1e4c9e1fde944625acacca05ea4af9b7cf15e6c",
+      "public_blob": "3e56319e2d76057c23eaa27a331ba81cbb939451",
+      "intentional_adaptation": true,
+      "reason": "Preserve original public v0.92 hashes and generator provenance, normalize archived source paths; no published PDF changed."
+    },
+    {
+      "path": "docs/archive/v0.92/programming-reference-ja.md",
+      "development_blob": "09dc3ec8b20fd695fea5acc6f3cb50bb207c012d",
+      "public_blob": "09dc3ec8b20fd695fea5acc6f3cb50bb207c012d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/archive/v0.92/system-manual-ja.md",
+      "development_blob": "a0110fa732b294f97eedfe719225ebf123a0d1b6",
+      "public_blob": "7cf84a9ad47073aa3aed799b7de0895ca1fb048a",
+      "intentional_adaptation": true,
+      "reason": "Archive the actual published v0.92 System source for byte-exact public PDF reproduction."
+    },
+    {
+      "path": "docs/development/control-center-menu-conventions.md",
+      "development_blob": "8d01238636a04564b517f2a57918b004b25994ff",
+      "public_blob": "dfa32d00e73c7268145c1b98b526c4b417f0e802",
+      "intentional_adaptation": true,
+      "reason": "Replace private implementation-rule links."
+    },
+    {
+      "path": "docs/development/firmware-update.md",
+      "development_blob": "a566452d4d8c5ff9f8d01be2465d0d5069ac45ee",
+      "public_blob": "a566452d4d8c5ff9f8d01be2465d0d5069ac45ee",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/development/manual-pdf-generation.md",
+      "development_blob": "c711677bec50e80d6cd38071bc01f01df3cb57b4",
+      "public_blob": "4ba0453b854306de926854dc98b36f2e4b190fd5",
+      "intentional_adaptation": true,
+      "reason": "Public manual reproduction procedure with public source audit and existing historical record."
+    },
+    {
+      "path": "docs/development/public-source-build.md",
+      "development_blob": null,
+      "public_blob": "0cd4e539a3a3495e50c6971d70fe64738fd3c545",
+      "intentional_adaptation": true,
+      "reason": "Public build instructions without private operational links."
+    },
+    {
+      "path": "docs/install-manual-ja.md",
+      "development_blob": "760cef9a00287b117f1710b634042610c13efeee",
+      "public_blob": "760cef9a00287b117f1710b634042610c13efeee",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/manual-ja.md",
+      "development_blob": "b2704edf87c3ebda9350c96228396a5edc39cdc4",
+      "public_blob": "4c4c748a001239961883dbd6eddbeb7aaa28c10a",
+      "intentional_adaptation": true,
+      "reason": "Public index links to publication record rather than private Stage record."
+    },
+    {
+      "path": "docs/manuals-manifest.json",
+      "development_blob": "444d5e87a3fb878b56026e4fc0d0841bf2abfc7b",
+      "public_blob": "444d5e87a3fb878b56026e4fc0d0841bf2abfc7b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/programming-reference-ja.md",
+      "development_blob": "43448677d5363185ccaa341f9695eb09822e7279",
+      "public_blob": "43448677d5363185ccaa341f9695eb09822e7279",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/release/v0.94-hardware-acceptance.json",
+      "development_blob": "f1527dbedb6b21a8a9aa7f02a332fd4e30a755d7",
+      "public_blob": "f1527dbedb6b21a8a9aa7f02a332fd4e30a755d7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/release/v0.94-known-limitations.md",
+      "development_blob": "36b17bd91506419bc1771381a72b9cd8e73689df",
+      "public_blob": "36b17bd91506419bc1771381a72b9cd8e73689df",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "docs/release/v0.94-release-checklist.md",
+      "development_blob": null,
+      "public_blob": "cd4d504a9172a9ac63e7d5c63907f46437e6e1c3",
+      "intentional_adaptation": true,
+      "reason": "Public release mapping replaces private internal preparation checklist."
+    },
+    {
+      "path": "docs/release/v0.94-release-notes.md",
+      "development_blob": "1a254b5699cafc0373fc80664b48815a9575cb86",
+      "public_blob": "186c902e66f8928ebebacdfc69fdde812a539032",
+      "intentional_adaptation": true,
+      "reason": "Replace private internal release procedure link with public publication record."
+    },
+    {
+      "path": "docs/system-manual-ja.md",
+      "development_blob": "178a4dd1e5e99804374372f1f666a1c23ff54592",
+      "public_blob": "178a4dd1e5e99804374372f1f666a1c23ff54592",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/3dhat.bas",
+      "development_blob": "28e36953b784b874f12e90e44c5bd08d28252eba",
+      "public_blob": "28e36953b784b874f12e90e44c5bd08d28252eba",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/3dhat_mesh.bas",
+      "development_blob": "a8fbb33ca2dffd13016189b8c7bc222a2ea8a8ea",
+      "public_blob": "a8fbb33ca2dffd13016189b8c7bc222a2ea8a8ea",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/CPB_BACH_MEGADEMO.BAS",
+      "development_blob": "9af6c7552453063a71e11cde8e94afef5aaa41ef",
+      "public_blob": "9af6c7552453063a71e11cde8e94afef5aaa41ef",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/CPB_V085_LONG_LINE_MEGADEMO.BAS",
+      "development_blob": "2d36d53f382c839506d753aaeb414a5931945fe9",
+      "public_blob": "2d36d53f382c839506d753aaeb414a5931945fe9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/Lissajous_Gallery.BAS",
+      "development_blob": "e65079484106b05643e7f87aa9b203e094e07aae",
+      "public_blob": "e65079484106b05643e7f87aa9b203e094e07aae",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/README.md",
+      "development_blob": "18832ddcf7d9d7046bd01d2ff89a06ea313a0dc5",
+      "public_blob": "18832ddcf7d9d7046bd01d2ff89a06ea313a0dc5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/RMBASIC.CFG",
+      "development_blob": "a271b8299b7b3384bf7d1b3674460c49210288b1",
+      "public_blob": "a271b8299b7b3384bf7d1b3674460c49210288b1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/graphics.bas",
+      "development_blob": "68ee76cb04206e1bc5a81218e7c3aabe64b7839f",
+      "public_blob": "68ee76cb04206e1bc5a81218e7c3aabe64b7839f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/hello.bas",
+      "development_blob": "ba1a7cbbe49b3d87b2bd9897eb993498674f8933",
+      "public_blob": "ba1a7cbbe49b3d87b2bd9897eb993498674f8933",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/julia_graphics.bas",
+      "development_blob": "b2bacd0fc6d81e749b05c039e90f29b68d2e5382",
+      "public_blob": "b2bacd0fc6d81e749b05c039e90f29b68d2e5382",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/mandel_graphics.bas",
+      "development_blob": "f14fb5e9b4330f9fa6f373b7f3aee442569f1374",
+      "public_blob": "f14fb5e9b4330f9fa6f373b7f3aee442569f1374",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/mandel_text.bas",
+      "development_blob": "b02c7da12d8fb48419b14e8e1e5d77e638cb2677",
+      "public_blob": "b02c7da12d8fb48419b14e8e1e5d77e638cb2677",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/picocalc_mand.bas",
+      "development_blob": "a476d7a40e8f5412f8af1580127e6ed011343a89",
+      "public_blob": "a476d7a40e8f5412f8af1580127e6ed011343a89",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/arithmetic-classic.bas",
+      "development_blob": "dca133d4e0c0549b721a6a4c69ef537e7c2d28d9",
+      "public_blob": "dca133d4e0c0549b721a6a4c69ef537e7c2d28d9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/arithmetic-colon.bas",
+      "development_blob": "7c095f0c915864e2b8a0ec37e38239c20394e224",
+      "public_blob": "7c095f0c915864e2b8a0ec37e38239c20394e224",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/arithmetic-function.bas",
+      "development_blob": "523e4b4cef0e6266c52971783fb8716e20de3427",
+      "public_blob": "523e4b4cef0e6266c52971783fb8716e20de3427",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/arithmetic-rows.bas",
+      "development_blob": "7c095f0c915864e2b8a0ec37e38239c20394e224",
+      "public_blob": "7c095f0c915864e2b8a0ec37e38239c20394e224",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/break-loop.bas",
+      "development_blob": "978b2f14fcf07f9fa666ba155572a5ab042eab69",
+      "public_blob": "978b2f14fcf07f9fa666ba155572a5ab042eab69",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/compatibility.bas",
+      "development_blob": "37096af7112d095f97cc94b3d23ac17441d2f445",
+      "public_blob": "37096af7112d095f97cc94b3d23ac17441d2f445",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/diagnostic.bas",
+      "development_blob": "bee0c910502d1a08e36f1291b4597c7d22e9d086",
+      "public_blob": "bee0c910502d1a08e36f1291b4597c7d22e9d086",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/fractal-classic.bas",
+      "development_blob": "e6e7a56982f2246ee9e054d40f6c949f558653ad",
+      "public_blob": "e6e7a56982f2246ee9e054d40f6c949f558653ad",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/fractal-colon.bas",
+      "development_blob": "04e21abec09a17cff714bf91154539a9ef798c21",
+      "public_blob": "04e21abec09a17cff714bf91154539a9ef798c21",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/fractal-function.bas",
+      "development_blob": "946b8fca814bc1c459efd7741d2a588a688237b8",
+      "public_blob": "946b8fca814bc1c459efd7741d2a588a688237b8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/fractal-rows.bas",
+      "development_blob": "01d69586eab0983882b9efbe8de5974cc8c26e3c",
+      "public_blob": "01d69586eab0983882b9efbe8de5974cc8c26e3c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/numeric-classic.bas",
+      "development_blob": "376566561eb859e2a87b8d750dff8065c020c520",
+      "public_blob": "376566561eb859e2a87b8d750dff8065c020c520",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/numeric-colon.bas",
+      "development_blob": "e4b8d46e5a491d8f797cc15b8c9784b4a62ffbd9",
+      "public_blob": "e4b8d46e5a491d8f797cc15b8c9784b4a62ffbd9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/numeric-function.bas",
+      "development_blob": "12d01d66c06d00fada07cff9b0c532c260e9610f",
+      "public_blob": "12d01d66c06d00fada07cff9b0c532c260e9610f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/numeric-rows.bas",
+      "development_blob": "e4b8d46e5a491d8f797cc15b8c9784b4a62ffbd9",
+      "public_blob": "e4b8d46e5a491d8f797cc15b8c9784b4a62ffbd9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/stage3/tiny-function.bas",
+      "development_blob": "a23821d3dc3b26de65e5dc8ea452a4aeed932dc0",
+      "public_blob": "a23821d3dc3b26de65e5dc8ea452a4aeed932dc0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/block_if.bas",
+      "development_blob": "2adecfd77ecc543f283fd34a4d54d7cd593a51ae",
+      "public_blob": "2adecfd77ecc543f283fd34a4d54d7cd593a51ae",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/break_cleanup.bas",
+      "development_blob": "83099fe9a82e44ed2b320841018e1c77ff9182d4",
+      "public_blob": "83099fe9a82e44ed2b320841018e1c77ff9182d4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/depth_limit.bas",
+      "development_blob": "3bcc33d153b9774f3e0eeeb700489708764dc2d5",
+      "public_blob": "3bcc33d153b9774f3e0eeeb700489708764dc2d5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/factorial.bas",
+      "development_blob": "5e65875327aff1217e61ac05cf97133a8b7d0d29",
+      "public_blob": "5e65875327aff1217e61ac05cf97133a8b7d0d29",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/global_scope.bas",
+      "development_blob": "a4c7e9da6748b138c2b6a2ffb5a3c0c824af88ce",
+      "public_blob": "a4c7e9da6748b138c2b6a2ffb5a3c0c824af88ce",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/local_scope.bas",
+      "development_blob": "a8d216acd1540a657e93996335ed929f6179c8c8",
+      "public_blob": "a8d216acd1540a657e93996335ed929f6179c8c8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/square.bas",
+      "development_blob": "09441ea55506bda8de899082b10114ca3b0973f5",
+      "public_blob": "09441ea55506bda8de899082b10114ca3b0973f5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/structured/wrap.bas",
+      "development_blob": "52c7d802d312fdf14e4bd58ca26203e5fa059b67",
+      "public_blob": "52c7d802d312fdf14e4bd58ca26203e5fa059b67",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v06_features.bas",
+      "development_blob": "fdf553f44014e2923f55f560642d2e5ea4037802",
+      "public_blob": "fdf553f44014e2923f55f560642d2e5ea4037802",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/README.md",
+      "development_blob": "29bbfac782096f017e9970f33b2332c313886f3d",
+      "public_blob": "6798140b45c2c659a3ac229581e6c86e062fa9db",
+      "intentional_adaptation": true,
+      "reason": "Sample instructions reference current public manuals instead of unpublished internal Stage records."
+    },
+    {
+      "path": "examples/v093/control-data-select.bas",
+      "development_blob": "ece5f25b2fe0ea8e38201fc5d59ea654e72e4b10",
+      "public_blob": "ece5f25b2fe0ea8e38201fc5d59ea654e72e4b10",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/data-classic.bas",
+      "development_blob": "9b1652a8f9e51ac8097be24ff294c66cd443f257",
+      "public_blob": "9b1652a8f9e51ac8097be24ff294c66cd443f257",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/exit-cleanup.bas",
+      "development_blob": "676d79864948df35fc9e7a2735fa4cdb2a3a309d",
+      "public_blob": "676d79864948df35fc9e7a2735fa4cdb2a3a309d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/function-read-select-exit.bas",
+      "development_blob": "18c01c579bbb4c29fea2c32b1a2f70bb94f01f3e",
+      "public_blob": "18c01c579bbb4c29fea2c32b1a2f70bb94f01f3e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/hardware-regression.bas",
+      "development_blob": "dfbd350cf317ad441881132835b475c735ddb5a4",
+      "public_blob": "dfbd350cf317ad441881132835b475c735ddb5a4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/manual/README.md",
+      "development_blob": "d8900545f9143be2527665a3c265369f412dfaaf",
+      "public_blob": "d8900545f9143be2527665a3c265369f412dfaaf",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/manual/data-restore-classic.bas",
+      "development_blob": "2273865ea7e39f185785553dedb76aeb579ac0b7",
+      "public_blob": "2273865ea7e39f185785553dedb76aeb579ac0b7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/manual/exit-cleanup-structured.bas",
+      "development_blob": "25a6b18d141644398d314d9cd4db2b57442936cd",
+      "public_blob": "25a6b18d141644398d314d9cd4db2b57442936cd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/manual/function-structured.bas",
+      "development_blob": "67fa1cc5b4bf6ea7f0f95a1efbc3a2d2e75820d8",
+      "public_blob": "67fa1cc5b4bf6ea7f0f95a1efbc3a2d2e75820d8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/manual/math-intops-classic.bas",
+      "development_blob": "db2d584f6768d886c968d52d1d752d6090dbbfba",
+      "public_blob": "db2d584f6768d886c968d52d1d752d6090dbbfba",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/manual/select-menu-structured.bas",
+      "development_blob": "aff13930b7a1fdd8ed238bce87ce26adca9c0068",
+      "public_blob": "aff13930b7a1fdd8ed238bce87ce26adca9c0068",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/math-intops-classic.bas",
+      "development_blob": "e2df14c5b50b6024847216d6f4009079f8079627",
+      "public_blob": "e2df14c5b50b6024847216d6f4009079f8079627",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/math-intops-structured.bas",
+      "development_blob": "4450052c30d8a424ecf291180f2a62a16bc11e88",
+      "public_blob": "4450052c30d8a424ecf291180f2a62a16bc11e88",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/README.md",
+      "development_blob": "774bab88ad44cfc5468b959ffe19b86c7afbb805",
+      "public_blob": "774bab88ad44cfc5468b959ffe19b86c7afbb805",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/data-select-exit.bas",
+      "development_blob": "728203a0279f3cb83e9e13207e55f18f7d911bd0",
+      "public_blob": "728203a0279f3cb83e9e13207e55f18f7d911bd0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/for-empty.bas",
+      "development_blob": "b8fb70e97400bd936212a7fea5f8a61461c02095",
+      "public_blob": "b8fb70e97400bd936212a7fea5f8a61461c02095",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/for-function.bas",
+      "development_blob": "2d8aebda1092969cfcc6b9da6313a5af8ec5b1eb",
+      "public_blob": "2d8aebda1092969cfcc6b9da6313a5af8ec5b1eb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/for-negative.bas",
+      "development_blob": "67c53af26d76b7160442041cb34904421ca37f6c",
+      "public_blob": "67c53af26d76b7160442041cb34904421ca37f6c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/for-nested.bas",
+      "development_blob": "27406d07d16704b6aac16ff23e25a177d9a1ed33",
+      "public_blob": "27406d07d16704b6aac16ff23e25a177d9a1ed33",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/for-step2.bas",
+      "development_blob": "f35f40295017c30c420c33b464e782922fe8921c",
+      "public_blob": "f35f40295017c30c420c33b464e782922fe8921c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/performance/for-sum.bas",
+      "development_blob": "40be534f8c26facfa5c3d154fa0eeece5382f650",
+      "public_blob": "40be534f8c26facfa5c3d154fa0eeece5382f650",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v093/select-string-once.bas",
+      "development_blob": "adc9d50364255b11daf02a724fb1133a30660769",
+      "public_blob": "adc9d50364255b11daf02a724fb1133a30660769",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/README.md",
+      "development_blob": "9329dc3bac9f0b6f0865cf8f9d8bf966899c9a98",
+      "public_blob": "7985b939ca168552ecc4ef8e419901f522cd87c2",
+      "intentional_adaptation": true,
+      "reason": "Sample instructions reference current public manuals instead of unpublished internal Stage records."
+    },
+    {
+      "path": "examples/v094/error-classic.bas",
+      "development_blob": "3a6096c02958576e9080d17f0415e581bb105f86",
+      "public_blob": "3a6096c02958576e9080d17f0415e581bb105f86",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/error-function.bas",
+      "development_blob": "e0c19973c371ef8921fb275d7a88502220290709",
+      "public_blob": "e0c19973c371ef8921fb275d7a88502220290709",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/image-roundtrip-classic.bas",
+      "development_blob": "3896163b5ce91e20a65f262f2664be940c0e014a",
+      "public_blob": "3896163b5ce91e20a65f262f2664be940c0e014a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/image-roundtrip-structured.bas",
+      "development_blob": "9bbd495a0af9a140ea34731c7ff44885151a02e8",
+      "public_blob": "9bbd495a0af9a140ea34731c7ff44885151a02e8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/stage8-datetime.bas",
+      "development_blob": "9a71cdda029b4012bed221191e7f544240a47d6a",
+      "public_blob": "9a71cdda029b4012bed221191e7f544240a47d6a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/stage8-strings-classic.bas",
+      "development_blob": "279e8d6d6d946c4ef29ed3d8fe0c7aedf8a6eed0",
+      "public_blob": "279e8d6d6d946c4ef29ed3d8fe0c7aedf8a6eed0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "examples/v094/stage8-strings-structured.bas",
+      "development_blob": "91af32ef2b14e1944b0a341262e4096fe958383f",
+      "public_blob": "91af32ef2b14e1944b0a341262e4096fe958383f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "flash-cpb.cmd",
+      "development_blob": "b5e5c62298d801726e3909f9e85951c430c8ff03",
+      "public_blob": "b5e5c62298d801726e3909f9e85951c430c8ff03",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/audio_buffer_policy.hpp",
+      "development_blob": "e1337d4cce41e57c84a7313f9d6a5eaa4e7fc677",
+      "public_blob": "e1337d4cce41e57c84a7313f9d6a5eaa4e7fc677",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/audio_engine.hpp",
+      "development_blob": "f96b9eb07e72f00e47e91fcfa2134f37656e58c7",
+      "public_blob": "f96b9eb07e72f00e47e91fcfa2134f37656e58c7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/audio_file_policy.hpp",
+      "development_blob": "8ee5e974673b9db12a08a7f36878bc55b759190e",
+      "public_blob": "8ee5e974673b9db12a08a7f36878bc55b759190e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/basic_compiler.hpp",
+      "development_blob": "06a6db70af7500ae541673c70c30aee84b270e80",
+      "public_blob": "06a6db70af7500ae541673c70c30aee84b270e80",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/basic_lexical.hpp",
+      "development_blob": "09369f1890c52941a92c06e7f409ed41ee7d9e01",
+      "public_blob": "09369f1890c52941a92c06e7f409ed41ee7d9e01",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/bluetooth_device_registry.hpp",
+      "development_blob": "8183535e9f18da6032a4de0f4facbafda0403b34",
+      "public_blob": "8183535e9f18da6032a4de0f4facbafda0403b34",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/bluetooth_hid_ble_keyboard.hpp",
+      "development_blob": "2cec6731022ba3f216fc82f67e51f3a33bd6b2f7",
+      "public_blob": "2cec6731022ba3f216fc82f67e51f3a33bd6b2f7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/bluetooth_hid_keyboard.hpp",
+      "development_blob": "b9a07b541081c10fa5cbdb2a89c797e6290b7118",
+      "public_blob": "b9a07b541081c10fa5cbdb2a89c797e6290b7118",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/bluetooth_hid_keyboard_core.hpp",
+      "development_blob": "2c6dd4a6c3da1b98ddef77d63f35df7dc74c4dc7",
+      "public_blob": "2c6dd4a6c3da1b98ddef77d63f35df7dc74c4dc7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/bluetooth_manager.hpp",
+      "development_blob": "6442c1245a838b5b0a05352fc46495b463ce7670",
+      "public_blob": "6442c1245a838b5b0a05352fc46495b463ce7670",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/btstack_config.h",
+      "development_blob": "17d9f7dd3d834178f7499ecdc18ccb11112220f9",
+      "public_blob": "17d9f7dd3d834178f7499ecdc18ccb11112220f9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/command_history.hpp",
+      "development_blob": "525a3a5d96a8b66db155df05c2ed84811b953c20",
+      "public_blob": "525a3a5d96a8b66db155df05c2ed84811b953c20",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/compiled_cache.hpp",
+      "development_blob": "55791076af979277a7f2c0f7dfcb5255b7d7fff7",
+      "public_blob": "55791076af979277a7f2c0f7dfcb5255b7d7fff7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/console_layout.hpp",
+      "development_blob": "9d677a413daaca6f055806f2b4753a3b75244388",
+      "public_blob": "9d677a413daaca6f055806f2b4753a3b75244388",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/editor_history.hpp",
+      "development_blob": "ac0290a2cd50f142f6eed7e3a17676925378a002",
+      "public_blob": "ac0290a2cd50f142f6eed7e3a17676925378a002",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/editor_model.hpp",
+      "development_blob": "cfdc85adc8d3906df73a8f769d1bd9b43d3994af",
+      "public_blob": "cfdc85adc8d3906df73a8f769d1bd9b43d3994af",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/editor_perf.hpp",
+      "development_blob": "4e57041a454715943ae3d66d6f777b5c1e471296",
+      "public_blob": "4e57041a454715943ae3d66d6f777b5c1e471296",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/error_context.hpp",
+      "development_blob": "0624eb87dea86eddba1f968b29d442247faeb87c",
+      "public_blob": "0624eb87dea86eddba1f968b29d442247faeb87c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/extended_numeric_math.hpp",
+      "development_blob": "329ff6382b47d909e8c5db476db03556f6d26521",
+      "public_blob": "329ff6382b47d909e8c5db476db03556f6d26521",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/external_i2c.hpp",
+      "development_blob": "34618d81ca45f7538f1524be8036a73f7dd03a1b",
+      "public_blob": "34618d81ca45f7538f1524be8036a73f7dd03a1b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/file_list_layout.hpp",
+      "development_blob": "314dc0dfdeb4acb031d304193a6b21d7f546b650",
+      "public_blob": "314dc0dfdeb4acb031d304193a6b21d7f546b650",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/file_management.hpp",
+      "development_blob": "7ac41f1cff035e98f31f91517aa28ac72aa6da29",
+      "public_blob": "7ac41f1cff035e98f31f91517aa28ac72aa6da29",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/file_path.hpp",
+      "development_blob": "28604d996aa76228e870778d5f5d16998fde2353",
+      "public_blob": "28604d996aa76228e870778d5f5d16998fde2353",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/file_server.hpp",
+      "development_blob": "a3ebfe5717a3ad945b5a019dacd66741caebf647",
+      "public_blob": "a3ebfe5717a3ad945b5a019dacd66741caebf647",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/files_playback_input.hpp",
+      "development_blob": "d97415644a19e11108cdbdeefaeff4a23c52b5f5",
+      "public_blob": "d97415644a19e11108cdbdeefaeff4a23c52b5f5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/firmware_version.hpp",
+      "development_blob": "9154434a84b7d5138a6187cbf7ea8d93ad2b4818",
+      "public_blob": "9154434a84b7d5138a6187cbf7ea8d93ad2b4818",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/for_runtime.hpp",
+      "development_blob": "cc7499443f802c38f2199d661c67f5265b4f3959",
+      "public_blob": "cc7499443f802c38f2199d661c67f5265b4f3959",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/full_screen_editor.hpp",
+      "development_blob": "afd933dd98b3e57750a389d8b3d08bda8e3ef18a",
+      "public_blob": "afd933dd98b3e57750a389d8b3d08bda8e3ef18a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/function_runtime.hpp",
+      "development_blob": "0de9c6c81a822d398bcd65a4b06d59eecb695dad",
+      "public_blob": "0de9c6c81a822d398bcd65a4b06d59eecb695dad",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/graphics_text.hpp",
+      "development_blob": "70efaa905d326736a5cd61694ef1afe3f388589a",
+      "public_blob": "70efaa905d326736a5cd61694ef1afe3f388589a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/http_file_server_core.hpp",
+      "development_blob": "1432666539209b05ec8a489d74c03e19041cf1d6",
+      "public_blob": "1432666539209b05ec8a489d74c03e19041cf1d6",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/il.hpp",
+      "development_blob": "53d5b68b8f6b0f43b92ca3342484a594b44dc5b6",
+      "public_blob": "53d5b68b8f6b0f43b92ca3342484a594b44dc5b6",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/image_io.hpp",
+      "development_blob": "8e2d1a9387d1d60ec34f1e3385d7e271d059c0c0",
+      "public_blob": "8e2d1a9387d1d60ec34f1e3385d7e271d059c0c0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/input_hotkeys.hpp",
+      "development_blob": "8df769d09972fc128aa2309d542869279513f692",
+      "public_blob": "8df769d09972fc128aa2309d542869279513f692",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/integer_numeric.hpp",
+      "development_blob": "23c1285690631582b865ed394471c4e68f6e40fe",
+      "public_blob": "23c1285690631582b865ed394471c4e68f6e40fe",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/key_click.hpp",
+      "development_blob": "f532131b892688dab5583101aa93d61644af57ce",
+      "public_blob": "f532131b892688dab5583101aa93d61644af57ce",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/keyboard_i2c_read.hpp",
+      "development_blob": "22354caeb0f04c0263facc372114491facc0fa88",
+      "public_blob": "22354caeb0f04c0263facc372114491facc0fa88",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/keyboard_i2c_recovery.hpp",
+      "development_blob": "b2e6deba356f42e52cdd6435c90510fb7e1c083f",
+      "public_blob": "b2e6deba356f42e52cdd6435c90510fb7e1c083f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/line_editor.hpp",
+      "development_blob": "6bf4587cee1b17bda8841c90fecc0527e00cb7f8",
+      "public_blob": "6bf4587cee1b17bda8841c90fecc0527e00cb7f8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/local_numeric_fusion.hpp",
+      "development_blob": "70a511d6eafb20ae89cdcea6c8dbc62d36ba6923",
+      "public_blob": "70a511d6eafb20ae89cdcea6c8dbc62d36ba6923",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/lwipopts.h",
+      "development_blob": "6ac377b15fb1e7c4c2bc9644e1fd8c52c813b8bc",
+      "public_blob": "6ac377b15fb1e7c4c2bc9644e1fd8c52c813b8bc",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/menu_scroll.hpp",
+      "development_blob": "3106b98c7b54e1cdc2173e82c6eaeceb3572598d",
+      "public_blob": "3106b98c7b54e1cdc2173e82c6eaeceb3572598d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/network.hpp",
+      "development_blob": "759d062297b8e48dcef6745047c82794efdf3b5c",
+      "public_blob": "759d062297b8e48dcef6745047c82794efdf3b5c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/path_compaction.hpp",
+      "development_blob": "380e9c052e5b36a0f524284ecde3793ce8bc9292",
+      "public_blob": "380e9c052e5b36a0f524284ecde3793ce8bc9292",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/picocalc_display.hpp",
+      "development_blob": "a47e7284b0e38f0ba75b9c9b0ca4f014254d76f4",
+      "public_blob": "a47e7284b0e38f0ba75b9c9b0ca4f014254d76f4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/picocalc_keyboard.hpp",
+      "development_blob": "e59f5a9a004128639a0f8338fd0abeaacc163e12",
+      "public_blob": "e59f5a9a004128639a0f8338fd0abeaacc163e12",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/platform.hpp",
+      "development_blob": "994357673ac730ceaa7ae044c85ee22687283198",
+      "public_blob": "994357673ac730ceaa7ae044c85ee22687283198",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/program_file_guard.hpp",
+      "development_blob": "11478d52d2fc41c4ee5919006946eb1996e31d9e",
+      "public_blob": "11478d52d2fc41c4ee5919006946eb1996e31d9e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/program_store.hpp",
+      "development_blob": "a32e5cfcbe814dea55dcea682c7725dd459bf0b5",
+      "public_blob": "a32e5cfcbe814dea55dcea682c7725dd459bf0b5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/psram.hpp",
+      "development_blob": "bd76ef88c24ef9e3cb76b6c4ec527fd1725f0996",
+      "public_blob": "bd76ef88c24ef9e3cb76b6c4ec527fd1725f0996",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/psram_allocator.hpp",
+      "development_blob": "5cd539610f6292e0c302deaa1a942cde4520073b",
+      "public_blob": "5cd539610f6292e0c302deaa1a942cde4520073b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/psram_editor_history.hpp",
+      "development_blob": "ced574d2a4772c608e91d84403d01c5eb7f637db",
+      "public_blob": "ced574d2a4772c608e91d84403d01c5eb7f637db",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/psram_layout.hpp",
+      "development_blob": "d03b103dba98adde85dbd1aca8d734a435dc511e",
+      "public_blob": "d03b103dba98adde85dbd1aca8d734a435dc511e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/repl.hpp",
+      "development_blob": "d8c2cc71468129898556ab599634d05be9bbdcc2",
+      "public_blob": "d8c2cc71468129898556ab599634d05be9bbdcc2",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/rtc_codec.hpp",
+      "development_blob": "3d1c17aa226f33e28974a0193def7b38a02ca6e9",
+      "public_blob": "3d1c17aa226f33e28974a0193def7b38a02ca6e9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/safe_file.hpp",
+      "development_blob": "261b718b0073a92d1de393756ede43a684428672",
+      "public_blob": "261b718b0073a92d1de393756ede43a684428672",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/serial_crlf_filter.hpp",
+      "development_blob": "267e04c8c87c7cdf7e9a09bf2864c8424f1e4ef0",
+      "public_blob": "267e04c8c87c7cdf7e9a09bf2864c8424f1e4ef0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/serial_transfer.hpp",
+      "development_blob": "067897e9a2a282565033a8d9617a69c5062eb294",
+      "public_blob": "067897e9a2a282565033a8d9617a69c5062eb294",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/session_notice.hpp",
+      "development_blob": "721f849540e2f2ebfd6d7ece290643e6ee188a68",
+      "public_blob": "721f849540e2f2ebfd6d7ece290643e6ee188a68",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/source_mode.hpp",
+      "development_blob": "90d0bea5ba9f9c078c993ab3ef53e7b26117a624",
+      "public_blob": "90d0bea5ba9f9c078c993ab3ef53e7b26117a624",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/storage.hpp",
+      "development_blob": "7aba3920a9576abdabd19cbfcf059e05bf781532",
+      "public_blob": "7aba3920a9576abdabd19cbfcf059e05bf781532",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/storage_recovery.hpp",
+      "development_blob": "c3f6a47bbdfb7fa5a158c681517b13185477314d",
+      "public_blob": "c3f6a47bbdfb7fa5a158c681517b13185477314d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/system_controls.hpp",
+      "development_blob": "a8d654e2fd5d4b1c2c98310d30d036ed781207f3",
+      "public_blob": "a8d654e2fd5d4b1c2c98310d30d036ed781207f3",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/system_information.hpp",
+      "development_blob": "6292c1ba5573fd318e619ba161e8474db70c880a",
+      "public_blob": "6292c1ba5573fd318e619ba161e8474db70c880a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/transfer_file.hpp",
+      "development_blob": "20bd869f7a7cbfd639a604ac0205d332ca405642",
+      "public_blob": "20bd869f7a7cbfd639a604ac0205d332ca405642",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/unified_keyboard.hpp",
+      "development_blob": "50cf4b2c89e6f79a862fb33a19b42d7497382010",
+      "public_blob": "50cf4b2c89e6f79a862fb33a19b42d7497382010",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/usb_device.hpp",
+      "development_blob": "f66f1367428a7027b9a8489c9b26bcc779bdb879",
+      "public_blob": "f66f1367428a7027b9a8489c9b26bcc779bdb879",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/usb_msc.hpp",
+      "development_blob": "36ae29caf224716fc4e0b02f188ec445fb602914",
+      "public_blob": "36ae29caf224716fc4e0b02f188ec445fb602914",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/usb_storage_menu.hpp",
+      "development_blob": "feebf2f8a95c11025360276ee02fecf85b77eac8",
+      "public_blob": "feebf2f8a95c11025360276ee02fecf85b77eac8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/vm.hpp",
+      "development_blob": "cf5ea6daf3f8ba9c847ec0e360b5df72e2ddee14",
+      "public_blob": "cf5ea6daf3f8ba9c847ec0e360b5df72e2ddee14",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/wifi_profiles.hpp",
+      "development_blob": "9f46c6f23f80bb545bed759284b5e5ef71a7c49c",
+      "public_blob": "9f46c6f23f80bb545bed759284b5e5ef71a7c49c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/wireless.hpp",
+      "development_blob": "fbe970750fa859903a5339c3b121de93b2953ebd",
+      "public_blob": "fbe970750fa859903a5339c3b121de93b2953ebd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/xmodem.hpp",
+      "development_blob": "6e4d23d2c9a6afc2085791846278a0e2d3270222",
+      "public_blob": "6e4d23d2c9a6afc2085791846278a0e2d3270222",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "include/ymodem.hpp",
+      "development_blob": "71027919cb0647a637af1485877e6664c2982f6f",
+      "public_blob": "71027919cb0647a637af1485877e6664c2982f6f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/audio_engine.cpp",
+      "development_blob": "258d64a8421236652d1bfabe24ef6e8e951dd357",
+      "public_blob": "258d64a8421236652d1bfabe24ef6e8e951dd357",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/basic_compiler.cpp",
+      "development_blob": "6b155b120a2679e19084f944d2421a3d2ee38d89",
+      "public_blob": "6b155b120a2679e19084f944d2421a3d2ee38d89",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/bluetooth_device_registry.cpp",
+      "development_blob": "08b3658f5c65e53aad0436bed4cdbdb41c21e0d1",
+      "public_blob": "08b3658f5c65e53aad0436bed4cdbdb41c21e0d1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/bluetooth_hid_keyboard_core.cpp",
+      "development_blob": "c4153f1a2d2d21a984b8a74b71861a86de603efe",
+      "public_blob": "c4153f1a2d2d21a984b8a74b71861a86de603efe",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/compiled_cache.cpp",
+      "development_blob": "69ca6cc712ab37f8838d72a7a2e9f133ea8362bf",
+      "public_blob": "69ca6cc712ab37f8838d72a7a2e9f133ea8362bf",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/editor_model.cpp",
+      "development_blob": "7dfa330ba06a4ea1ea6d8424fbdccdd7f9153c75",
+      "public_blob": "7dfa330ba06a4ea1ea6d8424fbdccdd7f9153c75",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/file_management.cpp",
+      "development_blob": "5f9b30d2ccb52aa5f4be43ab409c79dcb4a0225b",
+      "public_blob": "5f9b30d2ccb52aa5f4be43ab409c79dcb4a0225b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/full_screen_editor.cpp",
+      "development_blob": "53a36353dd16639763b0bea2f72c3387583b3d6c",
+      "public_blob": "53a36353dd16639763b0bea2f72c3387583b3d6c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/graphics_text.cpp",
+      "development_blob": "1861db19a5a96ace8b3761bba5afb32ccbe2f72f",
+      "public_blob": "1861db19a5a96ace8b3761bba5afb32ccbe2f72f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/http_file_server_core.cpp",
+      "development_blob": "053ae4b2956f5f3959316e9681a4adc7df6b9b7b",
+      "public_blob": "053ae4b2956f5f3959316e9681a4adc7df6b9b7b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/il.cpp",
+      "development_blob": "4ca0e1e3a424ff620acfa6754032e72e7473cdcd",
+      "public_blob": "4ca0e1e3a424ff620acfa6754032e72e7473cdcd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/image_io.cpp",
+      "development_blob": "d9205d3c7b6dd03ba936e0770c31ad56b1583b03",
+      "public_blob": "d9205d3c7b6dd03ba936e0770c31ad56b1583b03",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/line_editor.cpp",
+      "development_blob": "3ff9fd2e320ccc13860d7e80b9bd77b38f55d1b0",
+      "public_blob": "3ff9fd2e320ccc13860d7e80b9bd77b38f55d1b0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/program_source_rows.inc",
+      "development_blob": "a0236b7304c8647f721eebbb2b5dc8ead8fe5247",
+      "public_blob": "a0236b7304c8647f721eebbb2b5dc8ead8fe5247",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/program_store.cpp",
+      "development_blob": "e8b412f3cf4ebf590e0f308423f73e3df3513611",
+      "public_blob": "e8b412f3cf4ebf590e0f308423f73e3df3513611",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/psram_editor_history.cpp",
+      "development_blob": "2679e4e2ba8728cc1dd8ad837ac6ec001fbc15eb",
+      "public_blob": "2679e4e2ba8728cc1dd8ad837ac6ec001fbc15eb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/repl.cpp",
+      "development_blob": "336c598e8d71a6f8766406e304cf239afbc5084c",
+      "public_blob": "336c598e8d71a6f8766406e304cf239afbc5084c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/safe_file.cpp",
+      "development_blob": "b953dc499959ddf054f4c904288f41865d113ea7",
+      "public_blob": "b953dc499959ddf054f4c904288f41865d113ea7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/transfer_file.cpp",
+      "development_blob": "6207a9647341857a04a434f5578b0ebcca0fbfde",
+      "public_blob": "6207a9647341857a04a434f5578b0ebcca0fbfde",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/vm.cpp",
+      "development_blob": "015241007e4a5a75b6adb7e2cd6dc8246ecffdbb",
+      "public_blob": "015241007e4a5a75b6adb7e2cd6dc8246ecffdbb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/xmodem.cpp",
+      "development_blob": "5bc59bf5479d4c2ff851946501d0baa0a1c159bf",
+      "public_blob": "5bc59bf5479d4c2ff851946501d0baa0a1c159bf",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/core/ymodem.cpp",
+      "development_blob": "503186e2bc6285f421b35269947c74464549a117",
+      "public_blob": "503186e2bc6285f421b35269947c74464549a117",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/main.cpp",
+      "development_blob": "29a4050251d4267636c975fa03fd3946d0c21be7",
+      "public_blob": "29a4050251d4267636c975fa03fd3946d0c21be7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/audio.cpp",
+      "development_blob": "721f87977ec6073970b798ec7f614b6d71fd57c3",
+      "public_blob": "721f87977ec6073970b798ec7f614b6d71fd57c3",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/bluetooth_device_registry_storage.cpp",
+      "development_blob": "bcddea683a8dd9698fe53b41325f1912f8a02463",
+      "public_blob": "bcddea683a8dd9698fe53b41325f1912f8a02463",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/bluetooth_hid_ble_keyboard.cpp",
+      "development_blob": "d082a5d1d87b9bf429beb8ff05aa4dd6bff5c725",
+      "public_blob": "d082a5d1d87b9bf429beb8ff05aa4dd6bff5c725",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/bluetooth_hid_keyboard.cpp",
+      "development_blob": "acf18c16e6e60ee4f9294779e1bec11ea804ebae",
+      "public_blob": "acf18c16e6e60ee4f9294779e1bec11ea804ebae",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/bluetooth_manager.cpp",
+      "development_blob": "be883f4627e3e4c5b8b2198ae6ea389b8f18a135",
+      "public_blob": "be883f4627e3e4c5b8b2198ae6ea389b8f18a135",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/display.cpp",
+      "development_blob": "627e97e9625643c20553bc196e6ad57b6ed48325",
+      "public_blob": "627e97e9625643c20553bc196e6ad57b6ed48325",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/external_i2c.cpp",
+      "development_blob": "cebe4b418f84670b56930bc1dfc4c56b57ea78bc",
+      "public_blob": "cebe4b418f84670b56930bc1dfc4c56b57ea78bc",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/file_server.cpp",
+      "development_blob": "b9bf917b1fdd62f302eb9ab0c43d4b4c665142c1",
+      "public_blob": "b9bf917b1fdd62f302eb9ab0c43d4b4c665142c1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/keyboard.cpp",
+      "development_blob": "aa116cacb47ce2edbcfebc73422b03a0d4e82b3b",
+      "public_blob": "aa116cacb47ce2edbcfebc73422b03a0d4e82b3b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/network.cpp",
+      "development_blob": "521dd280a93fc74984e5cce172aa16a5fb9d2376",
+      "public_blob": "521dd280a93fc74984e5cce172aa16a5fb9d2376",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/platform.cpp",
+      "development_blob": "50e841a79bc1d0a3be76585519804733d03af074",
+      "public_blob": "50e841a79bc1d0a3be76585519804733d03af074",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/psram.cpp",
+      "development_blob": "68a42fec797e5ae93ac6206c34df6eed1631ea85",
+      "public_blob": "68a42fec797e5ae93ac6206c34df6eed1631ea85",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/psram_spi.pio",
+      "development_blob": "042abe94e7d751a89631526060d8418d44609505",
+      "public_blob": "042abe94e7d751a89631526060d8418d44609505",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/serial_transfer.cpp",
+      "development_blob": "65ad0db020917431e2008e4edf3f450df7b75c45",
+      "public_blob": "65ad0db020917431e2008e4edf3f450df7b75c45",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/storage.cpp",
+      "development_blob": "9ff501a3a3d9dd7a0b4ba7b83e7bf47b5fbd225e",
+      "public_blob": "9ff501a3a3d9dd7a0b4ba7b83e7bf47b5fbd225e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/unified_keyboard.cpp",
+      "development_blob": "b8f64eaef827634be3b9bc3312a4cf431ed2af55",
+      "public_blob": "b8f64eaef827634be3b9bc3312a4cf431ed2af55",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/usb_descriptors.cpp",
+      "development_blob": "07ea162f0e55f574b22c179b9be3a93c9366169b",
+      "public_blob": "07ea162f0e55f574b22c179b9be3a93c9366169b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/usb_device.cpp",
+      "development_blob": "510512384c61b2dd821ce40a02c63c80b3674a2a",
+      "public_blob": "510512384c61b2dd821ce40a02c63c80b3674a2a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/usb_msc.cpp",
+      "development_blob": "a357c00a597ae25d661521c40f5023335ce4e319",
+      "public_blob": "a357c00a597ae25d661521c40f5023335ce4e319",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "src/platform/picocalc/wireless.cpp",
+      "development_blob": "581e03b478e2087e356646c6992dc4d8496f1df1",
+      "public_blob": "581e03b478e2087e356646c6992dc4d8496f1df1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/audio_engine_test.cpp",
+      "development_blob": "2037633a3df7e360e48cc2d6f0976e7693bee987",
+      "public_blob": "2037633a3df7e360e48cc2d6f0976e7693bee987",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/audio_output_lifecycle_test.cpp",
+      "development_blob": "b2643fe1eb03b4246b672e60266a99bbb8ec4b14",
+      "public_blob": "b2643fe1eb03b4246b672e60266a99bbb8ec4b14",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/audio_output_lifecycle_test.py",
+      "development_blob": "e787c06c957f0bc707da57bec855417005706d0d",
+      "public_blob": "e787c06c957f0bc707da57bec855417005706d0d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/benchmark_expected.json",
+      "development_blob": "6cba024e405a5fde2bb0b6f0a7661ffaee08fe50",
+      "public_blob": "6cba024e405a5fde2bb0b6f0a7661ffaee08fe50",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/benchmark_platform.hpp",
+      "development_blob": "7c551826bf88f1df285722d0e1ec08e35853a1f4",
+      "public_blob": "7c551826bf88f1df285722d0e1ec08e35853a1f4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/ble_stubs/btstack_config.h",
+      "development_blob": "c5ce28647946177de289a4166736274f1e2079f9",
+      "public_blob": "c5ce28647946177de289a4166736274f1e2079f9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/ble_stubs/btstack_tlv.h",
+      "development_blob": "0eb0100bb4d57a24ef138296b7d0bdbce989c8cf",
+      "public_blob": "0eb0100bb4d57a24ef138296b7d0bdbce989c8cf",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/bluetooth_device_registry_test.cpp",
+      "development_blob": "d3e04b2a77ebbfc989812f5d7f0591f44f44d309",
+      "public_blob": "d3e04b2a77ebbfc989812f5d7f0591f44f44d309",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/bluetooth_hid_ble_recovery_test.py",
+      "development_blob": "529a41c08298720f1d12715257433eec3a2f59ae",
+      "public_blob": "529a41c08298720f1d12715257433eec3a2f59ae",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/bluetooth_hid_ble_report_test.py",
+      "development_blob": "755720de56b52e7fea728dbc9d5ab548649ed419",
+      "public_blob": "755720de56b52e7fea728dbc9d5ab548649ed419",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/bluetooth_hid_keyboard_core_test.cpp",
+      "development_blob": "af7ad6c2d90acadca7d380cff39361e0f5351bf4",
+      "public_blob": "af7ad6c2d90acadca7d380cff39361e0f5351bf4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/bluetooth_registry_storage_test.cpp",
+      "development_blob": "aebd2a6f200ed2aaedd62d7f363f7d639e777ede",
+      "public_blob": "aebd2a6f200ed2aaedd62d7f363f7d639e777ede",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/classic_benchmark.cpp",
+      "development_blob": "c506bbb605a0f6f68c4a93bad7b0107fa3887b6b",
+      "public_blob": "c506bbb605a0f6f68c4a93bad7b0107fa3887b6b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/command_history_test.cpp",
+      "development_blob": "a773b6125866f84ee1ea9f97f420bec866fe9c5e",
+      "public_blob": "a773b6125866f84ee1ea9f97f420bec866fe9c5e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/compiled_cache_test.cpp",
+      "development_blob": "b9fa6e802e6d4c687f558f20c1ae95b3e7790cf3",
+      "public_blob": "b9fa6e802e6d4c687f558f20c1ae95b3e7790cf3",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/daily_functions_test.cpp",
+      "development_blob": "6232c7d4d90e08bb23f190831ea8ab6840e1d052",
+      "public_blob": "6232c7d4d90e08bb23f190831ea8ab6840e1d052",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/data_read_test.cpp",
+      "development_blob": "cb8ab332fbc937adb9301bd9a12d6c3d8e56bc17",
+      "public_blob": "cb8ab332fbc937adb9301bd9a12d6c3d8e56bc17",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/display_scroll_test.cpp",
+      "development_blob": "9b2fa87037881f40d3f6f765deb8b221d1c43814",
+      "public_blob": "9b2fa87037881f40d3f6f765deb8b221d1c43814",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/editor_autoindent_test.cpp",
+      "development_blob": "97f274e9e52577647205dc66175169c2bcb0d5be",
+      "public_blob": "97f274e9e52577647205dc66175169c2bcb0d5be",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/editor_model_test.cpp",
+      "development_blob": "dd84f3bbccfc77b1f6383b37881e139d22775ca5",
+      "public_blob": "dd84f3bbccfc77b1f6383b37881e139d22775ca5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/editor_structure_test.cpp",
+      "development_blob": "4135b699462d578c32f79396a8a7db3e8d1b1473",
+      "public_blob": "4135b699462d578c32f79396a8a7db3e8d1b1473",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/editor_workflow_integration_test.cpp",
+      "development_blob": "a469a0192d1b44a4661567b5553dbaff1fc99e59",
+      "public_blob": "a469a0192d1b44a4661567b5553dbaff1fc99e59",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/editor_workflow_model_test.cpp",
+      "development_blob": "c9f7b8ee286153e88392864db8875848c3bfa201",
+      "public_blob": "c9f7b8ee286153e88392864db8875848c3bfa201",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/error_diagnostics_test.cpp",
+      "development_blob": "86fda392241045340cb40c15c5f29c7be60c3fb4",
+      "public_blob": "86fda392241045340cb40c15c5f29c7be60c3fb4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/exit_loop_test.cpp",
+      "development_blob": "8ec893813a2ab3a61637ee8b708e7ba8f9a1223f",
+      "public_blob": "8ec893813a2ab3a61637ee8b708e7ba8f9a1223f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/file_management_test.cpp",
+      "development_blob": "4b52f3029a81470e6751773ab1e76d368c5a74da",
+      "public_blob": "4b52f3029a81470e6751773ab1e76d368c5a74da",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/file_path_test.cpp",
+      "development_blob": "0cd65d5cf78ce132287dec5b0c2e66cd42896b20",
+      "public_blob": "0cd65d5cf78ce132287dec5b0c2e66cd42896b20",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/file_transfer_menu_test.cpp",
+      "development_blob": "09f8b840884fde643c635cecba692362f536c2cf",
+      "public_blob": "09f8b840884fde643c635cecba692362f536c2cf",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/files_ui_integration_test.cpp",
+      "development_blob": "3ed9423719838ef6ef9839823851c35f7d2a54b0",
+      "public_blob": "3ed9423719838ef6ef9839823851c35f7d2a54b0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/fixtures/cpb_large_400.bas",
+      "development_blob": "d56ab98315248d70b1f15c8d77a0be9219f21023",
+      "public_blob": "d56ab98315248d70b1f15c8d77a0be9219f21023",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/fixtures/development-build-topology.yml",
+      "development_blob": null,
+      "public_blob": "ccea39f41257c98c6f6b4bd19dac93d922bfd129",
+      "intentional_adaptation": true,
+      "reason": "Frozen names/conditions only; no private runner configuration or executable workflow."
+    },
+    {
+      "path": "tests/generate_keyboard_input_harness.py",
+      "development_blob": "50b8373aa0f365656b5e730e576e543f8a1e3adb",
+      "public_blob": "50b8373aa0f365656b5e730e576e543f8a1e3adb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/graphics_text_test.cpp",
+      "development_blob": "d1e16660a624899ea1c45f674171169fbdd89115",
+      "public_blob": "d1e16660a624899ea1c45f674171169fbdd89115",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/host/CMakeLists.txt",
+      "development_blob": "4cfe84ce593ebce0edc4be8caa6a190b07a8c72b",
+      "public_blob": "4cfe84ce593ebce0edc4be8caa6a190b07a8c72b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/host/assertions_enabled.hpp",
+      "development_blob": "64b7a46e219ced0b5b4a4b5b7d1c03c61b7f21c9",
+      "public_blob": "64b7a46e219ced0b5b4a4b5b7d1c03c61b7f21c9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/http_file_server_core_test.cpp",
+      "development_blob": "d1bbf111bfe24894108a1f3ef9b4c9332ad08408",
+      "public_blob": "d1bbf111bfe24894108a1f3ef9b4c9332ad08408",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/image_io_test.cpp",
+      "development_blob": "309a821edea83ae1f1cd0cc6e30d4a01ef8da3eb",
+      "public_blob": "309a821edea83ae1f1cd0cc6e30d4a01ef8da3eb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/image_statement_test.cpp",
+      "development_blob": "4971358fca9106730eb6ce4a416775e327307ee0",
+      "public_blob": "4971358fca9106730eb6ce4a416775e327307ee0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/key_click_test.cpp",
+      "development_blob": "0806d947565467fdcea16b3fd4bb6bb4c2128cb5",
+      "public_blob": "0806d947565467fdcea16b3fd4bb6bb4c2128cb5",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_i2c_fake.hpp",
+      "development_blob": "670715c5d5efce2136ba1aab7a64efc89aaa745b",
+      "public_blob": "670715c5d5efce2136ba1aab7a64efc89aaa745b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_i2c_recovery_integration_test.cpp",
+      "development_blob": "60441e420650b1075844fb253ef730bbe6af11f8",
+      "public_blob": "60441e420650b1075844fb253ef730bbe6af11f8",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_i2c_recovery_test.cpp",
+      "development_blob": "28584cc6e21170cb143914036c70129ac49d6bca",
+      "public_blob": "28584cc6e21170cb143914036c70129ac49d6bca",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_input_progress_test.cpp",
+      "development_blob": "8f75378309f7c0c3535518042ebf40746c20b0f1",
+      "public_blob": "8f75378309f7c0c3535518042ebf40746c20b0f1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_stubs/hardware/i2c.h",
+      "development_blob": "a443ffe69baf7ab4aed3b23ec13cafced13f942d",
+      "public_blob": "a443ffe69baf7ab4aed3b23ec13cafced13f942d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_stubs/pico/error.h",
+      "development_blob": "a8392d8f4a2b3e098601b13236f2034e09cc931c",
+      "public_blob": "a8392d8f4a2b3e098601b13236f2034e09cc931c",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/keyboard_stubs/pico/stdlib.h",
+      "development_blob": "96a5f5e6ae0c9724ea4d0f9f47448aa2302cc3d7",
+      "public_blob": "96a5f5e6ae0c9724ea4d0f9f47448aa2302cc3d7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/language93_test_support.hpp",
+      "development_blob": "7735fdd3d80349ffaf4916ed2b5a886bf5c1a931",
+      "public_blob": "7735fdd3d80349ffaf4916ed2b5a886bf5c1a931",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/manual_examples_test.cpp",
+      "development_blob": "5d2fc3569cff82e3fd8d5d8bf4b12bb109d4b317",
+      "public_blob": "5d2fc3569cff82e3fd8d5d8bf4b12bb109d4b317",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/manual_reference_layout_test.py",
+      "development_blob": "1dfdb6d5d1177a912c105e1f46db3c8187ed05ed",
+      "public_blob": "1dfdb6d5d1177a912c105e1f46db3c8187ed05ed",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/math_intops_test.cpp",
+      "development_blob": "1df0c630cd915ab9175498d8d5d7fdbc0b25a9bd",
+      "public_blob": "1df0c630cd915ab9175498d8d5d7fdbc0b25a9bd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/memory_sizes.cpp",
+      "development_blob": "711dc646867f45c0862a1f6419f5dc80cd16b5a2",
+      "public_blob": "711dc646867f45c0862a1f6419f5dc80cd16b5a2",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/menu_scroll_test.cpp",
+      "development_blob": "9c8098fc83a638e7b64711ff5ed72575461bd622",
+      "public_blob": "9c8098fc83a638e7b64711ff5ed72575461bd622",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_operation_test.cpp",
+      "development_blob": "2ceaf3cb929efec9ed18f3e29283709a4f6ab337",
+      "public_blob": "2ceaf3cb929efec9ed18f3e29283709a4f6ab337",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/lwip/dhcp.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/lwip/dns.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/lwip/ip4_addr.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/lwip/netif.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/lwip/pbuf.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/lwip/udp.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/mock_network.hpp",
+      "development_blob": "f07580fe7e39dc5b87d9cc2df60f1af7b774d3dc",
+      "public_blob": "f07580fe7e39dc5b87d9cc2df60f1af7b774d3dc",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/pico/cyw43_arch.h",
+      "development_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "public_blob": "eb6e4d83f863da906df4408affd822e9a846584e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/network_stubs/pico/stdlib.h",
+      "development_blob": "9bdfb6817133556aaa109cddc415231663f477fa",
+      "public_blob": "9bdfb6817133556aaa109cddc415231663f477fa",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/path_compaction_test.cpp",
+      "development_blob": "63d9e8ffd2f86d4ae6d0c5e7b61556bcc762c171",
+      "public_blob": "63d9e8ffd2f86d4ae6d0c5e7b61556bcc762c171",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/performance_benchmark.cpp",
+      "development_blob": "627ee6d767551e8556a8e109fb895fe378ed093f",
+      "public_blob": "627ee6d767551e8556a8e109fb895fe378ed093f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/performance_policy_test.py",
+      "development_blob": "ec15bc4e676516b34735acd8fd3975c26984a454",
+      "public_blob": "8c0993dcf9b93efd1efa77fca5adbe2428e8d6fb",
+      "intentional_adaptation": true,
+      "reason": "Two private workflow topology sections inspect the explicitly frozen snapshot; semantic and evidence assertions unchanged, no skips."
+    },
+    {
+      "path": "tests/power_transition_test.py",
+      "development_blob": "4f35ea6912b7f9ff0ccdf61b74934957f883122e",
+      "public_blob": "4f35ea6912b7f9ff0ccdf61b74934957f883122e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/program_pair_test.cpp",
+      "development_blob": "31c6764ef363dd2371fae5030a77997cadc1cc4f",
+      "public_blob": "31c6764ef363dd2371fae5030a77997cadc1cc4f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/program_protection_test.cpp",
+      "development_blob": "54603ccbd29334bf49f7b827ee74f4bfe609763d",
+      "public_blob": "54603ccbd29334bf49f7b827ee74f4bfe609763d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/program_psram_stubs.cpp",
+      "development_blob": "a4750637cac333f0a3f0f4365de96e14323bac62",
+      "public_blob": "a4750637cac333f0a3f0f4365de96e14323bac62",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/program_session_test.cpp",
+      "development_blob": "489124e8bb9e3777030aa291f5748b63ee714752",
+      "public_blob": "489124e8bb9e3777030aa291f5748b63ee714752",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/program_storage_test.cpp",
+      "development_blob": "3dff5b1245cd6261754e2e9680c5a2d4533ad06b",
+      "public_blob": "3dff5b1245cd6261754e2e9680c5a2d4533ad06b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/prompt_boundary_test.cpp",
+      "development_blob": "274f54042f1a66492171849c2983cc644c595e78",
+      "public_blob": "274f54042f1a66492171849c2983cc644c595e78",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/psram_allocator_test.cpp",
+      "development_blob": "10f9390dbf8094ae9ed906f5594de9b37ff4302f",
+      "public_blob": "10f9390dbf8094ae9ed906f5594de9b37ff4302f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/psram_editor_history_test.cpp",
+      "development_blob": "735cb47158b41593f0c57079d5af007243bd82fb",
+      "public_blob": "735cb47158b41593f0c57079d5af007243bd82fb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/psram_layout_test.cpp",
+      "development_blob": "9cf8d72544c4c9dbd438d9bb0ea44ab6666e1456",
+      "public_blob": "9cf8d72544c4c9dbd438d9bb0ea44ab6666e1456",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/release_acceptance_test.py",
+      "development_blob": "2935ee45374ab7de369e564253e90b9731976a5b",
+      "public_blob": "2935ee45374ab7de369e564253e90b9731976a5b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/release_package_test.py",
+      "development_blob": "ef6d7c3376d14e43a7866436f890761da2d3189d",
+      "public_blob": "ef6d7c3376d14e43a7866436f890761da2d3189d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/rtc_codec_test.cpp",
+      "development_blob": "0e69549a7137951bc69fa306ed01d39d86da932b",
+      "public_blob": "0e69549a7137951bc69fa306ed01d39d86da932b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_stubs/bluetooth_hid_keyboard.cpp",
+      "development_blob": "40ba1d598697a5e78e24e6a6362645238fd914e6",
+      "public_blob": "40ba1d598697a5e78e24e6a6362645238fd914e6",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_stubs/editor_workflow_ui.cpp",
+      "development_blob": "1cba6f5d22f50f477e3af449ec3aea2203db14fe",
+      "public_blob": "1cba6f5d22f50f477e3af449ec3aea2203db14fe",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_stubs/network_operation.cpp",
+      "development_blob": "e1c305f484ee55cff8757423be714743e7ef4cf0",
+      "public_blob": "e1c305f484ee55cff8757423be714743e7ef4cf0",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_stubs/pico/stdlib.h",
+      "development_blob": "cec8244e3a7b8a803ce6b4127f21a33993d13776",
+      "public_blob": "cec8244e3a7b8a803ce6b4127f21a33993d13776",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_stubs/psram.cpp",
+      "development_blob": "4036da27c9d16a1502444e06eff1bca95d06736f",
+      "public_blob": "4036da27c9d16a1502444e06eff1bca95d06736f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_stubs/wireless.cpp",
+      "development_blob": "2cd3e35b401ff76e9d8731e79ce3f909b524a440",
+      "public_blob": "2cd3e35b401ff76e9d8731e79ce3f909b524a440",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/runtime_workspace_test.cpp",
+      "development_blob": "eec8385d1e6f9046a8aa3b9620d66476be657a44",
+      "public_blob": "eec8385d1e6f9046a8aa3b9620d66476be657a44",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/safe_file_test.cpp",
+      "development_blob": "81e603adfe2d6d41a070268f022d6d8f504c33d3",
+      "public_blob": "81e603adfe2d6d41a070268f022d6d8f504c33d3",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/select_case_test.cpp",
+      "development_blob": "a0d776c15e98b499e67eebb1b17a5854034f3b72",
+      "public_blob": "a0d776c15e98b499e67eebb1b17a5854034f3b72",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_route_test.cpp",
+      "development_blob": "00dfbabeabcb4647e364f400ef9e31099b243d02",
+      "public_blob": "00dfbabeabcb4647e364f400ef9e31099b243d02",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/hardware/dma.h",
+      "development_blob": "eb0683695cb04bdeb6151f4c49dd959f3540cba4",
+      "public_blob": "eb0683695cb04bdeb6151f4c49dd959f3540cba4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/hardware/irq.h",
+      "development_blob": "9f33cded51575f637799ef64231a0709ead5c0da",
+      "public_blob": "9f33cded51575f637799ef64231a0709ead5c0da",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/hardware/sync.h",
+      "development_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "public_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/hardware/uart.h",
+      "development_blob": "616995923b74998158b204135f4d51cdf8d0d206",
+      "public_blob": "616995923b74998158b204135f4d51cdf8d0d206",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/mock_sdk.hpp",
+      "development_blob": "8ecd61cb14a381789ff716530adf390c38318436",
+      "public_blob": "8ecd61cb14a381789ff716530adf390c38318436",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/pico/stdio.h",
+      "development_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "public_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/pico/stdio/driver.h",
+      "development_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "public_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/pico/stdio_uart.h",
+      "development_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "public_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/pico/stdio_usb.h",
+      "development_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "public_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/serial_stubs/pico/stdlib.h",
+      "development_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "public_blob": "1a858100984f11f672db95d12c434f967a6bf8b9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/soak/README.md",
+      "development_blob": "f04da10becdd49974a78819bce1b47e16426dda3",
+      "public_blob": "f04da10becdd49974a78819bce1b47e16426dda3",
+      "intentional_adaptation": true,
+      "reason": "Sample instructions reference current public manuals instead of unpublished internal Stage records."
+    },
+    {
+      "path": "tests/soak/image-classic.bas",
+      "development_blob": "985369affaa0e2fa52bb2dfde49bc44d498641d9",
+      "public_blob": "985369affaa0e2fa52bb2dfde49bc44d498641d9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/soak/image-structured.bas",
+      "development_blob": "8e88165f6550fabc92a6b46eebe756238d49bc7a",
+      "public_blob": "8e88165f6550fabc92a6b46eebe756238d49bc7a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/soak_support.hpp",
+      "development_blob": "f719f1824de999a173217418501104f1309f5dc1",
+      "public_blob": "f719f1824de999a173217418501104f1309f5dc1",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/stability_language_test.cpp",
+      "development_blob": "150db7a2c6374fe93c5a5673c8cffbc67e321a70",
+      "public_blob": "150db7a2c6374fe93c5a5673c8cffbc67e321a70",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/stage1_source_contract_test.py",
+      "development_blob": "e82937d583d90719d19b697596f67f78535a5719",
+      "public_blob": "e82937d583d90719d19b697596f67f78535a5719",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/stage3_optimizer_test.cpp",
+      "development_blob": "5f0bf0187dc6a61cf151840e345f9f44eb373925",
+      "public_blob": "5f0bf0187dc6a61cf151840e345f9f44eb373925",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/stage5_for_test.cpp",
+      "development_blob": "7cf9fc54e2bd347548f4e914575a948681b100c9",
+      "public_blob": "7cf9fc54e2bd347548f4e914575a948681b100c9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/status_layout_test.cpp",
+      "development_blob": "2f478ec86c3d1eb810b1bcff1ee2addeda5954fd",
+      "public_blob": "2f478ec86c3d1eb810b1bcff1ee2addeda5954fd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_ownership_test.cpp",
+      "development_blob": "e64b85db0ca60e5e5849c96ea1bd57a362892569",
+      "public_blob": "e64b85db0ca60e5e5849c96ea1bd57a362892569",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/blockdevice/sd.h",
+      "development_blob": "efc8100073a54d240e4809f0303828dff43827fe",
+      "public_blob": "efc8100073a54d240e4809f0303828dff43827fe",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/filesystem/fat.h",
+      "development_blob": "4e9d9106a20508f7841dca7a2c07110525d741d9",
+      "public_blob": "4e9d9106a20508f7841dca7a2c07110525d741d9",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/filesystem/vfs.h",
+      "development_blob": "9ccc745743bc17cb1d536bf2709d800bbdf1fd44",
+      "public_blob": "9ccc745743bc17cb1d536bf2709d800bbdf1fd44",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/hardware/gpio.h",
+      "development_blob": "bde0986af5426e8af68684651c273c82c53f30a7",
+      "public_blob": "bde0986af5426e8af68684651c273c82c53f30a7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/hardware/spi.h",
+      "development_blob": "900fe9747fcd5a5a69465c54b31c31a630889b1b",
+      "public_blob": "900fe9747fcd5a5a69465c54b31c31a630889b1b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/pico/stdlib.h",
+      "development_blob": "de4656f878e954d453be7510ca18d9edfcf422fe",
+      "public_blob": "de4656f878e954d453be7510ca18d9edfcf422fe",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/picocalc_display.hpp",
+      "development_blob": "dd569cd8f735547c772cec14eaa436012baa1c8f",
+      "public_blob": "dd569cd8f735547c772cec14eaa436012baa1c8f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/storage_stubs/platform.hpp",
+      "development_blob": "68bf123f0a8c7eab830c5c9f2754bb8f4fb889e2",
+      "public_blob": "68bf123f0a8c7eab830c5c9f2754bb8f4fb889e2",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/structured_source_test.cpp",
+      "development_blob": "c81c8c69a371b0bd3b1b35389819cf7900835a5d",
+      "public_blob": "c81c8c69a371b0bd3b1b35389819cf7900835a5d",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/stubs/hardware/spi.h",
+      "development_blob": "4f6023dbfdd598fa07192ccd07b10e4a466733f7",
+      "public_blob": "4f6023dbfdd598fa07192ccd07b10e4a466733f7",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/stubs/pico/stdlib.h",
+      "development_blob": "4cf5f9d8868e64b94d9300bcbf1c0a73fd9dae21",
+      "public_blob": "4cf5f9d8868e64b94d9300bcbf1c0a73fd9dae21",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/system_controls_test.cpp",
+      "development_blob": "15bc50e5eebef138b19296bb9f61820cf8cf7415",
+      "public_blob": "15bc50e5eebef138b19296bb9f61820cf8cf7415",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/system_information_integration_test.cpp",
+      "development_blob": "2d73f654a3416f2a1c44f16593b0969c741d27b2",
+      "public_blob": "2d73f654a3416f2a1c44f16593b0969c741d27b2",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/system_information_test.cpp",
+      "development_blob": "069de374b3b5aee7e3fb7d73d0f163434af4f592",
+      "public_blob": "069de374b3b5aee7e3fb7d73d0f163434af4f592",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/usb_msc_test.cpp",
+      "development_blob": "6b697e19957812f221b6cc802fd1ea15d568364e",
+      "public_blob": "6b697e19957812f221b6cc802fd1ea15d568364e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/usb_storage_menu_test.cpp",
+      "development_blob": "10b795e0959220a21ad00da493ab04241808c15e",
+      "public_blob": "10b795e0959220a21ad00da493ab04241808c15e",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/usb_stubs/pico/unique_id.h",
+      "development_blob": "58c701d14757e58e137b51723dcf182a7169b9b4",
+      "public_blob": "58c701d14757e58e137b51723dcf182a7169b9b4",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/usb_stubs/tusb_config.h",
+      "development_blob": "87695c734b56c49c1575fa6a9338792b7dad2d36",
+      "public_blob": "87695c734b56c49c1575fa6a9338792b7dad2d36",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/wifi_profiles_test.cpp",
+      "development_blob": "b671703d35f7ef206982c87e30a5edf1a9e8eada",
+      "public_blob": "b671703d35f7ef206982c87e30a5edf1a9e8eada",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/wifi_retry_integration_test.cpp",
+      "development_blob": "8b5a250c60f316ed5d5b80a74df4214e0f7fabec",
+      "public_blob": "8b5a250c60f316ed5d5b80a74df4214e0f7fabec",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/xmodem_test.cpp",
+      "development_blob": "19fd69590a4fa9915ece474efdd0b73de8ae7b7a",
+      "public_blob": "19fd69590a4fa9915ece474efdd0b73de8ae7b7a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tests/ymodem_test.cpp",
+      "development_blob": "375d9bbe4118e3b28063a95ce77447da3b266624",
+      "public_blob": "375d9bbe4118e3b28063a95ce77447da3b266624",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "third_party/minimp3/LICENSE",
+      "development_blob": "2c4afabdb632b5d68e60c9fe9fe0b0819676a729",
+      "public_blob": "2c4afabdb632b5d68e60c9fe9fe0b0819676a729",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "third_party/minimp3/minimp3.h",
+      "development_blob": "9fbd4d2cc50c06cc3e63dcafdd506dc6512b2103",
+      "public_blob": "9fbd4d2cc50c06cc3e63dcafdd506dc6512b2103",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "third_party/minimp3/minimp3_ex.h",
+      "development_blob": "fb49a267e91d40084c7200297c2cc5a599c7678f",
+      "public_blob": "fb49a267e91d40084c7200297c2cc5a599c7678f",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/benchmark_correctness.py",
+      "development_blob": "91033e6ec19f856aabbf923c77ea164eea62bfbc",
+      "public_blob": "91033e6ec19f856aabbf923c77ea164eea62bfbc",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/build_manual_pdf.py",
+      "development_blob": "fbed3b3b1a54f117c0c03a4cbb4da97902e32985",
+      "public_blob": "fbed3b3b1a54f117c0c03a4cbb4da97902e32985",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/check_local_numeric_codegen.py",
+      "development_blob": "5f0388853371ad0addf45a1b74d1cf4d5bf391b2",
+      "public_blob": "5f0388853371ad0addf45a1b74d1cf4d5bf391b2",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/ci_host_tests.py",
+      "development_blob": "802ace540a96c4e6a2feaabfb98f51a3d6b93dfb",
+      "public_blob": "802ace540a96c4e6a2feaabfb98f51a3d6b93dfb",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/ci_validation_mode.py",
+      "development_blob": "cdaee2cc34646fd2da5962257efcddc11d8629cd",
+      "public_blob": "cdaee2cc34646fd2da5962257efcddc11d8629cd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/compare_usb_memory.py",
+      "development_blob": "7f187f9a180c469d9ce2ccef42b1cd600e206faa",
+      "public_blob": "7f187f9a180c469d9ce2ccef42b1cd600e206faa",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/firmware_manifest.py",
+      "development_blob": "005a3ffb842ba8606b864e58cba9a4e0ca2f934b",
+      "public_blob": "005a3ffb842ba8606b864e58cba9a4e0ca2f934b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/generate_manual_pdfs.py",
+      "development_blob": "c0a1d8364c748c185934a8d2f0b06120589cfb75",
+      "public_blob": "c0a1d8364c748c185934a8d2f0b06120589cfb75",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/memory_report.py",
+      "development_blob": "725edd1266f8716a643893e74ca22676326ef839",
+      "public_blob": "725edd1266f8716a643893e74ca22676326ef839",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/paired_benchmark.py",
+      "development_blob": "49cddc75e46b649d9927150848b3b6ad2fa2b368",
+      "public_blob": "49cddc75e46b649d9927150848b3b6ad2fa2b368",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/performance_policy.py",
+      "development_blob": "b1be13f50473c4ce08b0681b4a737e4c2d42e379",
+      "public_blob": "b1be13f50473c4ce08b0681b4a737e4c2d42e379",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/publish_release.py",
+      "development_blob": null,
+      "public_blob": "5f98a81454d2b9add7b10db0d79ce765d4a81ea7",
+      "intentional_adaptation": true,
+      "reason": "Public-only release automation; original private workflow and history are not imported."
+    },
+    {
+      "path": "tools/requirements-manuals.txt",
+      "development_blob": "895a089573928f22190a0dd006e2f563847a5183",
+      "public_blob": "895a089573928f22190a0dd006e2f563847a5183",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/stability_evidence.py",
+      "development_blob": "3de882478f9a719d892221db5f3aa1534b6d3451",
+      "public_blob": "3de882478f9a719d892221db5f3aa1534b6d3451",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/stage2_evidence.py",
+      "development_blob": "3848b0561b9825f6d789fba0620a9dc93056c2dd",
+      "public_blob": "3848b0561b9825f6d789fba0620a9dc93056c2dd",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/stage3_evidence.py",
+      "development_blob": "39dbae9d4327e70989dd428508f17264f4e9df1a",
+      "public_blob": "39dbae9d4327e70989dd428508f17264f4e9df1a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/stage5_build_identity.py",
+      "development_blob": "9eaca9abab800fd4367396b4c60b80c73ad36b9a",
+      "public_blob": "9eaca9abab800fd4367396b4c60b80c73ad36b9a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/stage5_evidence.py",
+      "development_blob": "2b833c4cd57e5a725828c61c1ffbbb56e45bbe41",
+      "public_blob": "2b833c4cd57e5a725828c61c1ffbbb56e45bbe41",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/v093_evidence.py",
+      "development_blob": "09641eefc6c4d4defc8a6a3e3dd27001de9b323b",
+      "public_blob": "09641eefc6c4d4defc8a6a3e3dd27001de9b323b",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/validate_manual_reference.py",
+      "development_blob": "7e45619486e6360bdaba8deb500dbb657b6ceb3a",
+      "public_blob": "7e45619486e6360bdaba8deb500dbb657b6ceb3a",
+      "intentional_adaptation": false,
+      "reason": null
+    },
+    {
+      "path": "tools/validate_release_docs.py",
+      "development_blob": "6079e0f959a1245a09bed0907418b2f7c587babc",
+      "public_blob": "445474eb700c5203f30dd63138e1b1b44eebd1dd",
+      "intentional_adaptation": true,
+      "reason": "Historical System PDF hash is the original public v0.92 asset; current v0.94 validation unchanged."
+    },
+    {
+      "path": "tools/validate_release_package.py",
+      "development_blob": "787f259b4be4fbb75314db0e55e28f1166601bae",
+      "public_blob": "787f259b4be4fbb75314db0e55e28f1166601bae",
+      "intentional_adaptation": false,
+      "reason": null
+    }
+  ],
+  "removed_obsolete_publication_entrypoints": [
+    ".github/workflows/publish-v0.92.yml",
+    "tools/publish_v092.py",
+    "docs/release/v0.92-publication.json"
+  ]
+}

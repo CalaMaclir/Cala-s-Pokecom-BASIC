@@ -109,6 +109,7 @@ def main():
     opcode_names=[x.strip() for x in re.sub(r"//[^\n]*","",enum).split(",") if x.strip()]
     def opcode_name(revision,index):
         if revision in ("Stage 1","Stage 2") and index==opcode_names.index("LOCAL_NUM_FUSED"):return "HALT"
+        if revision=="Accepted 3AB" and "LOCAL_GRAY_PSET_MUL_INT" in opcode_names and index==opcode_names.index("LOCAL_GRAY_PSET_MUL_INT"):return "HALT"
         return opcode_names[index] if index<len(opcode_names) else str(index)
     fusions={}
     for n in names:
@@ -163,5 +164,6 @@ if __name__=="__main__":
             path.parent.mkdir(parents=True,exist_ok=True)
             path.write_text(json.dumps(error_record(error),indent=2)+"\n")
         raise
+
 
 

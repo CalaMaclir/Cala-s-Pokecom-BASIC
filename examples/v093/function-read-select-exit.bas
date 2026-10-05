@@ -1,0 +1,17 @@
+DATA 1,2,3
+FOR K=1 TO 3
+    PRINT F()
+NEXT K
+END
+FUNCTION F()
+    READ A
+    SELECT CASE A
+    CASE 1 TO 3
+        FOR I=1 TO 10
+            IF I=3 THEN EXIT FOR
+        NEXT I
+        RETURN A+I
+    CASE ELSE
+        RETURN 0
+    END SELECT
+END FUNCTION

@@ -1,9 +1,15 @@
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+#include "for_runtime.hpp"
+#endif
 #include "local_numeric_fusion.hpp"
 #include "vm.hpp"
+#include "integer_numeric.hpp"
+#include "extended_numeric_math.hpp"
 #include "function_runtime.hpp"
 #include <new>
 
 #include <cmath>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -18,6 +24,7 @@
 namespace rmb {
 #ifdef RMB_OPTIMIZER_TEST
 bool vm_test_generic=false;
+bool vm_test_unverified=false;
 #endif
 
 namespace {
@@ -64,6 +71,9 @@ struct Value {
 static_assert(sizeof(void*) != 4 || sizeof(Value) == 8,
               "Fastfloat VM Value must stay compact on 32-bit targets");
 
+
+
+#ifndef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
 struct ForFrame {
     int slot = -1;
     BasicNumber end = 0.0;
@@ -72,48 +82,14 @@ struct ForFrame {
     std::int32_t body_pc = 0;
 };
 
-struct LocalNumericValue { BasicNumber number; bool store; };
-// Keep local template temporaries out of the shared Classic VM dispatch loop.
-// Default compiler contraction can cross named float temporaries on ARM.
-// Each multiply/add must round exactly as the original separate VM opcodes.
-[[gnu::noinline,gnu::optimize("fp-contract=off")]] LocalNumericValue evaluate_local_numeric(const Op& op,const BasicNumber* n,
-                                                          const BasicNumber* constants) {
-    const auto x=local_operand(op,0),y=local_operand(op,1),z=local_operand(op,2),w=local_operand(op,3);
-    BasicNumber result=0;bool store=false;
-    switch(static_cast<LocalNumericPattern>(op.flags)) {
-    case LocalNumericPattern::Move:result=n[y];store=true;break;
-    case LocalNumericPattern::Constant:result=constants[op.b];store=true;break;
-    case LocalNumericPattern::AddPush:result=n[x]+n[y];break;
-    case LocalNumericPattern::SubPush:result=n[x]-n[y];break;
-    case LocalNumericPattern::MulPush:result=n[x]*n[y];break;
-    case LocalNumericPattern::AddStore:result=n[y]+n[z];store=true;break;
-    case LocalNumericPattern::SubStore:result=n[y]-n[z];store=true;break;
-    case LocalNumericPattern::MulStore:result=n[y]*n[z];store=true;break;
-    case LocalNumericPattern::AddProduct: {
-        const BasicNumber product=n[z]*n[w];result=n[y]+product;store=true;break;
-    }
-    case LocalNumericPattern::ProductAdd: {
-        const BasicNumber product=n[z]*n[w];result=product+n[y];store=true;break;
-    }
-    case LocalNumericPattern::ProductsDifferenceAdd: {
-        const BasicNumber left=n[y]*n[z],right=n[w]*n[local_operand(op,4)];
-        result=(left-right)+n[local_operand(op,5)];store=true;break;
-    }
-    case LocalNumericPattern::ConstantProductAdd: {
-        const BasicNumber left=constants[op.b]*n[y];
-        result=(left*n[z])+n[w];store=true;break;
-    }
-    case LocalNumericPattern::AddConstant:result=n[x]+constants[op.b];break;
-    case LocalNumericPattern::SubConstant:result=n[x]-constants[op.b];break;
-    case LocalNumericPattern::MulConstant:result=n[x]*constants[op.b];break;
-    case LocalNumericPattern::ConstantMul:result=constants[op.b]*n[x];break;
-    case LocalNumericPattern::AddConstantProduct: {
-        const BasicNumber product=n[z]*constants[op.b];
-        result=n[y]+product;store=true;break;
-    }
-    }
+#else
+using ForFrame = rmb::ForFrame;
+#endif
 
-    return {result,store};
+// Local gray uses precisely one rounded single-precision product before INT.
+[[gnu::noinline,gnu::optimize("fp-contract=off")]] BasicNumber evaluate_local_gray(BasicNumber lhs,BasicNumber rhs) {
+    const BasicNumber product=lhs*rhs;
+    return std::floor(product);
 }
 
 struct UserCallRuntime {
@@ -156,6 +132,7 @@ VmResult make_error(
     result.ok = false;
     result.interrupted = message && std::strcmp(message, "BREAK") == 0;
     result.pc = pc;
+    std::snprintf(result.detail, sizeof(result.detail), "%s", message ? message : "ERROR");
 
     if(program.source_mode==ProgramSourceMode::Structured) {
         int row=0;
@@ -163,10 +140,12 @@ VmResult make_error(
             if(program.source_rows[i].pc>pc)break;
             row=program.source_rows[i].row;
         }
+        result.source_row = row;
         std::snprintf(result.message,sizeof(result.message),"%s AT ROW %d",message,row);
         return result;
     }
     const std::int32_t line = source_line_for_pc(program, pc);
+    result.source_line = line;
 
     if (line > 0) {
         std::snprintf(
@@ -218,6 +197,7 @@ const char* opcode_name(OpCode code) {
 #define RMB_OPCODE_NAME(name) case OpCode::name: return #name
     switch (code) {
         RMB_OPCODE_NAME(LOCAL_NUM_FUSED);
+        RMB_OPCODE_NAME(LOCAL_GRAY_PSET_MUL_INT);
         RMB_OPCODE_NAME(LOAD_LOCAL_NUM);RMB_OPCODE_NAME(STORE_LOCAL_NUM);
         RMB_OPCODE_NAME(LOAD_LOCAL_STR);RMB_OPCODE_NAME(STORE_LOCAL_STR);
         RMB_OPCODE_NAME(CALL_USER);RMB_OPCODE_NAME(RETURN_USER);
@@ -289,6 +269,10 @@ const char* opcode_name(OpCode code) {
         RMB_OPCODE_NAME(FOR_INIT);
         RMB_OPCODE_NAME(FOR_CHECK);
         RMB_OPCODE_NAME(FOR_INCR);
+        RMB_OPCODE_NAME(EXIT_LOOP);
+        RMB_OPCODE_NAME(READ_DATA_NUM);
+        RMB_OPCODE_NAME(READ_DATA_STR);
+        RMB_OPCODE_NAME(RESTORE_DATA);
         RMB_OPCODE_NAME(GOSUB);
         RMB_OPCODE_NAME(RETSUB);
         RMB_OPCODE_NAME(ON_GOTO);
@@ -331,6 +315,10 @@ const char* opcode_name(OpCode code) {
         RMB_OPCODE_NAME(ADD_VC_PUSH);
         RMB_OPCODE_NAME(SUB_VC_PUSH);
         RMB_OPCODE_NAME(DIV_VC_PUSH);
+        RMB_OPCODE_NAME(IDIV_NUM);
+        RMB_OPCODE_NAME(SHL_NUM);
+        RMB_OPCODE_NAME(SHR_NUM);
+        RMB_OPCODE_NAME(BXOR_NUM);
         RMB_OPCODE_NAME(HALT);
     }
 #undef RMB_OPCODE_NAME
@@ -703,21 +691,38 @@ VmResult VM::run_impl(
     bool direct_mode
 ) {
     UserCallRuntime calls;
+    // Public IL can be mutated by tests. Revalidate this immutable borrow once
+    // per RUN instead of keeping a stale/serialized trust bit in the program.
+    bool local_il_verified=false;
+    if constexpr(UserFunctions) {
+        local_il_verified=validate_compiled_program(program);
+#ifdef RMB_OPTIMIZER_TEST
+        if(vm_test_unverified)local_il_verified=false;
+#endif
+    }
+
     auto runtime_error=[&](const CompiledProgram& source,std::int32_t pc,const char* message) {
         auto result=make_error(source,pc,message);
         result.call_depth=UserFunctions?static_cast<std::uint16_t>(calls.depth):0;
-        if(source.source_mode==ProgramSourceMode::Structured) {
-            for(std::size_t i=0;i<source.source_row_count;++i) {
-                if(source.source_rows[i].pc>pc)break;
-                result.source_row=source.source_rows[i].row;
-            }
-        }
         if constexpr(UserFunctions) if(calls.top) {
             std::strcpy(result.function_name,source.functions[calls.top->function_id].name);
             for(std::size_t i=0;i<source.source_row_count;++i) {
                 if(source.source_rows[i].pc>calls.top->call_pc)break;
                 result.call_source_row=source.source_rows[i].row;
             }
+            const auto* frame = calls.top;
+            while (frame && result.trace_count < VmResult::kTraceCapacity) {
+                auto& site = result.trace[result.trace_count++];
+                if (frame->function_id >= 0 &&
+                    static_cast<std::size_t>(frame->function_id) < source.function_count)
+                    std::snprintf(site.name, sizeof(site.name), "%s", source.functions[frame->function_id].name);
+                for (std::size_t i=0; i<source.source_row_count; ++i) {
+                    if (source.source_rows[i].pc > frame->call_pc) break;
+                    site.caller_row = source.source_rows[i].row;
+                }
+                frame = frame->previous;
+            }
+            result.trace_truncated = frame != nullptr;
         }
         return result;
     };
@@ -758,6 +763,7 @@ VmResult VM::run_impl(
 
     ForFrame for_stack[kForStackSize] = {};
     std::size_t for_sp = 0;
+    std::size_t data_index = 0; // RUN-local: never serialized or retained after error/BREAK
 
     char scratch[kScratchCount][kScratchSize] = {};
     std::size_t scratch_index = 0;
@@ -954,137 +960,236 @@ VmResult VM::run_impl(
 
         switch (op.code) {
             case OpCode::CALL_USER: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"BAD USER FUNCTION");
-                if(op.a<0||static_cast<std::size_t>(op.a)>=program.function_count)
-                    return runtime_error(program,op_pc,"BAD USER FUNCTION");
-                if(calls.depth>=kMaxFunctionCallDepth)
-                    return runtime_error(program,op_pc,"FUNCTION CALL DEPTH");
-                const auto& fn=program.functions[op.a];
-                if(op.b!=fn.parameter_count||sp<fn.parameter_count)
-                    return runtime_error(program,op_pc,"FUNCTION ARGUMENT COUNT");
-                const std::size_t base=sp-fn.parameter_count;
-                const std::size_t bytes=sizeof(UserCallFrame)+fn.frame_bytes();
-                void* frame_storage=std::calloc(1,bytes);
-                if(!frame_storage)return runtime_error(program,op_pc,"OUT OF MEMORY");
-                auto* frame=new(frame_storage) UserCallFrame{};
-                frame->previous=calls.top;frame->return_pc=pc;frame->function_id=op.a;
-                frame->call_pc=op_pc;frame->expression_base=base;frame->for_base=for_sp;
-                frame->return_base=return_sp;frame->allocated_bytes=bytes;
-                for(std::size_t i=0;i<fn.parameter_count;++i) {
-                    const auto& local=fn.locals[i];const auto& value=stack[base+i];
-                    if(value.is_string!=local.symbol.is_string) {
-                        std::free(frame);return runtime_error(program,op_pc,"FUNCTION ARGUMENT TYPE MISMATCH");
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"BAD USER FUNCTION"); } else {
+                    if(op.a<0||static_cast<std::size_t>(op.a)>=program.function_count)
+                        return runtime_error(program,op_pc,"BAD USER FUNCTION");
+                    if(calls.depth>=kMaxFunctionCallDepth)
+                        return runtime_error(program,op_pc,"FUNCTION CALL DEPTH");
+                    const auto& fn=program.functions[op.a];
+                    // Unverified/corrupt metadata must not size an unsafe allocation.
+                    if(!local_il_verified&&(fn.local_count>kMaxFunctionLocals||fn.parameter_count>kMaxFunctionParameters||
+                       fn.parameter_count>fn.local_count||fn.numeric_local_count+fn.string_local_count!=fn.local_count||
+                       (fn.local_count&&!fn.locals)||!std::memchr(fn.name,0,sizeof(fn.name))))
+                        return runtime_error(program,op_pc,"BAD USER FUNCTION");
+                    if(op.b!=fn.parameter_count||sp<fn.parameter_count)
+                        return runtime_error(program,op_pc,"FUNCTION ARGUMENT COUNT");
+                    const std::size_t base=sp-fn.parameter_count;
+                    const std::size_t bytes=sizeof(UserCallFrame)+fn.frame_bytes();
+                    void* frame_storage=std::calloc(1,bytes);
+                    if(!frame_storage)return runtime_error(program,op_pc,"OUT OF MEMORY");
+                    auto* frame=new(frame_storage) UserCallFrame{};
+                    frame->previous=calls.top;frame->function=&fn;frame->return_pc=pc;frame->function_id=op.a;
+                    frame->call_pc=op_pc;frame->expression_base=base;frame->for_base=for_sp;
+                    frame->return_base=return_sp;frame->allocated_bytes=bytes;
+                    for(std::size_t i=0;i<fn.parameter_count;++i) {
+                        const auto& local=fn.locals[i];const auto& value=stack[base+i];
+                        if(!local_il_verified&&local.slot>=(local.symbol.is_string?fn.string_local_count:fn.numeric_local_count)) {
+                            std::free(frame);return runtime_error(program,op_pc,"BAD LOCAL SLOT");
+                        }
+                        if(value.is_string!=local.symbol.is_string) {
+                            std::free(frame);return runtime_error(program,op_pc,"FUNCTION ARGUMENT TYPE MISMATCH");
+                        }
+                        if(local.symbol.is_string)
+                            std::snprintf(frame->strings(fn)+local.slot*kRuntimeStringLength,kRuntimeStringLength,"%s",value.string?value.string:"");
+                        else frame->numbers()[local.slot]=value.number;
                     }
-                    if(local.symbol.is_string)
-                        std::snprintf(frame->strings(fn)+local.slot*kRuntimeStringLength,kRuntimeStringLength,"%s",value.string?value.string:"");
-                    else frame->numbers()[local.slot]=value.number;
+                    calls.top=frame;++calls.depth;sp=base;pc=fn.entry_pc;
+                    break;
                 }
-                calls.top=frame;++calls.depth;sp=base;pc=fn.entry_pc;
-                break;
             }
             case OpCode::RETURN_USER: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"RETURN OUTSIDE FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"RETURN OUTSIDE FUNCTION");
-                auto* frame=calls.top;const auto& fn=program.functions[frame->function_id];
-                if(sp<=frame->expression_base)return runtime_error(program,op_pc,"FUNCTION RETURN MISSING");
-                const Value value=stack[sp-1];
-                if(value.is_string!=fn.returns_string)return runtime_error(program,op_pc,"FUNCTION RETURN TYPE MISMATCH");
-                Value result=value;
-                if(value.is_string) {
-                    char* buffer=calls.string_slot(frame->expression_base);
-                    if(!buffer)return runtime_error(program,op_pc,"OUT OF MEMORY");
-                    std::snprintf(buffer,kRuntimeStringLength,"%s",value.string?value.string:"");
-                    result=Value::str(buffer);
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"RETURN OUTSIDE FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"RETURN OUTSIDE FUNCTION");
+                    auto* frame=calls.top;const auto& fn=*frame->function;
+                    if(sp<=frame->expression_base)return runtime_error(program,op_pc,"FUNCTION RETURN MISSING");
+                    const Value value=stack[sp-1];
+                    if(value.is_string!=fn.returns_string)return runtime_error(program,op_pc,"FUNCTION RETURN TYPE MISMATCH");
+                    Value result=value;
+                    if(value.is_string) {
+                        char* buffer=calls.string_slot(frame->expression_base);
+                        if(!buffer)return runtime_error(program,op_pc,"OUT OF MEMORY");
+                        std::snprintf(buffer,kRuntimeStringLength,"%s",value.string?value.string:"");
+                        result=Value::str(buffer);
+                    }
+                    pc=frame->return_pc;sp=frame->expression_base;
+                    for_sp=frame->for_base;return_sp=frame->return_base;
+                    calls.top=frame->previous;--calls.depth;std::free(frame);
+                    if(!push(result))return runtime_error(program,op_pc,"STACK OVERFLOW");
+                    break;
                 }
-                pc=frame->return_pc;sp=frame->expression_base;
-                for_sp=frame->for_base;return_sp=frame->return_base;
-                calls.top=frame->previous;--calls.depth;std::free(frame);
-                if(!push(result))return runtime_error(program,op_pc,"STACK OVERFLOW");
-                break;
             }
             case OpCode::FUNCTION_FALLTHROUGH:
                 return runtime_error(program,op_pc,"FUNCTION RETURN MISSING");
-            case OpCode::LOCAL_NUM_FUSED: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                const auto& fn=program.functions[calls.top->function_id];
-                if(!valid_local_numeric(op,fn.numeric_local_count,program.number_count)||
-                   static_cast<std::size_t>(op_pc)+op.s>program.code_count)
-                    return runtime_error(program,op_pc,"BAD LOCAL FUSION");
-                // Preserve the unfused stack-overflow PC, including across source rows.
-                // These numeric templates need at most three temporary values.
-                if(sp>kStackSize-3) {
-                    auto depth=sp;
-                    for(unsigned j=0;j<op.s;++j) {
-                        const auto code=program.code[op_pc+j].code;
-                        if(j==0||code==OpCode::LOAD_LOCAL_NUM||code==OpCode::PUSH_NUM) {
-                            if(depth>=kStackSize)return runtime_error(program,op_pc+j,"STACK OVERFLOW");
-                            ++depth;
-                        } else if(code==OpCode::ADD_NUM||code==OpCode::SUB_NUM||code==OpCode::MUL_NUM||code==OpCode::STORE_LOCAL_NUM) --depth;
+            case OpCode::LOCAL_GRAY_PSET_MUL_INT: {
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto& fn=*calls.top->function;
+                    const bool in_verified_frame=local_il_verified&&
+                        static_cast<unsigned>(op_pc-fn.entry_pc)<static_cast<unsigned>(fn.end_pc-fn.entry_pc);
+                    if(!in_verified_frame&&
+                       (!valid_local_gray(op,fn.numeric_local_count)||
+                        static_cast<std::size_t>(op_pc)+op.s>program.code_count||
+                        !valid_local_gray_span(program,op_pc,fn.numeric_local_count,fn.end_pc)))
+                        return runtime_error(program,op_pc,"BAD LOCAL GRAPHICS FUSION");
+                    auto* n=calls.top->numbers();
+                    const auto gray=local_operand(op,0),lhs=local_operand(op,1),rhs=local_operand(op,2),xs=local_operand(op,3);
+                    // Near overflow, run the untouched tail after the original first LOAD.
+                    // This preserves partial assignment, COLOR side effects and exact PCs.
+                    if(sp>kStackSize-3) {
+                        if(!push(Value::num(n[lhs])))return runtime_error(program,op_pc,"STACK OVERFLOW");
+                        break;
                     }
+                    const BasicNumber value=evaluate_local_gray(n[lhs],n[rhs]);
+                    n[gray]=value;
+                    int g=static_cast<int>(value);
+                    if(g<0)g=0;else if(g>255)g=255;
+                    const auto color=(static_cast<std::uint32_t>(g)<<16)|(static_cast<std::uint32_t>(g)<<8)|static_cast<std::uint32_t>(g);
+                    platform::set_graphics_color(color);
+                    platform::graphics_pixel(map_graphics_x(n[xs]),map_graphics_y(n[op.b]));
+                    dispatch_count+=11;pc+=11;break;
                 }
-                const auto value=evaluate_local_numeric(op,calls.top->numbers(),program.number_pool);
-                const BasicNumber result=value.number;const bool store=value.store;
-                auto* n=calls.top->numbers();const auto x=local_operand(op,0);
-                if(store)n[x]=result;
-                else if(!push(Value::num(result)))return runtime_error(program,op_pc,"STACK OVERFLOW");
-                dispatch_count+=op.s-1;pc+=op.s-1;
-                break;
+            }
+            case OpCode::LOCAL_NUM_FUSED: {
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto& fn=*calls.top->function;
+                    // Static control edges are validated, while this cheap interval
+                    // check also protects against a corrupt fused skip into another
+                    // FUNCTION. Raw/test-mutated IL keeps the fully checked path.
+                    const bool in_verified_frame=local_il_verified&&
+                        static_cast<unsigned>(op_pc-fn.entry_pc)<static_cast<unsigned>(fn.end_pc-fn.entry_pc);
+                    if(!in_verified_frame&&(!valid_local_numeric(op,fn.numeric_local_count,program.number_count)||
+                       static_cast<std::size_t>(op_pc)+op.s>program.code_count))
+                        return runtime_error(program,op_pc,"BAD LOCAL FUSION");
+                    // Preserve the unfused stack-overflow PC, including across source rows.
+                    // These numeric templates need at most three temporary values.
+                    if(sp>kStackSize-3) {
+                        auto depth=sp;
+                        for(unsigned j=0;j<op.s;++j) {
+                            const auto code=program.code[op_pc+j].code;
+                            if(j==0||code==OpCode::LOAD_LOCAL_NUM||code==OpCode::PUSH_NUM) {
+                                if(depth>=kStackSize)return runtime_error(program,op_pc+j,"STACK OVERFLOW");
+                                ++depth;
+                            } else if(code==OpCode::ADD_NUM||code==OpCode::SUB_NUM||code==OpCode::MUL_NUM||code==OpCode::STORE_LOCAL_NUM) --depth;
+                        }
+                    }
+                    auto* n=calls.top->numbers();
+                    const auto operand=[&](unsigned index){return local_operand(op,index);};
+                    const auto push_result=[&](BasicNumber result) {
+                        stack[sp].is_string=false;stack[sp].number=result;++sp;
+                    };
+                    switch(static_cast<LocalNumericPattern>(op.flags)) {
+                    case LocalNumericPattern::Move:
+                        n[operand(0)]=n[operand(1)];break;
+                    case LocalNumericPattern::Constant:
+                        n[operand(0)]=program.number_pool[op.b];break;
+                    case LocalNumericPattern::AddPush:
+                        push_result(n[operand(0)]+n[operand(1)]);break;
+                    case LocalNumericPattern::SubPush:
+                        push_result(n[operand(0)]-n[operand(1)]);break;
+                    case LocalNumericPattern::MulPush:
+                        push_result(n[operand(0)]*n[operand(1)]);break;
+                    case LocalNumericPattern::AddStore:
+                        n[operand(0)]=n[operand(1)]+n[operand(2)];break;
+                    case LocalNumericPattern::SubStore:
+                        n[operand(0)]=n[operand(1)]-n[operand(2)];break;
+                    case LocalNumericPattern::MulStore:
+                        n[operand(0)]=n[operand(1)]*n[operand(2)];break;
+                    case LocalNumericPattern::AddProduct: {
+                        const BasicNumber product=n[operand(2)]*n[operand(3)];
+                        n[operand(0)]=n[operand(1)]+product;break;
+                    }
+                    case LocalNumericPattern::ProductAdd: {
+                        const BasicNumber product=n[operand(2)]*n[operand(3)];
+                        n[operand(0)]=product+n[operand(1)];break;
+                    }
+                    case LocalNumericPattern::ProductsDifferenceAdd: {
+                        const BasicNumber left=n[operand(1)]*n[operand(2)];
+                        const BasicNumber right=n[operand(3)]*n[operand(4)];
+                        const BasicNumber difference=left-right;
+                        n[operand(0)]=difference+n[operand(5)];break;
+                    }
+                    case LocalNumericPattern::ConstantProductAdd: {
+                        const BasicNumber left=program.number_pool[op.b]*n[operand(1)];
+                        const BasicNumber product=left*n[operand(2)];
+                        n[operand(0)]=product+n[operand(3)];break;
+                    }
+                    case LocalNumericPattern::AddConstant:
+                        push_result(n[operand(0)]+program.number_pool[op.b]);break;
+                    case LocalNumericPattern::SubConstant:
+                        push_result(n[operand(0)]-program.number_pool[op.b]);break;
+                    case LocalNumericPattern::MulConstant:
+                        push_result(n[operand(0)]*program.number_pool[op.b]);break;
+                    case LocalNumericPattern::ConstantMul:
+                        push_result(program.number_pool[op.b]*n[operand(0)]);break;
+                    case LocalNumericPattern::AddConstantProduct: {
+                        const BasicNumber product=n[operand(2)]*program.number_pool[op.b];
+                        n[operand(0)]=n[operand(1)]+product;break;
+                    }
+                    default:
+                        return runtime_error(program,op_pc,"BAD LOCAL FUSION");
+                    }
+                    dispatch_count+=op.s-1;pc+=op.s-1;
+                    break;
+                }
             }
             case OpCode::LOAD_LOCAL_NUM: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                const auto& fn=program.functions[calls.top->function_id];
-                if(op.a<0||static_cast<std::size_t>(op.a)>=fn.numeric_local_count)
-                    return runtime_error(program,op_pc,"BAD LOCAL SLOT");
-                if(!push(Value::num(calls.top->numbers()[op.a])))
-                    return runtime_error(program,op_pc,"STACK OVERFLOW");
-                break;
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto& fn=*calls.top->function;
+                    if(!local_il_verified&&(op.a<0||static_cast<std::size_t>(op.a)>=fn.numeric_local_count))
+                        return runtime_error(program,op_pc,"BAD LOCAL SLOT");
+                    if(!push(Value::num(calls.top->numbers()[op.a])))
+                        return runtime_error(program,op_pc,"STACK OVERFLOW");
+                    break;
+                }
             }
             case OpCode::STORE_LOCAL_NUM: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                const auto& fn=program.functions[calls.top->function_id];
-                if(op.a<0||static_cast<std::size_t>(op.a)>=fn.numeric_local_count)
-                    return runtime_error(program,op_pc,"BAD LOCAL SLOT");
-                Value value;if(!pop(value))return runtime_error(program,op_pc,"STACK UNDERFLOW");
-                if(value.is_string)return runtime_error(program,op_pc,"TYPE MISMATCH");
-                calls.top->numbers()[op.a]=value.number;break;
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto& fn=*calls.top->function;
+                    if(!local_il_verified&&(op.a<0||static_cast<std::size_t>(op.a)>=fn.numeric_local_count))
+                        return runtime_error(program,op_pc,"BAD LOCAL SLOT");
+                    Value value;if(!pop(value))return runtime_error(program,op_pc,"STACK UNDERFLOW");
+                    if(value.is_string)return runtime_error(program,op_pc,"TYPE MISMATCH");
+                    calls.top->numbers()[op.a]=value.number;break;
+                }
             }
             case OpCode::LOAD_LOCAL_STR:
             case OpCode::STORE_LOCAL_STR:
             case OpCode::INPUT_LOCAL: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                const auto& fn=program.functions[calls.top->function_id];
-                const bool string=op.code==OpCode::LOAD_LOCAL_STR||op.code==OpCode::STORE_LOCAL_STR||
-                                  (op.code==OpCode::INPUT_LOCAL&&op.b!=0);
-                const auto count=string?fn.string_local_count:fn.numeric_local_count;
-                if(op.a<0||static_cast<std::size_t>(op.a)>=count)
-                    return runtime_error(program,op_pc,"BAD LOCAL SLOT");
-                char* text=string?calls.top->strings(fn)+op.a*kRuntimeStringLength:nullptr;
-                BasicNumber* number=string?nullptr:calls.top->numbers()+op.a;
-                if(op.code==OpCode::LOAD_LOCAL_NUM||op.code==OpCode::LOAD_LOCAL_STR) {
-                    if(!push(string?Value::str(text):Value::num(*number)))
-                        return runtime_error(program,op_pc,"STACK OVERFLOW");
-                } else if(op.code==OpCode::INPUT_LOCAL) {
-                    char input[192]={};LineEditor::read(input,sizeof(input));
-                    if(string)std::snprintf(text,kRuntimeStringLength,"%s",input);
-                    else {
-                        char* end=nullptr;const auto value=std::strtof(input,&end);
-                        while(end&&(*end==' '||*end=='\t'))++end;
-                        if(!end||end==input||*end)return runtime_error(program,op_pc,"REDO FROM START");
-                        *number=value;
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto& fn=*calls.top->function;
+                    const bool string=op.code==OpCode::LOAD_LOCAL_STR||op.code==OpCode::STORE_LOCAL_STR||
+                                      (op.code==OpCode::INPUT_LOCAL&&op.b!=0);
+                    const auto count=string?fn.string_local_count:fn.numeric_local_count;
+                    if(!local_il_verified&&(op.a<0||static_cast<std::size_t>(op.a)>=count))
+                        return runtime_error(program,op_pc,"BAD LOCAL SLOT");
+                    char* text=string?calls.top->strings(fn)+op.a*kRuntimeStringLength:nullptr;
+                    BasicNumber* number=string?nullptr:calls.top->numbers()+op.a;
+                    if(op.code==OpCode::LOAD_LOCAL_NUM||op.code==OpCode::LOAD_LOCAL_STR) {
+                        if(!push(string?Value::str(text):Value::num(*number)))
+                            return runtime_error(program,op_pc,"STACK OVERFLOW");
+                    } else if(op.code==OpCode::INPUT_LOCAL) {
+                        char input[192]={};LineEditor::read(input,sizeof(input));
+                        if(string)std::snprintf(text,kRuntimeStringLength,"%s",input);
+                        else {
+                            char* end=nullptr;const auto value=std::strtof(input,&end);
+                            while(end&&(*end==' '||*end=='\t'))++end;
+                            if(!end||end==input||*end)return runtime_error(program,op_pc,"REDO FROM START");
+                            *number=value;
+                        }
+                    } else {
+                        Value value;if(!pop(value))return runtime_error(program,op_pc,"STACK UNDERFLOW");
+                        if(value.is_string!=string)return runtime_error(program,op_pc,"TYPE MISMATCH");
+                        if(string) {
+                            char copy[kRuntimeStringLength];std::snprintf(copy,sizeof(copy),"%s",value.string?value.string:"");
+                            std::memcpy(text,copy,sizeof(copy));
+                        } else *number=value.number;
                     }
-                } else {
-                    Value value;if(!pop(value))return runtime_error(program,op_pc,"STACK UNDERFLOW");
-                    if(value.is_string!=string)return runtime_error(program,op_pc,"TYPE MISMATCH");
-                    if(string) {
-                        char copy[kRuntimeStringLength];std::snprintf(copy,sizeof(copy),"%s",value.string?value.string:"");
-                        std::memcpy(text,copy,sizeof(copy));
-                    } else *number=value.number;
+                    break;
                 }
-                break;
             }
             case OpCode::PUSH_NUM: {
                 if (op.a < 0 ||
@@ -1598,13 +1703,21 @@ VmResult VM::run_impl(
                         }
 
                         ForFrame& frame = for_stack[for_sp - 1];
+                        #ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                        if(!increment_integer_for(frame,numbers_[frame.slot]))
+                            return runtime_error(program,false_target,"INTEGER FOR OVERFLOW");
+#else
                         numbers_[frame.slot] += frame.step;
+#endif
 
                         const BasicNumber current = numbers_[frame.slot];
                         const bool cont =
-                            frame.step >= 0.0
-                                ? current <= frame.end
-                                : current >= frame.end;
+                            
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                    integer_for_continues(frame,current);
+#else
+                    frame.step >= 0.0 ? current <= frame.end : current >= frame.end;
+#endif
 
                         ++dispatch_count; // account for covered FOR_INCR
 
@@ -2467,6 +2580,23 @@ VmResult VM::run_impl(
                 break;
             }
 
+            case OpCode::IDIV_NUM:
+            case OpCode::SHL_NUM:
+            case OpCode::SHR_NUM:
+            case OpCode::BXOR_NUM: {
+                if (sp < 2)
+                    return runtime_error(program, op_pc, "STACK UNDERFLOW");
+                if (stack[sp - 2].is_string || stack[sp - 1].is_string)
+                    return runtime_error(program, op_pc, "TYPE MISMATCH");
+                BasicNumber result = 0.0f;
+                if (const char* error = evaluate_integer_numeric(
+                        op.code, stack[sp - 2].number, stack[sp - 1].number, result))
+                    return runtime_error(program, op_pc, error);
+                --sp;
+                stack[sp - 1].number = result;
+                break;
+            }
+
             case OpCode::FN0_NUM: {
                 BasicNumber result = 0.0;
 
@@ -2531,13 +2661,11 @@ VmResult VM::run_impl(
                         result = std::atan(x);
                         break;
                     case FnId::LOG:
-                        if (x <= 0.0)
-                            return runtime_error(
-                                program,
-                                op_pc,
-                                "DOMAIN ERROR"
-                            );
-                        result = std::log(x);
+                    case FnId::LN:
+                    case FnId::ASIN:
+                    case FnId::ACOS:
+                        if (!evaluate_extended_unary(op.a, x, result))
+                            return runtime_error(program, op_pc, "DOMAIN ERROR");
                         break;
                     case FnId::EXP:
                         result = std::exp(x);
@@ -2589,6 +2717,9 @@ VmResult VM::run_impl(
                     result = a < b ? a : b;
                 } else if (op.a == FnId::MAX) {
                     result = a > b ? a : b;
+                } else if (op.a == FnId::ATAN2) {
+                    if (!evaluate_atan2(a, b, result))
+                        return runtime_error(program, op_pc, "DOMAIN ERROR");
                 } else {
                     return runtime_error(
                         program,
@@ -2700,6 +2831,9 @@ VmResult VM::run_impl(
                     case FnId::SQR:
                     case FnId::ATN:
                     case FnId::LOG:
+                    case FnId::LN:
+                    case FnId::ASIN:
+                    case FnId::ACOS:
                     case FnId::EXP:
                     case FnId::RAD:
                     case FnId::DEG:
@@ -2720,15 +2854,26 @@ VmResult VM::run_impl(
                                 return runtime_error(program, op_pc, "DOMAIN ERROR");
                             result = std::sqrt(x);
                         } else if (op.a == FnId::ATN) result = std::atan(x);
-                        else if (op.a == FnId::LOG) {
-                            if (x <= 0.0)
+                        else if (op.a == FnId::LOG || op.a == FnId::LN ||
+                                 op.a == FnId::ASIN || op.a == FnId::ACOS) {
+                            if (!evaluate_extended_unary(op.a, x, result))
                                 return runtime_error(program, op_pc, "DOMAIN ERROR");
-                            result = std::log(x);
                         } else if (op.a == FnId::EXP) result = std::exp(x);
                         else if (op.a == FnId::RAD) result = x * 3.14159265358979323846 / 180.0;
                         else if (op.a == FnId::DEG) result = x * 180.0 / 3.14159265358979323846;
                         else result = x > 0.0 ? 1.0 : (x < 0.0 ? -1.0 : 0.0);
 
+                        if (!push(Value::num(result)))
+                            return runtime_error(program, op_pc, "STACK OVERFLOW");
+                        break;
+                    }
+
+                    case FnId::ATAN2: {
+                        if (argc != 2 || args[0].is_string || args[1].is_string)
+                            return runtime_error(program, op_pc, "ARGUMENT COUNT");
+                        BasicNumber result = 0.0f;
+                        if (!evaluate_atan2(args[0].number, args[1].number, result))
+                            return runtime_error(program, op_pc, "DOMAIN ERROR");
                         if (!push(Value::num(result)))
                             return runtime_error(program, op_pc, "STACK OVERFLOW");
                         break;
@@ -3114,6 +3259,90 @@ VmResult VM::run_impl(
                             return runtime_error(program, op_pc, "STACK OVERFLOW");
                         break;
                     }
+                    case FnId::DATES:
+                    case FnId::TIMES: {
+                        if (argc != 0)
+                            return runtime_error(program, op_pc, "ARGUMENT COUNT");
+                        platform::DateTime value;
+                        if (!platform::get_datetime(value))
+                            return runtime_error(program, op_pc, "RTC NOT AVAILABLE");
+                        char* dst = scratch_buffer();
+                        if (op.a == FnId::DATES)
+                            std::snprintf(dst, kScratchSize, "%04d-%02d-%02d",
+                                value.year, value.month, value.day);
+                        else
+                            std::snprintf(dst, kScratchSize, "%02d:%02d:%02d",
+                                value.hour, value.minute, value.second);
+                        if (!push_string(dst))
+                            return runtime_error(program, op_pc, "STACK OVERFLOW");
+                        break;
+                    }
+                    case FnId::TRIMS:
+                    case FnId::LTRIMS:
+                    case FnId::RTRIMS: {
+                        if (argc != 1)
+                            return runtime_error(program, op_pc, "ARGUMENT COUNT");
+                        if (!args[0].is_string)
+                            return runtime_error(program, op_pc, "TYPE MISMATCH");
+                        const char* first = args[0].string ? args[0].string : "";
+                        const char* last = first + std::strlen(first);
+                        if (op.a != FnId::RTRIMS)
+                            while (first < last && std::isspace(static_cast<unsigned char>(*first))) ++first;
+                        if (op.a != FnId::LTRIMS)
+                            while (last > first && std::isspace(static_cast<unsigned char>(last[-1]))) --last;
+                        const auto length = static_cast<std::size_t>(last - first);
+                        if (length >= kScratchSize)
+                            return runtime_error(program, op_pc, "STRING TOO LONG");
+                        // Construct before rotating scratch; an argument may own
+                        // the slot that the next scratch_buffer() will reuse.
+                        char result[kScratchSize];
+                        std::memcpy(result, first, length); result[length] = 0;
+                        char* dst = scratch_buffer();
+                        std::memcpy(dst, result, length + 1);
+                        if (!push_string(dst))
+                            return runtime_error(program, op_pc, "STACK OVERFLOW");
+                        break;
+                    }
+                    case FnId::REPLACES: {
+                        if (argc != 3)
+                            return runtime_error(program, op_pc, "ARGUMENT COUNT");
+                        if (!args[0].is_string || !args[1].is_string || !args[2].is_string)
+                            return runtime_error(program, op_pc, "TYPE MISMATCH");
+                        const char* source = args[0].string ? args[0].string : "";
+                        const char* find = args[1].string ? args[1].string : "";
+                        const char* replacement = args[2].string ? args[2].string : "";
+                        const auto find_length = std::strlen(find);
+                        const auto replacement_length = std::strlen(replacement);
+                        char result[kScratchSize]; std::size_t used = 0;
+                        while (*source) {
+                            const bool match = find_length && std::strncmp(source, find, find_length) == 0;
+                            const auto take = match ? replacement_length : 1u;
+                            if (take > kScratchSize - 1 - used)
+                                return runtime_error(program, op_pc, "STRING TOO LONG");
+                            std::memcpy(result + used, match ? replacement : source, take);
+                            used += take; source += match ? find_length : 1u;
+                        }
+                        result[used] = 0;
+                        char* dst = scratch_buffer(); std::memcpy(dst, result, used + 1);
+                        if (!push_string(dst))
+                            return runtime_error(program, op_pc, "STACK OVERFLOW");
+                        break;
+                    }
+                    case FnId::SPACES: {
+                        if (argc != 1)
+                            return runtime_error(program, op_pc, "ARGUMENT COUNT");
+                        if (args[0].is_string)
+                            return runtime_error(program, op_pc, "TYPE MISMATCH");
+                        const auto count = args[0].number;
+                        if (!std::isfinite(count) || count < 0 || count >= kScratchSize)
+                            return runtime_error(program, op_pc, "BAD COUNT");
+                        const auto length = static_cast<std::size_t>(count);
+                        char* dst = scratch_buffer();
+                        std::memset(dst, ' ', length); dst[length] = 0;
+                        if (!push_string(dst))
+                            return runtime_error(program, op_pc, "STACK OVERFLOW");
+                        break;
+                    }
                     case FnId::STRINGS: {
                         if ((argc != 1 && argc != 2) ||
                             args[0].is_string) {
@@ -3494,19 +3723,43 @@ VmResult VM::run_impl(
                         platform::graphics_flush();
                         break;
 
+                    case FnId::GLOAD: {
+                        if (argc != 1 && argc != 3)
+                            return runtime_error(program, op_pc, "LOADIMAGE: ARGUMENT COUNT");
+                        if (!args[0].is_string)
+                            return runtime_error(program, op_pc, "LOADIMAGE: FILENAME REQUIRED");
+                        int x = 0, y = 0;
+                        if (argc == 3) {
+                            for (int i = 1; i < 3; ++i) {
+                                const double value = args[i].number;
+                                if (args[i].is_string || !std::isfinite(value) ||
+                                    value < -2147483648.0 || value > 2147483647.0)
+                                    return runtime_error(program, op_pc, "LOADIMAGE: BAD COORDINATE");
+                            }
+                            // Image I/O uses physical LCD pixels, like GSAVE;
+                            // SCREEN virtual-coordinate scaling does not resize a BMP.
+                            x = static_cast<int>(args[1].number);
+                            y = static_cast<int>(args[2].number);
+                        }
+                        platform::graphics_flush();
+                        if (!storage::load_image(args[0].string, x, y))
+                            return runtime_error(program, op_pc, storage::last_error());
+                        break;
+                    }
+
                     case FnId::GSAVE: {
                         if (argc != 1 && argc != 5) {
                             return runtime_error(
                                 program,
                                 op_pc,
-                                "SAVE IMAGE: ARGUMENT COUNT"
+                                "SAVEIMAGE: ARGUMENT COUNT"
                             );
                         }
                         if (!args[0].is_string) {
                             return runtime_error(
                                 program,
                                 op_pc,
-                                "SAVE IMAGE: FILENAME REQUIRED"
+                                "SAVEIMAGE: FILENAME REQUIRED"
                             );
                         }
 
@@ -3517,11 +3770,13 @@ VmResult VM::run_impl(
 
                         if (argc == 5) {
                             for (int i = 1; i < 5; ++i) {
-                                if (args[i].is_string) {
+                                if (args[i].is_string || !std::isfinite(args[i].number) ||
+                                    static_cast<double>(args[i].number) < -2147483648.0 ||
+                                    static_cast<double>(args[i].number) > 2147483647.0) {
                                     return runtime_error(
                                         program,
                                         op_pc,
-                                        "SAVE IMAGE: BAD REGION"
+                                        "SAVEIMAGE: BAD REGION"
                                     );
                                 }
                             }
@@ -3675,6 +3930,17 @@ VmResult VM::run_impl(
                 break;
             }
 
+            case OpCode::DUP:
+                if(op.flags||op.s||op.a||op.b)return runtime_error(program,op_pc,"BAD STACK OPERAND");
+                if(!sp)return runtime_error(program,op_pc,"STACK UNDERFLOW");
+                if(!push(stack[sp-1]))return runtime_error(program,op_pc,"STACK OVERFLOW");
+                break;
+            case OpCode::DROP:
+                if(op.flags||op.s||op.a||op.b)return runtime_error(program,op_pc,"BAD STACK OPERAND");
+                if(!sp)return runtime_error(program,op_pc,"STACK UNDERFLOW");
+                --sp;
+                break;
+
             case OpCode::PRINT: {
                 Value value;
                 if (!pop(value))
@@ -3707,6 +3973,59 @@ VmResult VM::run_impl(
 
             case OpCode::PRINT_SUPPRESS_NL:
                 break;
+
+            case OpCode::READ_DATA_NUM:
+            case OpCode::READ_DATA_STR: {
+                if(direct_mode)return runtime_error(program,op_pc,"DATA/READ/RESTORE REQUIRE STORED PROGRAM");
+                if(op.flags||op.s||op.a||op.b||program.data_count>kMaxDataItems||
+                   program.data_count>program.data_capacity||(program.data_count&&!program.data_items))
+                    return runtime_error(program,op_pc,"BAD DATA TABLE");
+                if(data_index>=program.data_count)return runtime_error(program,op_pc,"OUT OF DATA");
+                const auto item=program.data_items[data_index];
+                if(item.type()>1)return runtime_error(program,op_pc,"BAD DATA ITEM");
+                const bool string=op.code==OpCode::READ_DATA_STR;
+                if(string!=(item.type()==1))return runtime_error(program,op_pc,"READ TYPE MISMATCH");
+                if(string) {
+                    if(item.index()>=program.string_used||program.string_used>kStringPoolSize||
+                       !std::memchr(program.string_pool+item.index(),0,program.string_used-item.index()))
+                        return runtime_error(program,op_pc,"BAD DATA ITEM");
+                    if(!push_string(program.string_pool+item.index()))return runtime_error(program,op_pc,"STACK OVERFLOW");
+                } else {
+                    if(item.index()>=program.number_count||program.number_count>kNumberPoolSize)
+                        return runtime_error(program,op_pc,"BAD DATA ITEM");
+                    if(!push(Value::num(program.number_pool[item.index()])))return runtime_error(program,op_pc,"STACK OVERFLOW");
+                }
+                ++data_index;
+                break;
+            }
+            case OpCode::RESTORE_DATA:
+                if(direct_mode)return runtime_error(program,op_pc,"DATA/READ/RESTORE REQUIRE STORED PROGRAM");
+                if(op.flags||op.s||op.a||op.b)return runtime_error(program,op_pc,"BAD RESTORE OPERAND");
+                data_index=0;
+                break;
+
+            case OpCode::EXIT_LOOP: {
+                const auto base=(UserFunctions&&calls.top)?calls.top->for_base:0;
+                if(program.source_mode!=ProgramSourceMode::Structured||op.flags||op.s>16||
+                   op.b<0||op.b>op.s||for_sp<base||for_sp-base!=op.s||
+                   static_cast<std::size_t>(op.b)>for_sp-base)
+                    return runtime_error(program,op_pc,"FOR STACK UNDERFLOW");
+                if(op.a<0||static_cast<std::size_t>(op.a)>=program.code_count)
+                    return runtime_error(program,op_pc,"BAD EXIT TARGET");
+                if constexpr(UserFunctions) {
+                    const auto owner=[&](int target) {
+                        for(std::size_t f=0;f<program.function_count;++f)
+                            if(target>=program.functions[f].entry_pc&&target<program.functions[f].end_pc)
+                                return static_cast<int>(f);
+                        return -1;
+                    };
+                    if(owner(op.a)!=(calls.top?calls.top->function_id:-1))
+                        return runtime_error(program,op_pc,"BAD EXIT TARGET");
+                }
+                for_sp-=static_cast<std::size_t>(op.b);
+                pc=op.a;
+                break;
+            }
 
             case OpCode::JMP:
                 if (op.a < 0 ||
@@ -3800,49 +4119,75 @@ VmResult VM::run_impl(
             }
 
             case OpCode::FOR_LOCAL_INIT: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                const auto& fn=program.functions[calls.top->function_id];
-                if(op.a<0||static_cast<std::size_t>(op.a)>=fn.numeric_local_count)
-                    return runtime_error(program,op_pc,"BAD FOR VARIABLE");
-                Value step,end;
-                if(!pop(step)||!pop(end))return runtime_error(program,op_pc,"STACK UNDERFLOW");
-                if(step.is_string||end.is_string)return runtime_error(program,op_pc,"TYPE MISMATCH");
-                if(step.number==0)return runtime_error(program,op_pc,"STEP CANNOT BE ZERO");
-                if(for_sp>=kForStackSize)return runtime_error(program,op_pc,"FOR STACK OVERFLOW");
-                auto& frame=for_stack[for_sp++];
-                frame.slot=-op.a-1;frame.end=end.number;frame.step=step.number;
-                frame.check_pc=pc;frame.body_pc=0;break;
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto& fn=*calls.top->function;
+                    if(!local_il_verified&&(op.a<0||static_cast<std::size_t>(op.a)>=fn.numeric_local_count))
+                        return runtime_error(program,op_pc,"BAD FOR VARIABLE");
+                    Value step,end;
+                    if(!pop(step)||!pop(end))return runtime_error(program,op_pc,"STACK UNDERFLOW");
+                    if(step.is_string||end.is_string)return runtime_error(program,op_pc,"TYPE MISMATCH");
+                    if(step.number==0)return runtime_error(program,op_pc,"STEP CANNOT BE ZERO");
+                    if(for_sp>=kForStackSize)return runtime_error(program,op_pc,"FOR STACK OVERFLOW");
+                    auto& frame=for_stack[for_sp++];
+                    frame.slot=-op.a-1;frame.end=end.number;frame.step=step.number;
+                    frame.check_pc=pc;frame.body_pc=0;
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                    initialize_integer_for(frame,calls.top->numbers()[op.a]);
+#endif
+                    break;
+                }
             }
             case OpCode::FOR_LOCAL_CHECK: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"FOR STACK UNDERFLOW");
-                if(!calls.top||for_sp<=calls.top->for_base)
-                    return runtime_error(program,op_pc,"FOR STACK UNDERFLOW");
-                auto& frame=for_stack[for_sp-1];
-                const int slot=-frame.slot-1;
-                const auto& fn=program.functions[calls.top->function_id];
-                if(frame.slot>=0||slot<0||static_cast<std::size_t>(slot)>=fn.numeric_local_count)
-                    return runtime_error(program,op_pc,"BAD FOR VARIABLE");
-                frame.body_pc=op.b;
-                const auto current=calls.top->numbers()[slot];
-                if(frame.step>=0?current<=frame.end:current>=frame.end)pc=frame.body_pc;
-                else --for_sp;
-                break;
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"FOR STACK UNDERFLOW"); } else {
+                    if(!calls.top||for_sp<=calls.top->for_base)
+                        return runtime_error(program,op_pc,"FOR STACK UNDERFLOW");
+                    auto& frame=for_stack[for_sp-1];
+                    const int slot=-frame.slot-1;
+                    const auto& fn=*calls.top->function;
+                    if(frame.slot>=0||slot<0||
+                       (!local_il_verified&&static_cast<std::size_t>(slot)>=fn.numeric_local_count))
+                        return runtime_error(program,op_pc,"BAD FOR VARIABLE");
+                    frame.body_pc=op.b;
+                    const auto current=calls.top->numbers()[slot];
+                    if(
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                       integer_for_continues(frame,current)
+#else
+                       frame.step>=0?current<=frame.end:current>=frame.end
+#endif
+                    )pc=frame.body_pc;
+                    else --for_sp;
+                    break;
+                }
             }
             case OpCode::FOR_LOCAL_INCR: {
-                if constexpr(!UserFunctions)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
-                const auto loop_base=calls.top->for_base;
-                if(op.a>=0)while(for_sp>loop_base&&for_stack[for_sp-1].slot!=-op.a-1)--for_sp;
-                if(for_sp<=loop_base)return runtime_error(program,op_pc,"NEXT WITHOUT FOR");
-                auto& frame=for_stack[for_sp-1];const int slot=-frame.slot-1;
-                const auto& fn=program.functions[calls.top->function_id];
-                if(frame.slot>=0||slot<0||static_cast<std::size_t>(slot)>=fn.numeric_local_count)
-                    return runtime_error(program,op_pc,"BAD FOR VARIABLE");
-                auto& current=calls.top->numbers()[slot];current+=frame.step;
-                if(frame.step>=0?current<=frame.end:current>=frame.end)pc=frame.body_pc;
-                else --for_sp;
-                break;
+                if constexpr(!UserFunctions) { return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION"); } else {
+                    if(!calls.top)return runtime_error(program,op_pc,"LOCAL WITHOUT FUNCTION");
+                    const auto loop_base=calls.top->for_base;
+                    if(op.a>=0)while(for_sp>loop_base&&for_stack[for_sp-1].slot!=-op.a-1)--for_sp;
+                    if(for_sp<=loop_base)return runtime_error(program,op_pc,"NEXT WITHOUT FOR");
+                    auto& frame=for_stack[for_sp-1];const int slot=-frame.slot-1;
+                    const auto& fn=*calls.top->function;
+                    if(frame.slot>=0||slot<0||
+                       (!local_il_verified&&static_cast<std::size_t>(slot)>=fn.numeric_local_count))
+                        return runtime_error(program,op_pc,"BAD FOR VARIABLE");
+                    auto& current=calls.top->numbers()[slot];
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                    if(!increment_integer_for(frame,current))return runtime_error(program,op_pc,"INTEGER FOR OVERFLOW");
+#else
+                    current+=frame.step;
+#endif
+                    if(
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                       integer_for_continues(frame,current)
+#else
+                       frame.step>=0?current<=frame.end:current>=frame.end
+#endif
+                    )pc=frame.body_pc;
+                    else --for_sp;
+                    break;
+                }
             }
 
             case OpCode::FOR_INIT: {
@@ -3864,6 +4209,11 @@ VmResult VM::run_impl(
                 frame.step = step.number;
                 frame.check_pc = pc;
                 frame.body_pc = 0;
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                if(frame.slot<0||static_cast<std::size_t>(frame.slot)>=kMaxSymbols)
+                    return runtime_error(program,op_pc,"BAD FOR VARIABLE");
+                initialize_integer_for(frame,numbers_[frame.slot]);
+#endif
                 break;
             }
 
@@ -3881,9 +4231,12 @@ VmResult VM::run_impl(
 
                 const BasicNumber current = numbers_[frame.slot];
                 const bool cont =
-                    frame.step >= 0.0
-                        ? current <= frame.end
-                        : current >= frame.end;
+                    
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                    integer_for_continues(frame,current);
+#else
+                    frame.step >= 0.0 ? current <= frame.end : current >= frame.end;
+#endif
 
                 if (cont) {
                     pc = frame.body_pc;
@@ -3914,13 +4267,21 @@ VmResult VM::run_impl(
                 }
 
                 ForFrame& frame = for_stack[for_sp - 1];
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                if(!increment_integer_for(frame,numbers_[frame.slot]))
+                    return runtime_error(program,op_pc,"INTEGER FOR OVERFLOW");
+#else
                 numbers_[frame.slot] += frame.step;
+#endif
 
                 const BasicNumber current = numbers_[frame.slot];
                 const bool cont =
-                    frame.step >= 0.0
-                        ? current <= frame.end
-                        : current >= frame.end;
+                    
+#ifdef RMB_STAGE5_INTEGER_FOR_EXPERIMENT
+                    integer_for_continues(frame,current);
+#else
+                    frame.step >= 0.0 ? current <= frame.end : current >= frame.end;
+#endif
 
                 if (cont) {
                     // FOR_INCR has already performed the continuation test,

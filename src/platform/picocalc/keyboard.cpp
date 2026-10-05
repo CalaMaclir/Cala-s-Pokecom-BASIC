@@ -38,6 +38,7 @@ bool shift_right_held = false;
 bool alt_held = false;
 bool caps_lock = false;
 int held_navigation_key = -1;
+bool returned_repeat = false;
 RtcError rtc_error = RtcError::None;
 detail::RecoveryPolicy recovery_policy;
 StartupPhase startup_phase = StartupPhase::BootQuiet;
@@ -86,6 +87,17 @@ void reset_host_key_state() {
     alt_held = false;
     ctrl_held = false;
     held_navigation_key = -1;
+}
+
+void record_runtime_failure(I2cError error) {
+    recovery_policy.record_failure(error, now_ms());
+    if (recovery_policy.diagnostics().health == Health::Lost) {
+        // Release host-side keys immediately, even if recovery never succeeds.
+        // Do not select/drain the MCU FIFO or discard queued backlight desires.
+        reset_host_key_state();
+        bios_reply_received = false;
+        bios_query_pending = false;
+    }
 }
 
 void configure_i2c_bus() {
@@ -360,14 +372,14 @@ bool service_pending_backlight() {
         const I2cError error = write_register_raw(
             lcd_backlight_register, desired_lcd_backlight);
         if (error == I2cError::None) lcd_backlight_pending = false;
-        else recovery_policy.record_failure(error, now_ms());
+        else record_runtime_failure(error);
         return true;
     }
     if (keyboard_backlight_pending) {
         const I2cError error = write_register_raw(
             keyboard_backlight_register, desired_keyboard_backlight);
         if (error == I2cError::None) keyboard_backlight_pending = false;
-        else recovery_policy.record_failure(error, now_ms());
+        else record_runtime_failure(error);
         return true;
     }
     return false;
@@ -442,7 +454,7 @@ bool perform_keyboard_transaction(Operation operation) {
         // Only a successful key response or explicit probe resets key health.
         return true;
     }
-    recovery_policy.record_failure(error, now_ms());
+    record_runtime_failure(error);
     return false;
 }
 
@@ -499,7 +511,7 @@ bool poll_key_event(std::uint8_t& state, int& code) {
             return true;
         }
     }
-    recovery_policy.record_failure(error, now_ms());
+    record_runtime_failure(error);
     return false;
 }
 
@@ -572,6 +584,11 @@ bool get_lcd_backlight(unsigned char& value) {
     desired_lcd_backlight = current;
     lcd_backlight_known = true;
     return true;
+}
+
+bool cached_bios_version_value(unsigned char& value) {
+    value = cached_bios_version;
+    return bios_reply_received;
 }
 
 bool read_bios_version(unsigned char& value) {
@@ -863,7 +880,10 @@ bool poll_pending() {
         keyboard_backlight_pending;
 }
 
+bool last_key_repeat() { return returned_repeat; }
+
 int read_key() {
+    returned_repeat = false;
     std::uint8_t state = 0;
     int c = 0;
     if (!poll_key_event(state, c)) return -1;
@@ -906,7 +926,10 @@ int read_key() {
     }
     // State 2 is emitted by the keyboard MCU while a key is held. The editor
     // drains these events without drawing and renders once after state 3.
-    if (state == 2) return navigation_repeatable(c) ? c : -1;
+    if (state == 2) {
+        returned_repeat = navigation_repeatable(c);
+        return returned_repeat ? c : -1;
+    }
     if (state != 1) return -1;
     if (navigation_repeatable(c)) held_navigation_key = c;
 
@@ -922,8 +945,9 @@ int read_key() {
     // Alt+S is a global screenshot hotkey. Consume it before normal
     // Caps/Shift case normalization so the shortcut is layout-independent.
     // Alt+B is reserved by the PicoCalc keyboard MCU for battery display.
-    if (alt_held && (c == 'S' || c == 's')) {
-        return key_hotkey_screenshot;
+    if (alt_held) {
+        const int hotkey = input_hotkeys::alt_letter(c);
+        if (hotkey >= 0) return hotkey;
     }
 
     if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {

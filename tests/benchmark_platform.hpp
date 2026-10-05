@@ -8,6 +8,9 @@
 #include <vector>
 #include <array>
 #include <functional>
+#ifdef CPB_PRODUCTION_NETWORK
+#include "mock_network.hpp"
+#endif
 #define private public
 #include "repl.hpp"
 #undef private
@@ -20,6 +23,9 @@ namespace {
 struct UiRow { std::string text;std::uint32_t fg=0,bg=0; };
 std::array<UiRow,40> ui_rows;
 std::function<void()> ui_before_key;
+#ifdef CPB_PRODUCTION_NETWORK
+std::function<rmb::platform::RuntimeKeyResult()> wifi_key;
+#endif
 std::string output;
 bool interrupt_run = false;
 unsigned pixels = 0;
@@ -115,10 +121,15 @@ void collect_navigation_burst(
     }
     editor_in_burst = false;
 }
+std::vector<bool> host_key_repeats;
+bool host_key_repeat = false;
+bool last_key_repeat() { return host_key_repeat; }
+int get_char_timeout(std::uint32_t) { return get_char(); }
 int get_char() {
     if(ui_before_key)ui_before_key();
     if (editor_key_index == 0) reset_editor_draw_counters();
     if (editor_key_index < editor_keys.size()) {
+        host_key_repeat = editor_key_index < host_key_repeats.size() && host_key_repeats[editor_key_index];
         return editor_keys[editor_key_index++];
     }
     return 0xb1;
@@ -142,16 +153,29 @@ bool function_key_bar_enabled() { return true; }
 bool shift_held() { return false; }
 bool caps_lock_enabled() { return false; }
 bool get_battery_status(int&, bool&) { return false; }
-InternalKeyboardDiagnostics get_internal_keyboard_diagnostics() {
+bool host_keyboard_query = false;
+InternalKeyboardDiagnostics get_internal_keyboard_diagnostics(bool query) {
+    host_keyboard_query = query;
     return {"OK", "NONE", 0, 0, 0, 0};
 }
-bool get_datetime(DateTime&) { return false; }
+bool host_datetime_available = false;
+DateTime host_datetime;
+bool get_datetime(DateTime& value) {
+    if (!host_datetime_available) return false;
+    value = host_datetime; return true;
+}
 std::uint32_t system_clock_hz() { return 150000000; }
 std::uint32_t monotonic_millis() { return host_clock_ms; }
 std::uint64_t monotonic_micros() {
     return static_cast<std::uint64_t>(host_clock_ms) * 1000u;
 }
-void sleep_millis(std::uint32_t ms) { host_clock_ms += ms; ++sleep_calls; }
+void sleep_millis(std::uint32_t ms) {
+    host_clock_ms += ms; ++sleep_calls;
+#ifdef CPB_PRODUCTION_NETWORK
+    mock_network::now = host_clock_ms;
+    mock_network::service_radio();
+#endif
+}
 void draw_text_row(
     int row,
     const char* text,
@@ -202,6 +226,9 @@ bool graphics_palette_rgb(int, int, int, int) { ++graphics_palette_calls; return
 bool graphics_palette_rgb24(int, std::uint32_t) { ++graphics_palette_calls; return true; }
 void graphics_palette_reset() { ++graphics_palette_calls; }
 RuntimeKeyResult poll_runtime_key() {
+#ifdef CPB_PRODUCTION_NETWORK
+    if(wifi_key)return wifi_key();
+#endif
     if (runtime_key_index < runtime_keys.size()) {
         return runtime_keys[runtime_key_index++];
     }
@@ -227,10 +254,20 @@ void audio_service() {
         host_audio_active = false;
     }
 }
-void audio_stop() { ++host_audio_stop_count; host_audio_active=false; host_audio_paused=false; }
+char host_audio_file[80] = {};
+void audio_stop() { ++host_audio_stop_count; host_audio_active=false; host_audio_paused=false; host_audio_file[0]=0; }
 void audio_pause() { if(host_audio_active) host_audio_paused=true; }
 void audio_resume() { if(host_audio_active) host_audio_paused=false; }
 bool audio_playing() { return host_audio_active; }
+#ifndef CPB_LEGACY_AUDIO_DIAGNOSTICS
+AudioDiagnostics audio_diagnostics() {
+    AudioDiagnostics info; info.state = host_audio_active ? (host_audio_paused ? "Paused" : "Playing") : "Stopped";
+    info.file_active = host_audio_active && *host_audio_file;
+    info.source = info.file_active ? "WAV/MP3" : host_audio_active ? "PLAY/BEEP" : "None";
+    if(info.file_active) std::snprintf(info.file,sizeof(info.file),"%s",host_audio_file);
+    return info;
+}
+#endif
 bool audio_beep(int frequency,int duration) {
     if(frequency<20||frequency>20000) {
         std::snprintf(host_audio_error,sizeof(host_audio_error),"BAD BEEP FREQUENCY");
@@ -273,6 +310,7 @@ bool audio_wavplay(const char* filename) {
         std::snprintf(host_audio_error,sizeof(host_audio_error),"BAD WAV FILENAME");
         return false;
     }
+    std::snprintf(host_audio_file,sizeof(host_audio_file),"%s",filename);
     host_audio_active=true; host_audio_paused=false; return true;
 }
 void audio_set_volume(int percent) { host_audio_volume=percent; }
@@ -284,6 +322,7 @@ int audio_volume() { return host_audio_volume; }
 int audio_play_volume() { return host_play_volume; }
 int audio_wav_volume() { return host_wav_volume; }
 const char* audio_last_error() { return host_audio_error; }
+std::uint32_t audio_underruns() { return 0; }
 bool break_requested() {
 #ifdef RMB_OPTIMIZER_TEST
     extern int stage3_break_polls;
@@ -295,13 +334,14 @@ bool break_requested() {
 }
 }
 namespace rmb::storage {
+const char* host_storage_error = "OK";
 Owner owner() { return Owner::Firmware; }
 bool available() { return true; }
 bool init() { return true; }
 bool try_lock() { return true; }
 void unlock() {}
 bool card_present() { return true; }
-const char* last_error() { return "OK"; }
+const char* last_error() { return host_storage_error; }
 bool save_program(const char* name, ProgramStore& program) {
     return storage_save_allowed && program.save(name);
 }
@@ -309,7 +349,15 @@ bool program_exists(const char*) { return false; }
 bool load_program(const char* name, ProgramStore& program) {
     return program.load(name);
 }
+#ifdef CPB_IMAGE_IO_TEST
+std::function<bool(const char*,int,int,int,int)> image_save;
+std::function<bool(const char*,int,int)> image_load;
+bool save_screenshot(const char* name,int x1,int y1,int x2,int y2) { return image_save(name,x1,y1,x2,y2); }
+bool load_image(const char* name,int x,int y) { return image_load(name,x,y); }
+#else
 bool save_screenshot(const char*,int,int,int,int) { return true; }
+bool load_image(const char*,int,int) { return true; }
+#endif
 bool read_root_text(const char* name,char* output,std::size_t capacity) {
     const std::string& value=std::strcmp(name,"RMBASIC.CFG")==0 ? host_config : host_config_backup;
     if(value.empty() || value.size()+1>capacity) return false;
@@ -320,6 +368,7 @@ bool write_root_text(const char* name,const char* text) {
     return true;
 }
 }
+#ifndef CPB_PRODUCTION_NETWORK
 namespace rmb::network {
 bool init() { return true; }
 void shutdown() {}
@@ -329,4 +378,11 @@ bool connected() { return false; }
 bool file_server_start() { return true; }
 bool file_server_running() { return false; }
 }
-namespace rmb { std::size_t LineEditor::read(char* b, std::size_t, CommandHistory*, const char*) { b[0]=0; return 0; } }
+#endif
+#ifndef CPB_REAL_LINE_EDITOR
+namespace rmb { std::size_t LineEditor::read(char* b, std::size_t, CommandHistory*, const char*) { b[0]=0; return 0; }
+#ifdef RMB_LINE_EDITOR_WORKFLOW_API
+std::size_t LineEditor::read(char* b, std::size_t n, CommandHistory* h, const char* s, bool) {return read(b,n,h,s);}
+#endif
+}
+#endif

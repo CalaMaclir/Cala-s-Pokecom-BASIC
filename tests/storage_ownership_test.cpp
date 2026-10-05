@@ -183,6 +183,22 @@ int main() {
     assert(owner() == Owner::Firmware && available());
     assert(take_usb_event() == UsbEvent::ReturnedToFirmware);
 
+    // Unsafe disconnect closes admission immediately but the raw driver may
+    // still be executing. Manual recovery must not mount over that operation.
+    assert(begin_usb_host_ownership());
+    hold_read.store(true); read_entered.store(false); release_read.store(false);
+    std::thread disconnected_read([&] {
+        assert(usb_read_block(0, 0, output.data(), output.size()));
+    });
+    while (!read_entered.load()) std::this_thread::yield();
+    notify_usb_disconnect(); poll();
+    assert(owner() == Owner::Unavailable && !available());
+    const int mounts_before_retry = mounts;
+    assert(!recover_firmware_ownership());
+    assert(mounts == mounts_before_retry && owner() == Owner::Unavailable);
+    release_read.store(true); disconnected_read.join(); hold_read.store(false);
+    assert(recover_firmware_ownership()); take_usb_event();
+
     // Removal and a raw write error both require explicit recovery.
     assert(begin_usb_host_ownership());
     card = false;
@@ -207,6 +223,13 @@ int main() {
     assert(owner() == Owner::Firmware && available());
     fail_sync = false;
 
+    // Firmware card removal -> remount refusal -> reinsertion -> fresh mount.
+    card = false;
+    assert(!remount() && !available() && !root_registered);
+    card = true;
+    assert(remount() && available() && root_registered);
+
     assert(mounts >= 6 && unmounts >= 6);
     std::puts("Storage ownership / raw block / recovery: PASS");
+    return 0;
 }

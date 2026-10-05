@@ -1,7 +1,7 @@
 {
-  "version": "0.92",
+  "version": "0.94",
   "generator": "tools/generate_manual_pdfs.py",
-  "generator_sha256": "1a91f4210f3ec1e2256d01051328c4a05086647bee974f6ec0e0eb8f873f3cda",
+  "generator_sha256": "fc8734147dab238988b4adf9601186872349d92a5e66ecffed3db8e1d0ee3615",
   "reportlab": "4.4.9",
   "font": "CpbIPAexGothic",
   "font_sha256": "6726fb3c804e3fbc3ff5f45eddfd2fb1a858c2b1e03d3f1d8619bbca8d0a0ccd",
@@ -10,21 +10,21 @@
   "manuals": [
     {
       "source": "docs/install-manual-ja.md",
-      "output": "docs/Cala-Pokecom-BASIC-v0.92-Install-Manual-ja.pdf",
-      "source_sha256": "07b0e7c44c6469e0d67f7367cd5880bfb41c9921f4dc62cc4b6cd134e3eae660",
-      "output_sha256": "64b033298f28b637b2012b5f9d72db77f9aeeba41953dda266d6b25bd00b34ce"
+      "output": "docs/Cala-Pokecom-BASIC-v0.94-Install-Manual-ja.pdf",
+      "source_sha256": "2c293b75c679541bc5c9c74cd3ce7d374f629de1fba79037711eeef4b1e96fe5",
+      "output_sha256": "c91efd183c9a3cff509a74b1d345883033a9516824cf6c86c4026167a34938f8"
     },
     {
       "source": "docs/system-manual-ja.md",
-      "output": "docs/Cala-Pokecom-BASIC-v0.92-System-Manual-ja.pdf",
-      "source_sha256": "35a7322b67fe9afc201d2b05d3e46884b7fca214d999cdc52738748e568d91ce",
-      "output_sha256": "e63b2ee41f7c0540049105066eafca60244205fa8f43d8c3d740b7d9a730c56f"
+      "output": "docs/Cala-Pokecom-BASIC-v0.94-System-Manual-ja.pdf",
+      "source_sha256": "f0278b1a174b614e909525ea5baa89786ae90e20455e42acefa36efbb9ff55da",
+      "output_sha256": "dc74bbdec34bbf81c949152cb2de2dc56023e6b579f0ddcc140ed0ef4ae5ab9f"
     },
     {
       "source": "docs/programming-reference-ja.md",
-      "output": "docs/Cala-Pokecom-BASIC-v0.92-Programming-Reference-ja.pdf",
-      "source_sha256": "a8d00cff8f82c2e392101a22f07a7e62e1ffe35f288f1f6bfc3180c647529a0f",
-      "output_sha256": "b5e93747bbecb7d67d6a5dbb0dc723743d566ac57bfb551507efa7b02ce8d516"
+      "output": "docs/Cala-Pokecom-BASIC-v0.94-Programming-Reference-ja.pdf",
+      "source_sha256": "c0b7ab5a4081a6dedc28359da43fbe55b9a49ad810a2fdeae484afc13568f342",
+      "output_sha256": "4ce1823545069f2419a1a35ffa31e575170eb6c1a6833f7957614de7c5821c89"
     }
   ]
 }

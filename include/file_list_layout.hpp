@@ -1,5 +1,6 @@
 #pragma once
 #include "path_compaction.hpp"
+#include "audio_file_policy.hpp"
 #include "storage.hpp"
 #include <algorithm>
 #include <cstdio>
@@ -18,7 +19,11 @@ inline void format_row(const storage::DirectoryEntry* entry,bool show_size,
         if(empty)std::memcpy(out,empty,std::min(columns,std::strlen(empty)));
         return;
     }
-    if(entry->directory)std::memcpy(out,"[DIR] ",std::min(columns,attribute_columns));
+    const char* type = entry->directory ? "[DIR] " : !show_size ? "      " :
+        audio::has_extension_ci(entry->name, ".BAS") ? "[BAS] " :
+        audio::has_extension_ci(entry->name, ".WAV") ? "[WAV] " :
+        audio::has_extension_ci(entry->name, ".MP3") ? "[MP3] " : "[FILE]";
+    std::memcpy(out,type,std::min(columns,attribute_columns));
     const auto reserved=show_size&&!entry->directory?size_columns+1:0;
     if(columns<attribute_columns+reserved)return;
     const auto name_columns=columns-attribute_columns-reserved;

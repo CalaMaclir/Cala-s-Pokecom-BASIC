@@ -1,8 +1,8 @@
 # Cala's Pokecom BASIC System
-## Version 0.92
+## Version 0.94
 ## Install Manual / 導入マニュアル
 
-本書は、ClockworkPi PicoCalc と Raspberry Pi Pico 2 W に Cala's Pokecom BASIC（CPB）v0.92 を導入・更新するための手順書です。
+本書は、ClockworkPi PicoCalc と Raspberry Pi Pico 2 W に Cala's Pokecom BASIC（CPB）v0.94 を導入・更新するための手順書です。
 
 ## 1. 対応ハードウェア
 
@@ -11,11 +11,11 @@
 - FAT32 の SD カード（推奨）
 - 初回書き込み用のデータ通信対応 Micro-USB ケーブル
 
-Pico、Pico W、Pico 2（非W）は v0.92 の配布対象ではありません。PicoCalc の PSRAM は任意機能です。搭載・検出時はINTERNAL Program Storageが1,024行×2,047文字になり、Editor Undo / Redo（履歴256 KiB）、SD cache、DirectState、Compiled Program cacheにも利用されます。PSRAMが利用できない場合もINTERNALは256行×191文字のSRAM fallbackで動作します。
+Pico、Pico W、Pico 2（非W）は v0.94 の配布対象ではありません。PicoCalc の PSRAM は任意機能です。搭載・検出時はINTERNAL Program Storageが1,024行×2,047文字になり、Editor Undo / Redo（履歴256 KiB）、SD cache、DirectState、Compiled Program cacheにも利用されます。PSRAMが利用できない場合もINTERNALは256行×191文字のSRAM fallbackで動作します。
 
 ## 2. 配布物
 
-GitHub Actions の artifact `CPokecombasic-v0.92-build<run>-pico2w` を展開し、通常版の `build/CPokecombasic.uf2` を使用します。
+GitHub Actions の完全artifact ZIP `CPokecombasic-v0.94-build<run>-pico2w.zip` をPCへ保存し、ZIP全体を展開してから、通常版の `build/CPokecombasic.uf2` を使用します。ZIPの中に別の配布ZIPはありません。
 
 `CPokecombasic-editor-perf.uf2` が同梱される場合、それはエディタ性能測定用です。通常利用には使用しないでください。
 
@@ -46,7 +46,7 @@ SD カードへ置く主なファイルは次のとおりです。
 1. 新規SDカードはFAT32で準備します。既存の読めるFAT32カードは初期化不要です。
 2. 必要な `*.BAS`、音声、`RMBASIC.CFG` をルートへコピーします。
 3. PicoCalc の電源を切ってから SD カードを挿入します。
-4. 起動後、`Control Center → Diagnostics → System Information` で `SD PRESENT / MOUNTED` を確認します。
+4. 起動後、`Control Center → System → System Information` で `SD PRESENT / MOUNTED` を確認します。
 
 v0.92のFilesは子／親フォルダーへの移動、作成、改名、空フォルダー削除に対応します。SDルート相対パスは区切りを含め最大79文字です。各成分はASCII英数字、アンダースコア、ハイフン、ドット、内部空白を使えます。先頭／末尾の空白とドット、..、.成分、重複区切り、末尾区切り、バックスラッシュ、制御文字、非ASCIIは拒否します。
 
@@ -56,18 +56,18 @@ v0.92のFilesは子／親フォルダーへの移動、作成、改名、空フ�
 
 確認項目:
 
-- `System Information` に `v0.92` と表示される
+- `System Information` に `v0.94` と表示される
 - CPU clock が安全な既定値 `150 MHz` で起動する
 - SD を使用する場合は `PRESENT / MOUNTED`
 - PSRAM 搭載機では容量、PIO、クロック、Program Store／Direct State／Compiled Cache等のruntime allocationが表示される
 - INTERNAL RAMを選んだ場合、PSRAM利用時はcapacityが1,024 lines / 2,047 charsになる
 - Wi-Fi は起動時 `OFF`（session-only）
 
-## 6. v0.90以前／v0.91開発版からの更新
+## 6. v0.92以前からの更新
 
 プログラムと設定をバックアップしてから更新してください。通常は SD カード上の `*.BAS` と `RMBASIC.CFG` をそのまま引き継げます。
 
-v0.92 の主な互換上の注意:
+v0.94 の主な互換上の注意:
 
 - `WAVPLAY` は WAV に加えて MP3 を内容判定して再生します。
 - Audio 設定に `WAV/MP3` と `PLAY` の独立音量が追加されています。
@@ -77,6 +77,10 @@ v0.92 の主な互換上の注意:
 - INTERNAL Program Storage はPSRAM利用時に1,024行×2,047文字へ拡張されます。PSRAMなしでは256行×191文字です。
 - USB CDC／UART file transferはbulk化され、UARTは115200／230400／460800／921600 bpsと任意RX DMAを選択できます。
 - `LIST`はBREAK／Esc／Ctrl-Cで途中停止できます。`LOAD`時は`LOADING... (filename)`、`RUN`開始時は`RUN...`を表示します。
+- 行番号付きClassic BASICは従来どおり利用できます。Structured BASICは置き換えではなく、Editorから選択する追加モードです。
+- `LOG(x)`は底10の常用対数になりました。旧版と同じ自然対数が必要なprogramは`LN(x)`へ変更します。
+- Structuredに`EXIT FOR`、`EXIT DO`、`SELECT CASE`、`FUNCTION`、Classic／Structuredに`DATA`／`READ`／`RESTORE`が追加されています。
+- Wi-Fiは最大5 profileを保存し、Enable／Disable／Delete、5秒間のScan & Add、strongest Enabled APからのAuto Connectと失敗時fallbackに対応します。Wi-Fi masterは起動ごとにOFFです。
 
 ## 7. 本体メニューからの更新
 
@@ -95,15 +99,17 @@ v0.92 の主な互換上の注意:
 - Pico 2 W 側 USB を PC へ接続する
 - ZIP全体を展開し、flash-cpb.cmdとbuild/CPokecombasic.uf2の相対配置を確認する
 
-## 9. v0.92更新時の注意
+## 9. v0.94更新時の注意
+
+v0.93からの意図的な破壊的変更はありません。SAVE IMAGEは互換構文です。最終実機受入は2026-10-04に完了しています。受入対象と公開buildの対応はRelease checklistを確認してください。
 
 更新前に全BAS、RMBASIC.CFG、必要な音声をPCへバックアップしてください。未保存programはBASとして保存します。INTERNALとUndo／Redo履歴は電源断や更新で保持されません。通常更新でSD全削除／初期化は不要です。
 
-v0.92はClassicとStructuredをLOAD時に判定します。Structuredは行番号なし、EditorのNew Programから作成します。番号付きと番号なしの混在は拒否します。session metadata version 1はClassicとして読込み、次の保存でversion 2へ移行します。復元候補は内容を確認してRestoreしてください。検証不能な作業sourceはRECOVERnnnn.BASへ保全します。
+v0.94はClassicとStructuredをLOAD時に判定します。Structuredは行番号なし、EditorのNew Programから作成します。番号付きと番号なしの混在は拒否します。session metadata version 1はClassicとして読込み、次の保存でversion 2へ移行します。復元候補は内容を確認してRestoreしてください。検証不能な作業sourceはRECOVERnnnn.BASへ保全します。
 
-Compiled Cache format 3はsession形式とは別物です。旧形式はcache missとして再compileするため、旧cache消去のための全初期化は不要です。設定キーは引き継ぎますが、接続状態・CPU profile・編集履歴はsession-onlyです。
+Compiled Cache format 6はsession形式とは別物です。旧形式はcache missとして再compileするため、旧cache消去のための全初期化は不要です。設定キーは引き継ぎますが、接続状態・CPU profile・編集履歴はsession-onlyです。
 
-Keyboard BIOS 1.7でSTANDBYのLCD消灯・キー復帰・10回連続動作を確認しています。CPBはKeyboard BIOSを書き換えません。1.7を全利用者の導入必須条件とはせず、本体入力不調時は診断を保存して原因を切り分けます。
+Keyboard BIOS 1.7でSTANDBYのLCD消灯・キー復帰・10回連続動作を確認しています。CPBはKeyboard BIOSを書き換えません。Keyboard BIOS更新は通常利用の必須条件ではありません。本体入力不調時は`System Information`のKeyboard I2C health、error／consecutive／recovery count、startup phase、SDA／SCL等を記録して切り分けます。
 
 正式配布物は完全artifact ZIP、通常UF2、Install／System／Programming Reference PDF、SHA256SUMS.txtです。UF2単独は完全ZIPと同じ通常UF2です。flash-cpb.cmdはZIP内だけで提供します。
 
@@ -143,5 +149,4 @@ Keyboard BIOS 1.7でSTANDBYのLCD消灯・キー復帰・10回連続動作を確
 
 ---
 
-操作全般は `system-manual-ja.md`、BASIC 言語は `programming-reference-ja.md`、v0.92 の変更点は `release/v0.92-release-notes.md` を参照してください。
-
+操作全般は `system-manual-ja.md`、BASIC 言語は `programming-reference-ja.md`、v0.94 の変更点は `release/v0.94-release-notes.md` を参照してください。

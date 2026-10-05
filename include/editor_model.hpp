@@ -117,6 +117,8 @@ public:
     bool insert_char(char value);
     // Insert spaces to the next logical four-column tab stop, atomically.
     bool insert_tab();
+    bool outdent();
+    bool matching_block();
     bool backspace();
     bool delete_char();
 
@@ -170,6 +172,7 @@ private:
     const char* error_ = "OK";
 
     bool capture_rows(std::size_t first,std::size_t count,EditorHistorySnapshot& out);
+    bool matching_indent(const char* current, std::size_t& indent) const;
     bool structured_replace(std::size_t first,std::size_t remove,const char* const* rows,
                             std::size_t insert,std::size_t focus,std::size_t cursor);
     bool fail(const char* message);

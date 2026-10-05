@@ -53,6 +53,12 @@ private:
     ProgramStore& program_;
 };
 
+enum class EditorExitAction { Error, Exit, Run };
+struct EditorResult {
+    EditorExitAction action = EditorExitAction::Error;
+    explicit operator bool() const { return action != EditorExitAction::Error; }
+};
+
 class FullScreenEditor {
 public:
     FullScreenEditor(
@@ -64,7 +70,7 @@ public:
 
     // Runs synchronously and returns when the user exits the editor.
     // initial_line is a Classic line number or Structured one-based source row.
-    bool run(std::int32_t initial_line = 0);
+    EditorResult run(std::int32_t initial_line = 0, const char* error_type = "COMPILE ERROR");
 
 private:
     static constexpr int kColumns = 53;

@@ -15,6 +15,7 @@ std::uint64_t fake_us = 0;
 std::uint8_t selected_register = 0, response[2] = {};
 std::uint8_t last_write_register = 0, last_write_value = 0;
 int pointer_failures = 0, read_failures = 0;
+int short_reads = 0;
 int write_failure_code = PICO_ERROR_TIMEOUT;
 std::uint8_t bios_version_reply = 0x16, bios_header_reply = 0;
 bool controller_missing = false, tx_fifo_full = false;
@@ -29,6 +30,7 @@ void reset_fake_hardware() {
     fake_us = 0; selected_register = response[0] = response[1] = 0;
     last_write_register = last_write_value = 0;
     pointer_failures = read_failures = 0;
+    short_reads = 0;
     write_failure_code = PICO_ERROR_TIMEOUT;
     bios_version_reply = 0x16; bios_header_reply = 0;
     controller_missing = tx_fifo_full = false;
@@ -90,6 +92,7 @@ int i2c_read_timeout_us(i2c_inst_t*, std::uint8_t device,
         if (read_failures > 0) --read_failures;
         fake_us += timeout; return PICO_ERROR_TIMEOUT;
     }
+    if (short_reads > 0) { --short_reads; return 1; }
     if (device == 0x1f && length == 2) {
         data[0] = response[0]; data[1] = response[1];
     }
