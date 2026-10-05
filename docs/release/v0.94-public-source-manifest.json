@@ -2542,9 +2542,9 @@
     {
       "path": "tools/publish_release.py",
       "development_blob": null,
-      "public_blob": "5f98a81454d2b9add7b10db0d79ce765d4a81ea7",
+      "public_blob": "a00ba863267c732bce968d246a69a652b8f6bf06",
       "intentional_adaptation": true,
-      "reason": "Public-only release automation; original private workflow and history are not imported."
+      "reason": "Public-only release automation and canonical GitHub Release documentation links; original private workflow and history are not imported."
     },
     {
       "path": "tools/requirements-manuals.txt",

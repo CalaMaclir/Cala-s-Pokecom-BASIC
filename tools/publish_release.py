@@ -129,6 +129,7 @@ def prepare(config):
     names.append('SHA256SUMS.txt')
     public_sha=os.environ['GITHUB_SHA']
     body=(ROOT/f'docs/release/v{config["version"]}-release-notes.md').read_text()
+    body=re.sub(r'\]\(([^:/#)]+\.md)\)', lambda m: '](https://github.com/'+REPO+'/blob/'+config['tag']+'/docs/release/'+m.group(1)+')', body)
     body=re.sub(r'\]\((v[^/()]+\.md)\)',lambda match:'](https://github.com/'+REPO+'/blob/'+public_sha+'/docs/release/'+match.group(1)+')',body)
     body+='\n\n## Release provenance\n\n'
     body+='- Public source commit: `'+public_sha+'`\n'
