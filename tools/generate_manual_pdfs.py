@@ -142,28 +142,13 @@ def markdown_table(lines, st):
 
 def compatibility_header(title, classic, structured, st):
     """Render command name and Classic/Structured compatibility badges on one line."""
-    def badge(label, value):
-        cell = Table(
-            [[Paragraph(f"{label}  {value}", st["badge"])]],
-            colWidths=[34 * mm],
-            hAlign="LEFT",
-        )
-        cell.setStyle(TableStyle([
-            ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#D87819")),
-            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF7EF")),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
-        ]))
-        return cell
-
     command_width = BODY_W - 72 * mm
     table = Table(
-        [[Paragraph(inline(title), st["command_name"]),
-          badge("Classic", classic),
-          badge("Structured", structured)]],
+        [[
+            Paragraph(inline(title), st["command_name"]),
+            Paragraph(f"Classic  {classic}", st["badge"]),
+            Paragraph(f"Structured  {structured}", st["badge"]),
+        ]],
         colWidths=[command_width, 36 * mm, 36 * mm],
         hAlign="LEFT",
     )
@@ -171,14 +156,21 @@ def compatibility_header(title, classic, structured, st):
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("LEFTPADDING", (0, 0), (0, 0), 0),
         ("RIGHTPADDING", (0, 0), (0, 0), 5),
-        ("TOPPADDING", (0, 0), (-1, -1), 2),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ("TOPPADDING", (0, 0), (0, 0), 1),
+        ("BOTTOMPADDING", (0, 0), (0, 0), 1),
+
+        ("BOX", (1, 0), (1, 0), 0.9, colors.HexColor("#D87819")),
+        ("BOX", (2, 0), (2, 0), 0.9, colors.HexColor("#D87819")),
+        ("BACKGROUND", (1, 0), (2, 0), colors.HexColor("#FFF7EF")),
+        ("LEFTPADDING", (1, 0), (2, 0), 4),
+        ("RIGHTPADDING", (1, 0), (2, 0), 4),
+        ("TOPPADDING", (1, 0), (2, 0), 3),
+        ("BOTTOMPADDING", (1, 0), (2, 0), 3),
     ]))
     table.keepWithNext = True
     table._toc_level = 1
     table._toc_title = title
     return table
-
 
 def flush(buffer, story, style):
     if buffer:
