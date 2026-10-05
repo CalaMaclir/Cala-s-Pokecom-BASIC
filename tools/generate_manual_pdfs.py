@@ -87,6 +87,10 @@ def make_styles():
             fontSize=8.2, leading=11, textColor=colors.HexColor("#273C52")),
         "compat_value": ParagraphStyle("compat_value", parent=base["BodyText"], fontName=gothic,
             fontSize=8.2, leading=11, textColor=colors.HexColor("#153F61")),
+        "command_name": ParagraphStyle("command_name", parent=base["Heading3"], fontName=gothic,
+            fontSize=10.5, leading=15, textColor=colors.HexColor("#273C52")),
+        "badge": ParagraphStyle("badge", parent=base["BodyText"], fontName=gothic,
+            fontSize=8.0, leading=10, alignment=TA_CENTER, textColor=colors.HexColor("#9A4B00")),
     }
 
 
@@ -136,27 +140,43 @@ def markdown_table(lines, st):
     return table
 
 
-def compatibility_box(classic, structured, st):
+def compatibility_header(title, classic, structured, st):
+    """Render command name and Classic/Structured compatibility badges on one line."""
+    def badge(label, value):
+        cell = Table(
+            [[Paragraph(f"{label}  {value}", st["badge"])]],
+            colWidths=[34 * mm],
+            hAlign="LEFT",
+        )
+        cell.setStyle(TableStyle([
+            ("BOX", (0, 0), (-1, -1), 0.9, colors.HexColor("#D87819")),
+            ("BACKGROUND", (0, 0), (-1, -1), colors.HexColor("#FFF7EF")),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]))
+        return cell
+
+    command_width = BODY_W - 72 * mm
     table = Table(
-        [
-            [Paragraph("Classic", st["compat_mode"]), Paragraph(classic, st["compat_value"])],
-            [Paragraph("Structured", st["compat_mode"]), Paragraph(structured, st["compat_value"])],
-        ],
-        colWidths=[37 * mm, 48 * mm],
+        [[Paragraph(inline(title), st["command_name"]),
+          badge("Classic", classic),
+          badge("Structured", structured)]],
+        colWidths=[command_width, 36 * mm, 36 * mm],
         hAlign="LEFT",
     )
     table.setStyle(TableStyle([
-        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#D87819")),
-        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#ECC49A")),
-        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FFF1E2")),
-        ("BACKGROUND", (1, 0), (1, -1), colors.white),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 6),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ("LEFTPADDING", (0, 0), (0, 0), 0),
+        ("RIGHTPADDING", (0, 0), (0, 0), 5),
+        ("TOPPADDING", (0, 0), (-1, -1), 2),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
     ]))
     table.keepWithNext = True
+    table._toc_level = 1
+    table._toc_title = title
     return table
 
 
@@ -201,7 +221,9 @@ def markdown_story(source, st, source_path):
             )
             gap = Spacer(1, 5)
             gap.keepWithNext = True
-            story += [compatibility_box(match.group(1), match.group(2), st), gap]
+            # Normally consumed together with the preceding ### command heading.
+            # Keep a fallback badge row for non-command compatibility notes.
+            story += [compatibility_header("", match.group(1), match.group(2), st), gap]
         elif re.match(r"^!\[(.*?)\]\((.*?)\)$", line.strip()):
             flush(buffer, story, st["body"])
             match = re.match(r"^!\[(.*?)\]\((.*?)\)$", line.strip())
@@ -215,9 +237,23 @@ def markdown_story(source, st, source_path):
             story += [Spacer(1, 4), figure, Paragraph(inline(caption), st["caption"]), Spacer(1, 7)]
         elif line.startswith("### "):
             flush(buffer, story, st["body"])
-            heading=paragraph(line[4:],st["h3"])
-            heading._toc_level=1
-            story.append(heading)
+            title = line[4:].strip()
+            marker_index = index + 1
+            while marker_index < len(lines) and not lines[marker_index].strip():
+                marker_index += 1
+            marker = None
+            if marker_index < len(lines):
+                marker = re.fullmatch(
+                    r"> \\*\\*対応モード:\\*\\* Classic=(対応|非対応|共通|利用可) / Structured=(対応|非対応|共通|利用可)",
+                    lines[marker_index].strip(),
+                )
+            if marker:
+                story.append(compatibility_header(title, marker.group(1), marker.group(2), st))
+                index = marker_index
+            else:
+                heading=paragraph(title,st["h3"])
+                heading._toc_level=1
+                story.append(heading)
         elif line.startswith("## "):
             flush(buffer, story, st["body"])
             heading=paragraph(line[3:],st["h2"])
@@ -279,7 +315,9 @@ class ManualDoc(SimpleDocTemplate):
 
     def afterFlowable(self,flowable):
         if hasattr(flowable,"_toc_level"):
-            title=flowable.getPlainText()
+            title=getattr(flowable, "_toc_title", None)
+            if title is None:
+                title=flowable.getPlainText()
             key="h-"+hashlib.sha256(title.encode()).hexdigest()[:20]
             if self.cpb_version != "0.92":
                 # Overview and detailed reference entries can share a title.
