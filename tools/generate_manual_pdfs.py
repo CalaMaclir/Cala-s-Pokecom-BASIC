@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Version 0.92 Japanese CPB manuals from Markdown without network access."""
+"""Generate versioned Japanese CPB manuals from Markdown without network access."""
 
 from __future__ import annotations
 
@@ -31,16 +31,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PAGE_W, PAGE_H = A4
 MARGIN_X = 19 * mm
 BODY_W = PAGE_W - 2 * MARGIN_X
-MANUALS = (
-    (ROOT / "docs/install-manual-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.92-Install-Manual-ja.pdf",
-     "Install Manual / 導入マニュアル"),
-    (ROOT / "docs/system-manual-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.92-System-Manual-ja.pdf",
-     "System Manual / システムマニュアル"),
-    (ROOT / "docs/programming-reference-ja.md",
-     ROOT / "docs/Cala-Pokecom-BASIC-v0.92-Programming-Reference-ja.pdf",
-     "Programming Reference Manual / プログラミング・リファレンスマニュアル"),
+MANUAL_NAMES = (
+    ("Install-Manual", "Install Manual / 導入マニュアル", "install-manual-ja.md"),
+    ("System-Manual", "System Manual / システムマニュアル", "system-manual-ja.md"),
+    ("Programming-Reference", "Programming Reference Manual / プログラミング・リファレンスマニュアル", "programming-reference-ja.md"),
 )
 FONT_NAME = "CpbIPAexGothic"
 FONT_SHA256 = ""
@@ -89,6 +83,10 @@ def make_styles():
             fontSize=10, leading=17, alignment=TA_CENTER, textColor=colors.HexColor("#4A5966")),
         "caption": ParagraphStyle("caption", parent=base["BodyText"], fontName=serif,
             fontSize=7.5, leading=11, alignment=TA_CENTER, textColor=colors.HexColor("#4A5966")),
+        "compat_mode": ParagraphStyle("compat_mode", parent=base["BodyText"], fontName=gothic,
+            fontSize=8.2, leading=11, textColor=colors.HexColor("#273C52")),
+        "compat_value": ParagraphStyle("compat_value", parent=base["BodyText"], fontName=gothic,
+            fontSize=8.2, leading=11, textColor=colors.HexColor("#153F61")),
     }
 
 
@@ -138,6 +136,30 @@ def markdown_table(lines, st):
     return table
 
 
+def compatibility_box(classic, structured, st):
+    table = Table(
+        [
+            [Paragraph("Classic", st["compat_mode"]), Paragraph(classic, st["compat_value"])],
+            [Paragraph("Structured", st["compat_mode"]), Paragraph(structured, st["compat_value"])],
+        ],
+        colWidths=[37 * mm, 48 * mm],
+        hAlign="LEFT",
+    )
+    table.setStyle(TableStyle([
+        ("BOX", (0, 0), (-1, -1), 0.8, colors.HexColor("#D87819")),
+        ("INNERGRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#ECC49A")),
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#FFF1E2")),
+        ("BACKGROUND", (1, 0), (1, -1), colors.white),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 6),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    table.keepWithNext = True
+    return table
+
+
 def flush(buffer, story, style):
     if buffer:
         story.append(paragraph(" ".join(line.strip() for line in buffer), style))
@@ -168,6 +190,18 @@ def markdown_story(source, st, source_path):
                 index += 1
             story += [markdown_table(table_lines, st), Spacer(1, 7)]
             continue
+        elif re.fullmatch(
+            r"> \*\*対応モード:\*\* Classic=(対応|非対応|共通|利用可) / Structured=(対応|非対応|共通|利用可)",
+            line.strip(),
+        ):
+            flush(buffer, story, st["body"])
+            match = re.fullmatch(
+                r"> \*\*対応モード:\*\* Classic=(対応|非対応|共通|利用可) / Structured=(対応|非対応|共通|利用可)",
+                line.strip(),
+            )
+            gap = Spacer(1, 5)
+            gap.keepWithNext = True
+            story += [compatibility_box(match.group(1), match.group(2), st), gap]
         elif re.match(r"^!\[(.*?)\]\((.*?)\)$", line.strip()):
             flush(buffer, story, st["body"])
             match = re.match(r"^!\[(.*?)\]\((.*?)\)$", line.strip())
@@ -210,12 +244,12 @@ def markdown_story(source, st, source_path):
     return story
 
 
-def cover(title, st):
+def cover(title, version, st):
     return [
         Spacer(1, 48 * mm),
         Paragraph("Cala's Pokecom BASIC System", st["title"]),
         Spacer(1, 9 * mm),
-        Paragraph("Version 0.92", st["subtitle"]),
+        Paragraph(f"Version {version}", st["subtitle"]),
         Spacer(1, 18 * mm),
         HRFlowable(width="66%", thickness=1.5, color=colors.HexColor("#1C6A8D"), hAlign="CENTER"),
         Spacer(1, 12 * mm),
@@ -233,17 +267,25 @@ def page_decor(canvas, doc):
     canvas.line(MARGIN_X, PAGE_H - 12 * mm, PAGE_W - MARGIN_X, PAGE_H - 12 * mm)
     canvas.setFont(FONT_NAME, 7)
     canvas.setFillColor(colors.HexColor("#496779"))
-    canvas.drawString(MARGIN_X, PAGE_H - 9 * mm, "Cala's Pokecom BASIC System  Version 0.92")
+    canvas.drawString(MARGIN_X, PAGE_H - 9 * mm, f"Cala's Pokecom BASIC System  Version {doc.cpb_version}")
     canvas.setFont(FONT_NAME, 7)
-    canvas.drawRightString(PAGE_W - MARGIN_X, 10 * mm, f"CPB v0.92  |  {canvas.getPageNumber()}")
+    canvas.drawRightString(PAGE_W - MARGIN_X, 10 * mm, f"CPB v{doc.cpb_version}  |  {canvas.getPageNumber()}")
     canvas.restoreState()
 
 
 class ManualDoc(SimpleDocTemplate):
+    def beforeDocument(self):
+        self._cpb_heading_index = 0
+
     def afterFlowable(self,flowable):
         if hasattr(flowable,"_toc_level"):
             title=flowable.getPlainText()
             key="h-"+hashlib.sha256(title.encode()).hexdigest()[:20]
+            if self.cpb_version != "0.92":
+                # Overview and detailed reference entries can share a title.
+                # Each link must resolve to its own heading on every build pass.
+                key += "-" + str(self._cpb_heading_index)
+                self._cpb_heading_index += 1
             self.canv.bookmarkPage(key)
             self.canv.addOutlineEntry(title,key,level=flowable._toc_level,closed=False)
             self.notify("TOCEntry",(flowable._toc_level,title,self.page,key))
@@ -252,19 +294,20 @@ def fixed_canvas(*args,**kwargs):
     kwargs["invariant"]=1
     return Canvas(*args,**kwargs)
 
-def build(source, output, title):
+def build(source, output, title, version):
     st = make_styles()
     doc = ManualDoc(
         str(output), pagesize=A4, leftMargin=MARGIN_X, rightMargin=MARGIN_X,
         topMargin=20 * mm, bottomMargin=18 * mm,
-        title=f"Cala's Pokecom BASIC System Version 0.92 - {title}",
-        author="Cala Maclir", subject="Cala's Pokecom BASIC System Version 0.92",
+        title=f"Cala's Pokecom BASIC System Version {version} - {title}",
+        author="Cala Maclir", subject=f"Cala's Pokecom BASIC System Version {version}",
     )
+    doc.cpb_version = version
     toc=TableOfContents()
     toc.levelStyles=[
         ParagraphStyle("toc0",parent=st["body"],fontSize=9.2,leading=15,spaceBefore=4),
         ParagraphStyle("toc1",parent=st["body"],fontSize=8,leading=12,leftIndent=12)]
-    story=cover(title,st)+[paragraph("目次",st["h1"]),Spacer(1,8),toc,PageBreak()]
+    story=cover(title,version,st)+[paragraph("目次",st["h1"]),Spacer(1,8),toc,PageBreak()]
     story+=markdown_story(source.read_text(encoding="utf-8"),st,source)
     doc.multiBuild(story,onFirstPage=lambda canvas,document:None,onLaterPages=page_decor,canvasmaker=fixed_canvas)
 
@@ -272,6 +315,10 @@ def build(source, output, title):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Check input paths without producing PDFs.")
+    parser.add_argument("--version", choices=("0.92", "0.94"), default="0.94",
+                        help="Manual version to generate (default: 0.94).")
+    parser.add_argument("--output-dir", default="",
+                        help="Optional output directory for reproducibility checks; no manifest is written.")
     parser.add_argument(
         "--font",
         default=os.environ.get("CPB_JAPANESE_FONT", ""),
@@ -279,22 +326,33 @@ def main():
     )
     args = parser.parse_args()
     register_fonts(Path(args.font).expanduser())
+    source_dir = ROOT / "docs" if args.version == "0.94" else ROOT / "docs/archive/v0.92"
+    output_dir = Path(args.output_dir).resolve() if args.output_dir else ROOT / "docs"
+    manuals = tuple(
+        (
+            source_dir / source_name,
+            output_dir / f"Cala-Pokecom-BASIC-v{args.version}-{slug}-ja.pdf",
+            title,
+        )
+        for slug, title, source_name in MANUAL_NAMES
+    )
     manifest=[]
-    for source, output, title in MANUALS:
+    for source, output, title in manuals:
         if not source.exists():
             raise SystemExit(f"Missing manual source: {source}")
         if args.check:
             print(f"OK: {source.relative_to(ROOT)} -> {output.relative_to(ROOT)}")
         else:
             output.parent.mkdir(parents=True, exist_ok=True)
-            build(source, output, title)
-            print(f"Wrote {output.relative_to(ROOT)}")
+            build(source, output, title, args.version)
+            shown = output.relative_to(ROOT) if output.is_relative_to(ROOT) else output
+            print(f"Wrote {shown}")
             manifest.append({"source":str(source.relative_to(ROOT)),"output":str(output.relative_to(ROOT)),
                 "source_sha256":hashlib.sha256(source.read_bytes()).hexdigest(),
                 "output_sha256":hashlib.sha256(output.read_bytes()).hexdigest()})
-    if not args.check:
+    if not args.check and not args.output_dir:
         (ROOT/"docs/manuals-manifest.json").write_text(json.dumps({
-            "version":"0.92","generator":"tools/generate_manual_pdfs.py",
+            "version":args.version,"generator":"tools/generate_manual_pdfs.py",
             "generator_sha256":hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "reportlab":reportlab.Version,"font":FONT_NAME,"font_sha256":FONT_SHA256,"font_package":"japanize-matplotlib==1.1.3","canvas_invariant":True,"manuals":manifest},
             ensure_ascii=False,indent=2)+"\n")
@@ -302,4 +360,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
