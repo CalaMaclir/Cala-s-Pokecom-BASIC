@@ -1,0 +1,36 @@
+name: update-stable-feed
+# Metadata only; all existing publication and owner-acceptance gates remain in
+# publish-release. Never create releases, upload assets or move tags here.
+on:
+  workflow_run:
+    workflows: [publish-release]
+    types: [completed]
+  push:
+    branches: [main]
+    paths: [tools/stable_update_manifest.py, .github/workflows/update-stable-feed.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: cpb-stable-update-feed
+  cancel-in-progress: false
+jobs:
+  manifest:
+    if: github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          persist-credentials: false
+      - name: Verify accepted public release and update only stable.json
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/stable_update_manifest.py --publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-stable-manifest
+          path: build/stable.json
+          if-no-files-found: error

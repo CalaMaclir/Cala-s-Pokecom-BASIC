@@ -1,0 +1,19 @@
+{
+  "schema": "cpb-update-v1",
+  "channel": "stable",
+  "board": "pico2_w",
+  "version": "0.94",
+  "build": 878,
+  "prerelease": false,
+  "hardware_acceptance": "USER_ACCEPTED_PRODUCT_SOURCE",
+  "tag": "v0.94.0",
+  "release_url": "https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/tag/v0.94.0",
+  "source_sha": "14c23f0dede4df381726379fd4474f7750e54ddf",
+  "public_source_sha": "b00bacb648808dbaf8a7937d291081da28516e3e",
+  "uf2": {
+    "name": "Cala-Pokecom-BASIC-v0.94-pico2w.uf2",
+    "bytes": 2363904,
+    "sha256": "6472c45d0a44fa0ad7c93f4937e388b90dc3648e40642d36ea2d28cc67ed8585",
+    "url": "https://github.com/CalaMaclir/Cala-s-Pokecom-BASIC/releases/download/v0.94.0/Cala-Pokecom-BASIC-v0.94-pico2w.uf2"
+  }
+}
